@@ -1,0 +1,22 @@
+[package]
+name = "losscape-py"
+description = "Native core of the losscape Python SDK"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+losscape-core = { path = "../losscape-core" }
+pyo3 = { version = "0.30.1", features = ["abi3-py310"] }
+
+[features]
+# Enabled by maturin when building the extension module.
+extension-module = ["pyo3/extension-module"]
+
+[lints]
+workspace = true

@@ -1,0 +1,49 @@
+# Local development databases. The losscape server and web app run on the host:
+#   make dev-db      # this file
+#   make dev-server  # Rust API on :8080
+#   make dev-web     # Vite on :5173, proxies /api to :8080
+name: losscape-dev
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: losscape
+      POSTGRES_PASSWORD: losscape
+      POSTGRES_DB: losscape
+    ports:
+      - "5432:5432"
+    volumes:
+      # Postgres 18+ images keep data under /var/lib/postgresql/<major>/.
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U losscape -d losscape"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_USER: losscape
+      CLICKHOUSE_PASSWORD: losscape
+      CLICKHOUSE_DB: losscape
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123" # HTTP interface (used by the server)
+      - "9000:9000" # native protocol (clickhouse client)
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse", "client", "--user", "losscape", "--password", "losscape", "--query", "SELECT 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres:
+  clickhouse:
