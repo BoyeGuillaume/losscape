@@ -22,3 +22,6 @@ web/dist/
 .DS_Store
 .idea/
 .vscode/
+
+# losscape local run logs (SDK)
+.losscape/

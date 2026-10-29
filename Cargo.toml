@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/losscape-core", "crates/losscape-server", "crates/losscape-py", "crates/losscape-loadgen"]
+members = ["crates/losscape-core", "crates/losscape-server", "crates/losscape-py", "crates/losscape-loadgen", "crates/losscape-client"]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"  # File::try_lock
 repository = "https://github.com/BoyeGuillaume/losscape"
 
 [workspace.lints.rust]
