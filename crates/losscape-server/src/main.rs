@@ -1,26 +1,29 @@
-use std::net::SocketAddr;
-
+use losscape_server::app;
+use losscape_server::config::Config;
+use losscape_server::state::AppState;
 use tracing_subscriber::EnvFilter;
 
-mod app;
-
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
-    let addr: SocketAddr = std::env::var("LOSSCAPE_LISTEN")
-        .unwrap_or_else(|_| "0.0.0.0:8080".into())
-        .parse()?;
+    let config = Config::from_env()?;
+    let (state, flusher) = AppState::start(&config).await?;
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, version = losscape_core::VERSION, "losscape server listening");
-    axum::serve(listener, app::router())
+    let listener = tokio::net::TcpListener::bind(config.listen).await?;
+    tracing::info!(addr = %config.listen, version = losscape_core::VERSION, "losscape server listening");
+    axum::serve(listener, app::router(state, config.max_body_bytes))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // The router (and its queue handles) is gone; let the flusher write what is queued.
+    flusher.await?;
+    tracing::info!("stopped");
     Ok(())
 }
 

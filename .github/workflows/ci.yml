@@ -11,6 +11,33 @@ env:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: losscape
+          POSTGRES_PASSWORD: losscape
+          POSTGRES_DB: losscape
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U losscape" --health-interval 2s --health-retries 30
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8
+        env:
+          CLICKHOUSE_USER: losscape
+          CLICKHOUSE_PASSWORD: losscape
+          CLICKHOUSE_DB: losscape
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports: ["8123:8123"]
+        options: >-
+          --health-cmd "clickhouse client --user losscape --password losscape --query 'SELECT 1'"
+          --health-interval 2s --health-retries 30
+    env:
+      # Integration tests (crates/losscape-server/tests) run against these services.
+      DATABASE_URL: postgres://losscape:losscape@localhost:5432/losscape
+      CLICKHOUSE_URL: http://localhost:8123
+      CLICKHOUSE_USER: losscape
+      CLICKHOUSE_PASSWORD: losscape
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

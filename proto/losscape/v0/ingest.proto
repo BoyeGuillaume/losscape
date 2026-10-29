@@ -72,6 +72,10 @@ message LogBatch {
   string summary_json = 4;
   // Config values to merge into the run's config (JSON object).
   string config_json = 5;
+  // Every seq below this has been acknowledged to the client, which will never send it
+  // again. Lets the server close gaps in its dedup window (e.g. after losing recent
+  // window updates in a database crash). 0 = unknown.
+  uint64 confirmed_below = 6;
 }
 
 message Heartbeat {

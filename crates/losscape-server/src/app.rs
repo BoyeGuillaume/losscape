@@ -1,19 +1,44 @@
-use axum::{Json, Router, routing::get};
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use axum::{Json, Router, middleware};
 
-pub fn router() -> Router {
+use crate::state::AppState;
+use crate::{auth, ingest, runs};
+
+pub fn router(state: AppState, max_body_bytes: usize) -> Router {
+    let api = Router::new()
+        .route("/runs/init", post(runs::init))
+        .route("/runs/heartbeat", post(runs::heartbeat))
+        .route("/runs/finish", post(runs::finish))
+        .route("/ingest", post(ingest::ingest))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_api_key,
+        ))
+        // Routes below are public.
+        .route("/version", get(version));
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/api/v0/version", get(version))
+        .nest("/api/v0", api)
+        .layer(DefaultBodyLimit::max(max_body_bytes))
+        .with_state(state)
 }
 
 async fn healthz() -> &'static str {
     "ok"
 }
 
-// Becomes a real check (Postgres + ClickHouse reachable) once storage is wired in.
-async fn readyz() -> &'static str {
-    "ok"
+async fn readyz(State(state): State<AppState>) -> (StatusCode, &'static str) {
+    let pg = sqlx::query("SELECT 1").execute(state.pg()).await;
+    let ch = state.ch().query("SELECT 1").fetch_one::<u8>().await;
+    match (pg, ch) {
+        (Ok(_), Ok(_)) => (StatusCode::OK, "ok"),
+        (Err(_), _) => (StatusCode::SERVICE_UNAVAILABLE, "postgres unavailable"),
+        (_, Err(_)) => (StatusCode::SERVICE_UNAVAILABLE, "clickhouse unavailable"),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -27,37 +52,4 @@ async fn version() -> Json<VersionInfo> {
         version: losscape_core::VERSION,
         protocol: losscape_core::PROTOCOL_VERSION,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    use super::*;
-
-    async fn get(uri: &str) -> (StatusCode, String) {
-        let res = router()
-            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let status = res.status();
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        (status, String::from_utf8(body.to_vec()).unwrap())
-    }
-
-    #[tokio::test]
-    async fn health_endpoints() {
-        assert_eq!(get("/healthz").await, (StatusCode::OK, "ok".into()));
-        assert_eq!(get("/readyz").await, (StatusCode::OK, "ok".into()));
-    }
-
-    #[tokio::test]
-    async fn version_reports_protocol() {
-        let (status, body) = get("/api/v0/version").await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains(r#""protocol":0"#), "{body}");
-    }
 }

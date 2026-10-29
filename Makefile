@@ -1,7 +1,7 @@
 COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 PY := cd sdk/python && uv run
 
-.PHONY: help dev-db dev-db-down dev-server dev-web build test lint fmt
+.PHONY: help dev-db dev-db-down dev-server dev-web build test lint fmt bench crash-test
 
 help: ## Show targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -38,3 +38,10 @@ fmt: ## Format everything
 	cargo fmt --all
 	$(PY) ruff format .
 	$(PY) ruff check --fix .
+
+bench: ## Ingest benchmark against a running server (make dev-server)
+	cargo run --release -p losscape-loadgen -- --runs 32 --metrics 32 --steps 20000
+
+crash-test: ## SIGKILL the server mid-load, restart, check no point is lost
+	cargo build --release -p losscape-server -p losscape-loadgen
+	python3 scripts/crash_test.py

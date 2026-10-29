@@ -265,6 +265,14 @@ SDK: delete batches from its local log once confirmed
 - Confirmation after the ClickHouse write (~1 s) costs nothing because training never waits for it. A server crash loses nothing: the SDK resends, and `(run_id, seq)` makes that safe.
 - Not using ClickHouse fire-and-forget async inserts: confirmed data could be lost on crash.
 - Live viewers get points before the database write.
+- Dedup window per run (`runs.next_seq` + `runs.pending_seqs`), not one row per batch (which would grow ~36k rows per run-hour).
+- The flusher's Postgres transaction uses `synchronous_commit = off`. Measured: with ClickHouse merging on the same disk, a single fsync'd commit took up to 18 s. A server crash loses nothing; a Postgres/OS crash can lose ~0.6 s of window and summary updates.
+- Every batch carries `confirmed_below` (all lower seqs are acknowledged to the client and never re-sent), so a dedup window that lost updates repairs itself instead of getting stuck.
+
+Measured on the dev machine (20 cores, single disk, Postgres + ClickHouse in Docker), 32 runs × 32 metrics × 20k steps:
+- 1.1–2.2M points/s with confirm latency p50 ~165 ms, p99 ~300–500 ms while ClickHouse isn't merging.
+- During large background merges (100M+ rows rewritten) ClickHouse inserts stall for up to ~8 s and throughput drops to ~0.45M points/s. No data loss; the SDK absorbs it with its in-flight window and local log, and live charts are pushed before the write.
+- SIGKILL of the server mid-load: every point stored exactly once after restart (`make crash-test`).
 
 Metrics table:
 
