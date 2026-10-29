@@ -5,7 +5,8 @@ stored exactly once.
     cargo build --release -p losscape-server -p losscape-loadgen
     python3 scripts/crash_test.py
 
-Needs the dev databases (make dev-db) and a .env at the repo root. Standard library only.
+Needs the dev databases (make dev-db), a .env at the repo root, and LOSSCAPE_API_KEY set to
+an API key from the web UI (Settings > API keys). Standard library only.
 """
 
 import argparse
@@ -73,6 +74,8 @@ def main() -> None:
     args = parser.parse_args()
 
     env = load_env()
+    if not env.get("LOSSCAPE_API_KEY", "").startswith("df_"):
+        sys.exit("set LOSSCAPE_API_KEY to an API key from the web UI (Settings > API keys)")
     workdir = Path(tempfile.mkdtemp(prefix="losscape-crash-"))
     report_path = workdir / "report.json"
     log = (workdir / "server.log").open("ab")
@@ -82,12 +85,18 @@ def main() -> None:
     loadgen = subprocess.Popen(
         [
             ROOT / "target/release/losscape-loadgen",
-            "--server", f"http://{LISTEN}",
-            "--project", f"crashtest-{int(time.time())}",
-            "--runs", str(args.runs),
-            "--metrics", str(args.metrics),
-            "--steps", str(args.steps),
-            "--report", report_path,
+            "--server",
+            f"http://{LISTEN}",
+            "--project",
+            f"crashtest-{int(time.time())}",
+            "--runs",
+            str(args.runs),
+            "--metrics",
+            str(args.metrics),
+            "--steps",
+            str(args.steps),
+            "--report",
+            report_path,
         ],
         cwd=ROOT,
         env=env,
@@ -121,7 +130,9 @@ def main() -> None:
         run_id, raw, unique = row.split("\t")
         stored[run_id.replace("-", "")] = (int(raw), int(unique))
 
-    print(f"retries during the test: {report['retries']}, duplicates reported: {report['duplicates']}")
+    print(
+        f"retries during the test: {report['retries']}, duplicates reported: {report['duplicates']}"
+    )
     failed = False
     for run_id in report["run_ids"]:
         raw, unique = stored.get(run_id, (0, 0))
@@ -129,7 +140,9 @@ def main() -> None:
         extra = raw - unique
         status = "ok" if missing == 0 else "MISSING POINTS"
         failed |= missing != 0
-        print(f"  run {run_id}: {unique}/{expected} unique points, {extra} duplicate rows ({status})")
+        print(
+            f"  run {run_id}: {unique}/{expected} unique points, {extra} duplicate rows ({status})"
+        )
     if failed:
         sys.exit("FAIL: points were lost")
     print("PASS: every point stored; duplicate rows (if any) collapse in ReplacingMergeTree")

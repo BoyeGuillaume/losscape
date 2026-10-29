@@ -9,9 +9,11 @@ use serde_json::{Value, json};
 use sqlx::types::Json;
 use uuid::Uuid;
 
+use crate::auth::{self, AuthUser, Role, forbidden};
 use crate::error::ApiError;
 use crate::ingest::window::SeqWindow;
 use crate::ingest::{json_object_or_none, parse_run_id};
+use crate::live::LiveEvent;
 use crate::proto_body::Proto;
 use crate::state::AppState;
 
@@ -21,10 +23,11 @@ const MAX_TAG_LEN: usize = 128;
 
 pub async fn init(
     State(state): State<AppState>,
+    user: AuthUser,
     Proto(req): Proto<RunInit>,
 ) -> Result<Proto<RunInitResponse>, ApiError> {
     let run_id = parse_run_id(&req.run_id)?;
-    validate_project(&req.project)?;
+    crate::projects::validate_name(&req.project)?;
     let name = match req.name.trim() {
         "" => run_id.simple().to_string()[..8].to_owned(),
         name if name.len() > MAX_NAME_LEN => {
@@ -45,7 +48,26 @@ pub async fn init(
     let group = Some(req.group.trim()).filter(|g| !g.is_empty());
 
     let mut tx = state.pg().begin().await?;
-    let project_id = project_id(&mut tx, &req.project).await?;
+    let project_id: i64 = sqlx::query_scalar("SELECT id FROM projects WHERE name = $1")
+        .bind(&req.project)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown_project",
+                format!(
+                    "project \"{}\" does not exist; create it in the web UI first",
+                    req.project
+                ),
+            )
+        })?;
+    let no_access = || {
+        forbidden(
+            "this project belongs to other users; ask one of its owners to add you as an editor",
+        )
+    };
+    auth::require_role(&state, &user, project_id, Role::Editor, no_access).await?;
 
     let created = sqlx::query(
         "INSERT INTO runs (id, project_id, name, group_name, tags, notes, config, environment,
@@ -124,15 +146,33 @@ pub async fn init(
 
 pub async fn heartbeat(
     State(state): State<AppState>,
+    user: AuthUser,
     Proto(req): Proto<Heartbeat>,
 ) -> Result<Proto<Ack>, ApiError> {
     let run_id = parse_run_id(&req.run_id)?;
-    let updated = sqlx::query("UPDATE runs SET heartbeat_at = now() WHERE id = $1")
-        .bind(run_id)
-        .execute(state.pg())
-        .await?
-        .rows_affected();
-    if updated == 0 {
+    auth::require_run(&state, &user, run_id, Role::Editor).await?;
+    // The flusher already bumps heartbeat_at on every batch, so a run that is logging
+    // needs no write here. Writing anyway would make the heartbeat compete with the
+    // flusher for the run's row lock: with a synchronous commit stuck behind a busy disk,
+    // that lock was held for 14 s and stalled all ingest. A heartbeat is soft state, so
+    // it also doesn't wait for the WAL fsync.
+    let mut tx = state.pg().begin().await?;
+    sqlx::query("SET LOCAL synchronous_commit = off")
+        .execute(&mut *tx)
+        .await?;
+    let exists: Option<bool> = sqlx::query_scalar(
+        "WITH touched AS (
+             UPDATE runs SET heartbeat_at = now()
+             WHERE id = $1 AND heartbeat_at < now() - interval '10 seconds'
+             RETURNING id
+         )
+         SELECT true FROM touched UNION ALL SELECT true FROM runs WHERE id = $1 LIMIT 1",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    if exists.is_none() {
         return Err(ApiError::unknown_run());
     }
     Ok(Proto(Ack {
@@ -143,9 +183,11 @@ pub async fn heartbeat(
 
 pub async fn finish(
     State(state): State<AppState>,
+    user: AuthUser,
     Proto(req): Proto<RunFinish>,
 ) -> Result<Proto<Ack>, ApiError> {
     let run_id = parse_run_id(&req.run_id)?;
+    auth::require_run(&state, &user, run_id, Role::Editor).await?;
     let run_state = match req.state() {
         RunExitState::Unspecified | RunExitState::Finished => "finished",
         RunExitState::Failed => "failed",
@@ -166,6 +208,10 @@ pub async fn finish(
     if updated == 0 {
         return Err(ApiError::unknown_run());
     }
+    state.live().publish(LiveEvent::State {
+        run_id,
+        state: run_state,
+    });
     Ok(Proto(Ack {
         run_id: req.run_id,
         seq: req.last_seq,
@@ -199,42 +245,7 @@ async fn last_step(
 
 /// Creates the project on first use. `DO NOTHING` + lookup instead of `DO UPDATE`, which
 /// row-locks the project and serialized every concurrent init in it.
-async fn project_id(tx: &mut sqlx::PgConnection, name: &str) -> Result<i64, ApiError> {
-    let id = sqlx::query_scalar(
-        "WITH created AS (
-             INSERT INTO projects (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id
-         )
-         SELECT id FROM created UNION ALL SELECT id FROM projects WHERE name = $1 LIMIT 1",
-    )
-    .bind(name)
-    .fetch_optional(&mut *tx)
-    .await?;
-    match id {
-        Some(id) => Ok(id),
-        // Another init created it after this statement's snapshot was taken.
-        None => Ok(
-            sqlx::query_scalar("SELECT id FROM projects WHERE name = $1")
-                .bind(name)
-                .fetch_one(&mut *tx)
-                .await?,
-        ),
-    }
-}
-
-fn validate_project(project: &str) -> Result<(), ApiError> {
-    let valid = (1..=100).contains(&project.len())
-        && project
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    if valid {
-        Ok(())
-    } else {
-        Err(ApiError::invalid(
-            "project: 1-100 characters from [A-Za-z0-9._-]",
-        ))
-    }
-}
-
+/// The project's id, and whether this call created it.
 fn validate_tags(tags: &[String]) -> Result<(), ApiError> {
     if tags.len() > MAX_TAGS {
         return Err(ApiError::invalid(format!("tags: at most {MAX_TAGS}")));
@@ -260,14 +271,6 @@ fn environment_json(env: RunEnvironment) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn project_names() {
-        assert!(validate_project("mnist-v2.1_test").is_ok());
-        assert!(validate_project("").is_err());
-        assert!(validate_project("a/b").is_err());
-        assert!(validate_project(&"x".repeat(101)).is_err());
-    }
 
     #[test]
     fn tags() {

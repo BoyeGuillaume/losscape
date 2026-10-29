@@ -30,14 +30,15 @@ test: ## Run all tests
 lint: ## Lint and type-check everything
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
-	$(PY) ruff check .
-	$(PY) ruff format --check .
-	cd web && npm run lint && npm run typecheck
+	$(PY) ruff check . ../../scripts
+	$(PY) ruff format --check . ../../scripts
+	cd web && npm run lint && npm run check
 
 fmt: ## Format everything
+	cd web && npm run format
 	cargo fmt --all
-	$(PY) ruff format .
-	$(PY) ruff check --fix .
+	$(PY) ruff format . ../../scripts
+	$(PY) ruff check --fix . ../../scripts
 
 bench: ## Ingest benchmark against a running server (make dev-server)
 	cargo run --release -p losscape-loadgen -- --runs 32 --metrics 32 --steps 20000

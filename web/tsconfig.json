@@ -1,7 +1,8 @@
 {
-  "files": [],
-  "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
-  ]
+	"extends": "$app/tsconfig",
+	"compilerOptions": {
+		"strict": true,
+		"types": ["$app/types", "node"]
+	},
+	"include": ["src", "vite.config.ts"]
 }

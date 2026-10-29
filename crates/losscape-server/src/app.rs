@@ -1,30 +1,179 @@
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::Response;
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
+use base64::Engine;
+use sha2::{Digest, Sha256};
+use tower_http::services::{ServeDir, ServeFile};
 
+use crate::auth::{account, avatar, members, oauth};
 use crate::state::AppState;
-use crate::{auth, ingest, runs};
+use crate::{auth, ingest, live, projects, read, runs};
 
-pub fn router(state: AppState, max_body_bytes: usize) -> Router {
-    let api = Router::new()
+pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) -> Router {
+    // Signed-in users: session cookie (web UI) or API key (SDK).
+    let user_api = Router::new()
+        // SDK (protobuf)
         .route("/runs/init", post(runs::init))
         .route("/runs/heartbeat", post(runs::heartbeat))
         .route("/runs/finish", post(runs::finish))
         .route("/ingest", post(ingest::ingest))
+        // Web UI (JSON, binary tiles, SSE)
+        .route("/projects", get(read::projects).post(projects::create))
+        .route("/projects/{project}/runs", get(read::project_runs))
+        .route("/projects/{project}/members", get(members::list))
+        .route(
+            "/projects/{project}/members/{username}",
+            put(members::set_role).delete(members::remove),
+        )
+        .route("/runs/{run}", get(read::run_detail))
+        .route("/runs/{run}/live", get(live::live))
+        .route("/series", post(read::series))
+        .route("/auth/me", get(account::me))
+        .route("/me", patch(account::update_profile))
+        .route(
+            "/me/avatar",
+            put(avatar::upload)
+                .delete(avatar::remove)
+                .layer(DefaultBodyLimit::max(avatar::MAX_UPLOAD_BYTES)),
+        )
+        .route("/users/{username}/avatar", get(avatar::serve))
+        .route("/me/password", post(account::change_password))
+        .route(
+            "/me/api-keys",
+            get(account::list_api_keys).post(account::create_api_key),
+        )
+        .route("/me/api-keys/{id}", delete(account::revoke_api_key))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            auth::require_api_key,
-        ))
-        // Routes below are public.
-        .route("/version", get(version));
+            auth::require_user,
+        ));
 
-    Router::new()
+    let public_api = Router::new()
+        .route("/version", get(version))
+        .route("/auth/settings", get(account::settings))
+        .route("/auth/register", post(account::register))
+        .route("/auth/login", post(account::login))
+        .route("/auth/logout", post(account::logout))
+        .route("/auth/oauth/{provider}/start", get(oauth::start))
+        .route("/auth/oauth/{provider}/callback", get(oauth::callback));
+
+    let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .nest("/api/v0", api)
+        .nest("/api/v0", user_api.merge(public_api))
         .layer(DefaultBodyLimit::max(max_body_bytes))
-        .with_state(state)
+        .with_state(state);
+    if let Some(dir) = web_dir {
+        // Unknown paths get index.html so client-side routes work on reload.
+        let app = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
+        router = router.fallback_service(app);
+    }
+    let policy = Arc::new(Policy::new(web_dir));
+    router.layer(middleware::map_response(move |response| {
+        security_headers(response, policy.current())
+    }))
+}
+
+/// The Content-Security-Policy, recomputed when the built app's `index.html` changes (its
+/// inline bootstrap script, and so its hash, changes with every build).
+struct Policy {
+    index: Option<PathBuf>,
+    cached: Mutex<(Option<SystemTime>, Arc<str>)>,
+}
+
+impl Policy {
+    fn new(web_dir: Option<&Path>) -> Self {
+        let index = web_dir.map(|dir| dir.join("index.html"));
+        let policy = content_security_policy(index.as_deref());
+        let modified = index.as_deref().and_then(modified);
+        Self {
+            index,
+            cached: Mutex::new((modified, policy.into())),
+        }
+    }
+
+    fn current(&self) -> Arc<str> {
+        let modified = self.index.as_deref().and_then(modified);
+        let mut cached = self.cached.lock().expect("not poisoned");
+        if cached.0 != modified {
+            *cached = (
+                modified,
+                content_security_policy(self.index.as_deref()).into(),
+            );
+        }
+        cached.1.clone()
+    }
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Defense in depth against XSS and clickjacking. Scripts may only come from this server,
+/// plus the exact inline bootstrap script of the built app (allowed by its hash).
+fn content_security_policy(index: Option<&Path>) -> String {
+    let mut script_src = String::from("'self'");
+    let html = index
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    for inline in inline_scripts(&html) {
+        let hash =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(inline.as_bytes()));
+        script_src.push_str(&format!(" 'sha256-{hash}'"));
+    }
+    format!(
+        "default-src 'self'; script-src {script_src}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; \
+         font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; \
+         frame-ancestors 'none'"
+    )
+}
+
+/// Bodies of `<script>` elements without a `src`.
+fn inline_scripts(html: &str) -> Vec<&str> {
+    let mut scripts = Vec::new();
+    let mut rest = html;
+    while let Some(open) = rest.find("<script") {
+        let Some(tag_end) = rest[open..].find('>') else {
+            break;
+        };
+        let attrs = &rest[open + "<script".len()..open + tag_end];
+        let body_start = open + tag_end + 1;
+        let Some(close) = rest[body_start..].find("</script>") else {
+            break;
+        };
+        if !attrs.contains("src=") {
+            scripts.push(&rest[body_start..body_start + close]);
+        }
+        rest = &rest[body_start + close + "</script>".len()..];
+    }
+    scripts
+}
+
+async fn security_headers(mut response: Response, policy: Arc<str>) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        "cross-origin-opener-policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&policy) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, value);
+    }
+    response
 }
 
 async fn healthz() -> &'static str {
@@ -52,4 +201,18 @@ async fn version() -> Json<VersionInfo> {
         version: losscape_core::VERSION,
         protocol: losscape_core::PROTOCOL_VERSION,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inline_scripts;
+
+    #[test]
+    fn finds_inline_scripts_only() {
+        let html = r#"<head><script src="/a.js"></script><script type="module">boot()</script></head>
+                      <body><script>
+x()
+</script></body>"#;
+        assert_eq!(inline_scripts(html), ["boot()", "\nx()\n"]);
+    }
 }

@@ -14,7 +14,6 @@ dist/
 
 # Web
 node_modules/
-web/dist/
 *.tsbuildinfo
 
 # Local config
@@ -25,3 +24,5 @@ web/dist/
 
 # losscape local run logs (SDK)
 .losscape/
+web/build/
+web/.svelte-kit/

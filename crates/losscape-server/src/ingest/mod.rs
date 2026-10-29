@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 pub use flusher::{IngestQueue, spawn_flusher};
 
+use crate::auth::{self, AuthUser, Role};
 use crate::error::ApiError;
 use crate::proto_body::Proto;
 use crate::state::AppState;
@@ -36,6 +37,7 @@ impl Batch {
 
 pub async fn ingest(
     State(state): State<AppState>,
+    user: AuthUser,
     Proto(batch): Proto<LogBatch>,
 ) -> Result<Proto<Ack>, ApiError> {
     let run_id = parse_run_id(&batch.run_id)?;
@@ -43,7 +45,7 @@ pub async fn ingest(
     validate_scalars(&scalars)?;
     let summary_json = json_object_or_none(batch.summary_json, "summary_json")?;
     let config_json = json_object_or_none(batch.config_json, "config_json")?;
-    let project_id = state.project_of(run_id).await?;
+    let project_id = auth::require_run(&state, &user, run_id, Role::Editor).await?;
 
     let duplicate = state
         .ingest()

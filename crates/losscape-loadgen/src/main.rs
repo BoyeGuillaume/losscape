@@ -24,6 +24,7 @@ const RETRY_FOR: Duration = Duration::from_secs(120);
 struct Args {
     #[arg(long, default_value = "http://localhost:8080")]
     server: String,
+    /// A user's API key (web UI: Settings > API keys).
     #[arg(long, env = "LOSSCAPE_API_KEY")]
     api_key: String,
     #[arg(long, default_value = "loadgen")]
@@ -77,6 +78,7 @@ async fn main() -> Result<(), BoxError> {
         args.zstd_level
     );
 
+    create_project(&client, &args).await?;
     let run_ids: Vec<RunId> = (0..args.runs).map(|_| RunId::new()).collect();
     let started = Instant::now();
     let mut runs = JoinSet::new();
@@ -127,6 +129,24 @@ async fn main() -> Result<(), BoxError> {
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// The SDK only logs to existing projects: creates `args.project` unless it exists.
+async fn create_project(client: &reqwest::Client, args: &Args) -> Result<(), BoxError> {
+    let res = client
+        .post(format!(
+            "{}/api/v0/projects",
+            args.server.trim_end_matches('/')
+        ))
+        .bearer_auth(&args.api_key)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(serde_json::json!({ "name": args.project }).to_string())
+        .send()
+        .await?;
+    match res.status() {
+        StatusCode::CREATED | StatusCode::CONFLICT => Ok(()),
+        status => Err(format!("creating project: HTTP {status}: {}", res.text().await?).into()),
+    }
+}
 
 async fn simulate_run(
     client: reqwest::Client,

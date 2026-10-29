@@ -1,6 +1,7 @@
 """Against a running server: start one (make dev-db && make dev-server), then
 
-    export LOSSCAPE_TEST_SERVER=http://localhost:8080 LOSSCAPE_API_KEY=...
+    export LOSSCAPE_TEST_SERVER=http://localhost:8080
+    export LOSSCAPE_API_KEY=df_...   # web UI: Settings > API keys
     uv run pytest tests/test_e2e.py
 
 Points are checked directly in ClickHouse (CLICKHOUSE_URL / _USER / _PASSWORD / _DATABASE,
@@ -13,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -21,6 +23,24 @@ import losscape
 
 SERVER = os.environ.get("LOSSCAPE_TEST_SERVER")
 pytestmark = pytest.mark.skipif(not SERVER, reason="set LOSSCAPE_TEST_SERVER to run")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def project():
+    """The SDK only logs to existing projects: creates "pytest-e2e" unless it exists."""
+    req = urllib.request.Request(
+        f"{SERVER}/api/v0/projects",
+        data=b'{"name": "pytest-e2e"}',
+        headers={
+            "Authorization": f"Bearer {os.environ['LOSSCAPE_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except urllib.error.HTTPError as err:
+        if err.code != 409:
+            raise
 
 
 def clickhouse(sql: str) -> str:

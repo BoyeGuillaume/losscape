@@ -24,9 +24,9 @@ A free, self-hosted, high-performance ML experiment tracker. W&B-like Python API
 | Metrics, system metrics, console logs | ClickHouse. |
 | File storage (later) | `object_store` crate: local disk by default, any S3 (SeaweedFS, AWS, R2). |
 | SDK → server | Protobuf (prost) over HTTPS POST, zstd-compressed, each batch tagged `(run_id, seq)` for safe retries. |
-| Web UI | TypeScript, React 19, Vite SPA, TanStack Router/Query/Table/Virtual, Tailwind + shadcn/ui. No Node server in production. |
-| Charts | uPlot (canvas) for line charts; WebGL for large scatter / parallel-coordinates plots. |
-| UI ↔ server | REST/JSON with OpenAPI (utoipa) + generated TS client for CRUD; Arrow IPC for metric series; SSE/WebSocket for live updates. |
+| Web UI | Svelte 5 + SvelteKit 3 as a static SPA served by the Rust server, Tailwind 4 + shadcn-svelte. No Node server in production. |
+| Charts | LayerChart on canvas: min/max band + line, brush-to-zoom, synced crosshair across charts (`ChartGroup`). Series colors: validated colorblind-safe categorical palette, light and dark steps. |
+| UI ↔ server | REST/JSON for CRUD; metric tiles as RowBinary (fixed 56-byte rows, ClickHouse output passed through) for the UI and Arrow for other clients; SSE for live updates. |
 
 **Licensing rule:** every dependency must be permissively licensed (MIT, Apache 2.0, BSD, PostgreSQL). No AGPL / SSPL / BSL / TSL defaults. ClickHouse is Apache 2.0; Garage is AGPL, so it isn't a default.
 
@@ -222,10 +222,14 @@ Targets to aim for, not measurements.
 
 ## 11. Security and access
 
-- **P0** Local accounts and per-user API keys. Every query is limited to the caller's projects on the server, not just in the UI.
-- **P1** OIDC single sign-on, free.
-- **P1** Roles (admin, member, viewer) at org, team and project level; project visibility (private, team, public).
-- **P1** Service accounts with scoped keys, rate limiting, audit log.
+- **P0 (done)** Accounts with username + password: Argon2id (OWASP parameters, random salt per hash), constant-response sign-in, rate-limited failures. The first account is administrator.
+- **P0 (done)** Browser sessions in an `HttpOnly`, `SameSite=Lax` (`Secure` on HTTPS) cookie, stored hashed; cross-site state-changing requests refused (`Sec-Fetch-Site` / `Origin`).
+- **P0 (done)** Per-user API keys for the SDK: shown once, stored as SHA-256, revocable, last-use shown.
+- **P0 (done)** Project roles: owner (manages members), editor (logs runs), viewer (reads). Checked on the server for every request; non-members get 404 so ids reveal nothing. A project always keeps an owner. Projects are created explicitly in the UI (`POST /projects`, the creator becomes owner); `runs/init` on an unknown project is refused (404 `unknown_project`), so a typo in `project=` never starts a new project.
+- **P0 (done)** Parameterized SQL everywhere; UI output escaped; strict Content-Security-Policy, `nosniff`, no framing.
+- **P1 (done)** Sign-in with external providers, free: any OpenID Connect provider (PKCE, verified ID token, nonce) and GitHub; accounts can link providers.
+- **P1** Teams / organizations, project visibility (private, team, public); admin user management (disable users, reset passwords).
+- **P1** Service accounts with scoped keys (one project, read-only), audit log.
 - **P2** SAML and SCIM.
 
 ---

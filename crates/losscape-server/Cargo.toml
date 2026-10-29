@@ -10,17 +10,28 @@ name = "losscape-server"
 path = "src/main.rs"
 
 [dependencies]
+argon2 = "0.6.0"
 axum = "0.8.9"
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+base64 = "0.23.1"
 bytes = "1.12.1"
 clickhouse = { version = "0.13.3", features = ["uuid"] }
 losscape-core = { path = "../losscape-core" }
 dotenvy = "0.15.7"
+getrandom = "0.4"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+openidconnect = "4.0.1"
 prost = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "uuid", "json", "migrate", "macros"] }
+subtle = "2.6.1"
 thiserror = "2.0.21"
+time = "0.3.55"
 tokio = { version = "1.54.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.26.1", features = ["serde", "v7"] }
@@ -31,10 +42,15 @@ zstd = "0.14.3"
 testing = []
 
 [dev-dependencies]
+base64 = "0.23.1"
 http-body-util = "0.1.5"
+jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
 prost = "0.14.4"
+serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.11.1"
 tokio = { version = "1.54.1", features = ["full", "test-util"] }
 tower = { version = "0.5.3", features = ["util"] }
+url = "2.5.8"
 uuid = { version = "1.26.1", features = ["v7"] }
 zstd = "0.14.3"
 

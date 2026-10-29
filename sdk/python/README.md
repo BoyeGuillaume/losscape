@@ -15,6 +15,10 @@ with losscape.init(project="mnist", config={"lr": 1e-3, "batch_size": 64}) as ru
 The API follows Weights & Biases: `init`, `log` (with `step` / `commit`), `config`,
 `summary`, `finish`, context manager, `losscape.log(...)` on the current run.
 
+The project must exist: create it in the web UI (New project) and be its owner or an editor.
+A run logged to an unknown project is refused by the server; its data stays in the local log,
+so `losscape sync` uploads it once the project is created.
+
 ## How it works
 
 - `log()` appends to an in-memory buffer (~1 µs for 20 metrics) and never touches the network.
@@ -31,7 +35,7 @@ The API follows Weights & Biases: `init`, `log` (with `step` / `commit`), `confi
 | `mode` | `LOSSCAPE_MODE` | `online` (`offline`, `disabled`) |
 | `dir` | `LOSSCAPE_DIR` | `./.losscape` |
 | `server` | `LOSSCAPE_SERVER` | `http://localhost:8080` |
-| `api_key` | `LOSSCAPE_API_KEY` | required online |
+| `api_key` | `LOSSCAPE_API_KEY` | required online: create one in the web UI, Settings > API keys |
 | `finish(timeout=)` | `LOSSCAPE_FINISH_TIMEOUT` | 60 s |
 | | `LOSSCAPE_SILENT=1` | print nothing |
 

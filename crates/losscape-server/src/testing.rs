@@ -10,10 +10,12 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::config::{ClickHouseConfig, Config, IngestConfig};
+use crate::auth::{account, secrets};
+use crate::config::{AuthConfig, ClickHouseConfig, Config, IngestConfig};
 use crate::state::AppState;
 
-pub const API_KEY: &str = "test-key";
+/// Project created at start, owned by the admin (the SDK only logs to existing projects).
+pub const PROJECT: &str = "test";
 
 pub struct TestServer {
     pub url: String,
@@ -33,6 +35,16 @@ impl TestServer {
     }
 
     pub async fn start_on(listener: TcpListener) -> Option<Self> {
+        Self::start_with(listener, |_| AuthConfig::default(), None).await
+    }
+
+    /// `auth` gets the server's URL (for OAuth redirect URIs). `api_key` (from
+    /// [`secrets::new_api_key`]) lets a client be configured before the server exists.
+    pub async fn start_with(
+        listener: TcpListener,
+        auth: impl FnOnce(&str) -> AuthConfig,
+        api_key: Option<String>,
+    ) -> Option<Self> {
         let env_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.env");
         dotenvy::from_path(env_file).ok();
         let (Ok(pg_url), Ok(ch_url)) = (
@@ -63,28 +75,57 @@ impl TestServer {
             listen: addr,
             database_url: format!("{base}/{db}"),
             clickhouse: clickhouse.clone(),
-            api_key: API_KEY.into(),
+            auth: auth(&format!("http://{addr}")),
             ingest: IngestConfig {
                 flush_interval: Duration::from_millis(20),
                 ..Default::default()
             },
             max_body_bytes: 32 * 1024 * 1024,
+            web_dir: None,
         };
         let (state, flusher) = AppState::start(&config).await.expect("server starts");
-        let router = crate::app::router(state.clone(), config.max_body_bytes);
+        // Before serving: a client may already be waiting on the listener.
+        let api_key = match api_key {
+            None => test_user(&state, "admin").await.1,
+            Some(key) => {
+                let id = account::create_user(&state, "admin", None, None, None)
+                    .await
+                    .expect("create user");
+                sqlx::query("INSERT INTO api_keys (user_id, name, prefix, key_hash) VALUES ($1, 'test', $2, $3)")
+                    .bind(id)
+                    .bind(&key[..10])
+                    .bind(secrets::sha256(&key))
+                    .execute(state.pg())
+                    .await
+                    .expect("insert key");
+                key
+            }
+        };
+        let admin_id = sqlx::query_scalar("SELECT id FROM users WHERE username = 'admin'")
+            .fetch_one(state.pg())
+            .await
+            .expect("admin exists");
+        crate::projects::insert(&state, PROJECT, admin_id)
+            .await
+            .expect("create project");
+        let router = crate::app::router(state.clone(), config.max_body_bytes, None);
         let (shutdown, stop) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async {
-                    stop.await.ok();
-                })
-                .await
-                .unwrap();
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                stop.await.ok();
+            })
+            .await
+            .unwrap();
             flusher.await.unwrap();
         });
+        // The first account is admin; tests needing plain users create more.
         Some(Self {
             url: format!("http://{addr}"),
-            api_key: API_KEY.into(),
+            api_key,
             state,
             shutdown,
             server,
@@ -159,4 +200,15 @@ impl TestServer {
         .unwrap()
         .map(|(state, code, summary)| (state, code, summary.0))
     }
+}
+
+/// Creates a user with an API key; returns (user id, key).
+pub async fn test_user(state: &AppState, username: &str) -> (i64, String) {
+    let id = account::create_user(state, username, None, None, None)
+        .await
+        .expect("create user");
+    let (_, key) = account::issue_api_key(state, id, "test")
+        .await
+        .expect("issue key");
+    (id, key)
 }

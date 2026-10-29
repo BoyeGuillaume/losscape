@@ -9,6 +9,7 @@
 //! replicas will need runs partitioned across them.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use serde_json::{Map, Value};
@@ -23,6 +24,7 @@ use super::Batch;
 use super::window::{Insert, MAX_AHEAD, SeqWindow};
 use crate::config::IngestConfig;
 use crate::error::ApiError;
+use crate::live::{LiveEvent, LiveHub};
 
 /// `Ok(true)` when the batch had already been stored.
 type Reply = oneshot::Sender<Result<bool, ApiError>>;
@@ -54,16 +56,18 @@ impl IngestQueue {
 pub fn spawn_flusher(
     pg: PgPool,
     ch: clickhouse::Client,
+    live: Arc<LiveHub>,
     config: IngestConfig,
 ) -> (IngestQueue, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(config.queue_capacity);
-    let handle = tokio::spawn(run(pg, ch, config, rx));
+    let handle = tokio::spawn(run(pg, ch, live, config, rx));
     (IngestQueue { tx }, handle)
 }
 
 async fn run(
     pg: PgPool,
     ch: clickhouse::Client,
+    live: Arc<LiveHub>,
     config: IngestConfig,
     mut rx: mpsc::Receiver<Pending>,
 ) {
@@ -84,7 +88,7 @@ async fn run(
                 _ = sleep_until(deadline) => break,
             }
         }
-        flush(&pg, &ch, chunk).await;
+        flush(&pg, &ch, &live, chunk).await;
     }
     tracing::info!("ingest queue drained");
 }
@@ -96,7 +100,7 @@ struct Accepted {
     replies: Vec<(Reply, bool)>,
 }
 
-async fn flush(pg: &PgPool, ch: &clickhouse::Client, chunk: Vec<Pending>) {
+async fn flush(pg: &PgPool, ch: &clickhouse::Client, live: &LiveHub, chunk: Vec<Pending>) {
     let started = std::time::Instant::now();
     let run_ids: Vec<Uuid> = chunk
         .iter()
@@ -161,6 +165,7 @@ async fn flush(pg: &PgPool, ch: &clickhouse::Client, chunk: Vec<Pending>) {
         let ch_started = std::time::Instant::now();
         write_metrics(ch, &accepted).await?;
         clickhouse_ms = ch_started.elapsed().as_millis() as u64;
+        publish(live, &accepted);
         update_runs(pg, &accepted, &windows).await?;
         Ok::<_, ApiError>(())
     }
@@ -178,6 +183,18 @@ async fn flush(pg: &PgPool, ch: &clickhouse::Client, chunk: Vec<Pending>) {
     for a in accepted {
         for (reply, duplicate) in a.replies {
             let _ = reply.send(result.clone().map(|()| duplicate));
+        }
+    }
+}
+
+/// Pushes stored points of watched runs to live viewers.
+fn publish(live: &LiveHub, accepted: &[Accepted]) {
+    for Accepted { batch, .. } in accepted {
+        if batch.rows() > 0 && live.is_watched(batch.run_id) {
+            live.publish(LiveEvent::Points {
+                run_id: batch.run_id,
+                scalars: Arc::new(batch.scalars.clone()),
+            });
         }
     }
 }

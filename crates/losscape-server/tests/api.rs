@@ -1,138 +1,31 @@
 //! End-to-end tests against real Postgres + ClickHouse (see deploy/docker-compose.dev.yml).
 //! Each test gets fresh databases. Skipped when DATABASE_URL / CLICKHOUSE_URL are unset.
 
-use std::path::Path;
 use std::time::Duration;
 
-use axum::Router;
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use losscape_core::PROTOCOL_HEADER;
 use losscape_core::ids::RunId;
 use losscape_core::proto::v0::{
-    Ack, Error, Heartbeat, LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse,
-    ScalarColumns,
+    Ack, Heartbeat, LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse, ScalarColumns,
 };
-use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
-use losscape_server::app;
-use losscape_server::config::{ClickHouseConfig, Config, IngestConfig};
-use losscape_server::state::AppState;
 use http_body_util::BodyExt;
 use prost::Message;
-use sqlx::PgPool;
-use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
-const API_KEY: &str = "test-key";
+mod common;
 
-struct TestServer {
-    router: Router,
-    state: AppState,
-    flusher: JoinHandle<()>,
-    admin: PgPool,
-    db: String,
-    clickhouse: ClickHouseConfig,
-}
+use common::{TestServer, error_of};
 
 impl TestServer {
-    async fn start() -> Option<Self> {
-        dotenvy::from_path(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.env")).ok();
-        let (Ok(pg_url), Ok(ch_url)) = (
-            std::env::var("DATABASE_URL"),
-            std::env::var("CLICKHOUSE_URL"),
-        ) else {
-            eprintln!("skipping: DATABASE_URL / CLICKHOUSE_URL not set");
-            return None;
-        };
-
-        let db = format!("losscape_test_{}", uuid::Uuid::now_v7().simple());
-        let admin = PgPool::connect(&pg_url).await.expect("postgres reachable");
-        sqlx::query(&format!("CREATE DATABASE {db}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let (base, _) = pg_url
-            .rsplit_once('/')
-            .expect("DATABASE_URL ends with /<db>");
-
-        let clickhouse = ClickHouseConfig {
-            url: ch_url,
-            user: std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into()),
-            password: std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
-            database: db.clone(),
-        };
-        let config = Config {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            database_url: format!("{base}/{db}"),
-            clickhouse: clickhouse.clone(),
-            api_key: API_KEY.into(),
-            ingest: IngestConfig {
-                flush_interval: Duration::from_millis(20),
-                ..Default::default()
-            },
-            max_body_bytes: 8 * 1024 * 1024,
-        };
-        let (state, flusher) = AppState::start(&config).await.expect("server starts");
-        let router = app::router(state.clone(), config.max_body_bytes);
-        Some(Self {
-            router,
-            state,
-            flusher,
-            admin,
-            db,
-            clickhouse,
-        })
-    }
-
-    async fn stop(self) {
-        let Self {
-            router,
-            state,
-            flusher,
-            admin,
-            db,
-            clickhouse,
-        } = self;
-        let pg = state.pg().clone();
-        drop((router, state));
-        tokio::time::timeout(Duration::from_secs(10), flusher)
-            .await
-            .unwrap()
-            .unwrap();
-        pg.close().await;
-        sqlx::query(&format!("DROP DATABASE {db} WITH (FORCE)"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        clickhouse::Client::default()
-            .with_url(&clickhouse.url)
-            .with_user(&clickhouse.user)
-            .with_password(&clickhouse.password)
-            .query(&format!("DROP DATABASE {db}"))
-            .execute()
-            .await
-            .unwrap();
-    }
-
-    async fn send(&self, path: &str, body: impl Message, zstd: bool) -> (StatusCode, Bytes) {
-        let mut bytes = body.encode_to_vec();
-        let mut req = Request::post(path)
-            .header(header::AUTHORIZATION, format!("Bearer {API_KEY}"))
-            .header(header::CONTENT_TYPE, "application/x-protobuf")
-            .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string());
-        if zstd {
-            bytes = zstd::encode_all(bytes.as_slice(), 1).unwrap();
-            req = req.header(header::CONTENT_ENCODING, "zstd");
-        }
-        self.call(req.body(Body::from(bytes)).unwrap()).await
-    }
-
-    async fn call(&self, req: Request<Body>) -> (StatusCode, Bytes) {
-        let res = self.router.clone().oneshot(req).await.unwrap();
-        let status = res.status();
-        (status, res.into_body().collect().await.unwrap().to_bytes())
-    }
-
     async fn init(&self, run: RunId, resume: bool) -> RunInitResponse {
+        // The SDK only logs to existing projects; tests share "test".
+        let created = self.create_project("test").await;
+        assert!(matches!(
+            created,
+            StatusCode::CREATED | StatusCode::CONFLICT
+        ));
         let (status, body) = self
             .send(
                 "/api/v0/runs/init",
@@ -212,21 +105,6 @@ fn batch(run: RunId, seq: u64, first_step: u64, steps: u64) -> LogBatch {
         summary_json: format!(r#"{{"loss": {}}}"#, 1.0 / (first_step + steps) as f64),
         ..Default::default()
     }
-}
-
-fn error_of(body: &Bytes) -> String {
-    Error::decode(body.clone())
-        .map(|e| format!("{}: {}", e.code, e.message))
-        .unwrap_or_default()
-}
-
-macro_rules! server {
-    () => {
-        match TestServer::start().await {
-            Some(server) => server,
-            None => return,
-        }
-    };
 }
 
 #[tokio::test]
@@ -439,7 +317,7 @@ async fn rejects_bad_requests() {
     assert_eq!(server.call(no_auth).await.0, StatusCode::UNAUTHORIZED);
 
     let wrong_protocol = Request::post("/api/v0/ingest")
-        .header(header::AUTHORIZATION, format!("Bearer {API_KEY}"))
+        .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(PROTOCOL_HEADER, "99")
         .body(Body::empty())
@@ -461,5 +339,224 @@ async fn health_and_version() {
     let (status, body) = server.call(get("/api/v0/version")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&body).contains(r#""protocol":0"#));
+    server.stop().await;
+}
+
+async fn get_json(server: &TestServer, uri: &str) -> (StatusCode, serde_json::Value) {
+    let req = Request::get(uri)
+        .header(header::AUTHORIZATION, server.bearer())
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = server.call(req).await;
+    (status, serde_json::from_slice(&body).unwrap_or_default())
+}
+
+async fn tiles(server: &TestServer, ranges: serde_json::Value) -> Vec<serde_json::Value> {
+    let req = Request::post("/api/v0/series?format=json")
+        .header(header::AUTHORIZATION, server.bearer())
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "ranges": ranges }).to_string(),
+        ))
+        .unwrap();
+    let (status, body) = server.call(req).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    String::from_utf8(body.to_vec())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn read_api_lists_projects_runs_and_metrics() {
+    let server = server!();
+    let run = RunId::new();
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    server.init(run, false).await;
+    server.log(batch(run, 0, 0, 5000)).await;
+
+    let (status, projects) = get_json(&server, "/api/v0/projects").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(projects[0]["name"], "test");
+    assert_eq!(projects[0]["runs"], 1);
+
+    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    assert_eq!(runs[0]["name"], "brave-falcon-1");
+    assert_eq!(runs[0]["state"], "running");
+    assert_eq!(runs[0]["config"]["lr"], 0.001);
+    let (status, _) = get_json(&server, "/api/v0/projects/nope/runs").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    assert_eq!(detail["tags"], serde_json::json!(["baseline"]));
+    let metrics = detail["metrics"].as_array().unwrap();
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(metrics[1]["key"], "loss");
+    assert_eq!(
+        (
+            metrics[1]["points"].as_u64(),
+            metrics[1]["max_step"].as_u64()
+        ),
+        (Some(5000), Some(4999))
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn tiles_aggregate_buckets_and_skip_nan() {
+    let server = server!();
+    let run = RunId::new();
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    server.init(run, false).await;
+    let mut b = batch(run, 0, 0, 5000);
+    // loss at step 10 (row 20: two keys per step) is NaN.
+    b.scalars.as_mut().unwrap().value[20] = f64::NAN;
+    server.log(b).await;
+
+    // Level 0: one bucket per step; tile 1 covers steps 1024..2048.
+    let raw = tiles(
+        &server,
+        serde_json::json!([{"run": id, "key": "loss", "level": 0, "from_tile": 1, "to_tile": 2}]),
+    )
+    .await;
+    assert_eq!(raw.len(), 1024);
+    assert_eq!(raw[0]["bucket"].as_f64(), Some(1024.0));
+    assert_eq!(raw[0]["v_last"].as_f64(), Some(1.0 / 1025.0));
+
+    // Level 4: 16 steps per bucket, so 5000 steps -> 313 buckets in tile 0.
+    let rows = tiles(
+        &server,
+        serde_json::json!([
+            {"run": id, "key": "loss", "level": 4, "from_tile": 0, "to_tile": 1},
+            {"run": id, "key": "acc", "level": 12, "from_tile": 0, "to_tile": 1},
+        ]),
+    )
+    .await;
+    let (loss, acc): (Vec<_>, Vec<_>) = rows.iter().partition(|r| r["req"] == 0);
+    assert_eq!(loss.len(), 313);
+    let f = |row: &serde_json::Value, col: &str| row[col].as_f64().unwrap();
+    let first = loss[0];
+    assert_eq!(first["n"], 15, "NaN at step 10 is not counted");
+    assert_eq!((f(first, "v_min"), f(first, "v_max")), (1.0 / 16.0, 1.0));
+    assert_eq!((f(first, "v_first"), f(first, "v_last")), (1.0, 1.0 / 16.0));
+    assert_eq!(acc.len(), 2, "level 12: 4096 steps per bucket");
+    assert_eq!(acc[0]["n"], 4096);
+
+    // The web UI reads fixed 56-byte little-endian rows (web/src/charts/tiles.ts).
+    let req = Request::post("/api/v0/series?format=rowbinary")
+        .header(header::AUTHORIZATION, server.bearer())
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({"ranges": [{"run": id, "key": "loss", "level": 4, "from_tile": 0, "to_tile": 1}]})
+                .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = server.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.len(), 313 * 56);
+    let row = &body[..56];
+    let f64_at = |at: usize| f64::from_le_bytes(row[at..at + 8].try_into().unwrap());
+    assert_eq!(u32::from_le_bytes(row[12..16].try_into().unwrap()), 15, "n");
+    assert_eq!(
+        (f64_at(4), f64_at(16), f64_at(24), f64_at(48)),
+        (0.0, 1.0 / 16.0, 1.0, 1.0 / 16.0)
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn live_pushes_stored_points_and_state() {
+    let server = server!();
+    let run = RunId::new();
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    server.init(run, false).await;
+
+    let req = Request::get(format!("/api/v0/runs/{id}/live"))
+        .header(header::AUTHORIZATION, server.bearer())
+        .body(Body::empty())
+        .unwrap();
+    let res = server.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let mut body = res.into_body();
+
+    server.log(batch(run, 0, 0, 3)).await;
+    let finish = RunFinish {
+        run_id: run.as_bytes().to_vec(),
+        state: RunExitState::Finished as i32,
+        ..Default::default()
+    };
+    server.send("/api/v0/runs/finish", finish, false).await;
+
+    let mut text = String::new();
+    while !text.contains("event: state") {
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame())
+            .await
+            .expect("event in time");
+        if let Some(Ok(frame)) = frame
+            && let Ok(data) = frame.into_data()
+        {
+            text.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+    assert!(text.contains("event: points"), "{text}");
+    assert!(text.contains(r#""step":[0,0,1,1,2,2]"#), "{text}");
+    assert!(text.contains("data: finished"), "{text}");
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn heartbeat_skips_runs_that_just_logged() {
+    let server = server!();
+    let run = RunId::new();
+    let id = uuid::Uuid::from_bytes(*run.as_bytes());
+    server.init(run, false).await;
+    let heartbeat_at = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT (extract(epoch from heartbeat_at) * 1e6)::bigint FROM runs WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(server.state.pg())
+        .await
+        .unwrap()
+    };
+    let beat = Heartbeat {
+        run_id: run.as_bytes().to_vec(),
+        client_time_ms: 0,
+    };
+
+    let before = heartbeat_at().await;
+    assert_eq!(
+        server
+            .send("/api/v0/runs/heartbeat", beat.clone(), false)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(heartbeat_at().await, before, "recent activity: no write");
+
+    sqlx::query("UPDATE runs SET heartbeat_at = now() - interval '1 minute' WHERE id = $1")
+        .bind(id)
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    let stale = heartbeat_at().await;
+    assert_eq!(
+        server.send("/api/v0/runs/heartbeat", beat, false).await.0,
+        StatusCode::OK
+    );
+    assert!(heartbeat_at().await > stale, "stale heartbeat is refreshed");
+
+    let unknown = Heartbeat {
+        run_id: RunId::new().as_bytes().to_vec(),
+        client_time_ms: 0,
+    };
+    assert_eq!(
+        server
+            .send("/api/v0/runs/heartbeat", unknown, false)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
     server.stop().await;
 }

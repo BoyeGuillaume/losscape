@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use losscape_client::{FinishOutcome, Mode, Run, RunOptions, SyncStatus, sync};
 use losscape_core::proto::v0::RunExitState;
-use losscape_server::testing::TestServer;
+use losscape_server::testing::{PROJECT, TestServer};
 use serde_json::json;
 
 macro_rules! server {
@@ -23,7 +23,7 @@ fn online(server: &TestServer, root: &Path) -> RunOptions {
         server: server.url.clone(),
         api_key: server.api_key.clone(),
     };
-    RunOptions::new(mode, root, "e2e")
+    RunOptions::new(mode, root, PROJECT)
 }
 
 /// Logs `steps` steps of 4 metrics starting at `first`.
@@ -94,7 +94,7 @@ async fn online_run_uploads_everything_and_cleans_up() {
 async fn offline_run_is_uploaded_by_sync() {
     let server = server!();
     let root = tempfile::tempdir().unwrap();
-    let run = Run::start(RunOptions::new(Mode::Offline, root.path(), "e2e")).unwrap();
+    let run = Run::start(RunOptions::new(Mode::Offline, root.path(), PROJECT)).unwrap();
     let id = run.id().to_string();
     log_steps(&run, 0, 1_000);
     let (run, outcome) = finish(run, RunExitState::Finished, Duration::from_secs(5)).await;
@@ -125,17 +125,21 @@ async fn server_down_at_start_catches_up() {
         .local_addr()
         .unwrap();
     let root = tempfile::tempdir().unwrap();
+    // The key is made up front and registered when the server starts.
+    let api_key = losscape_server::auth::secrets::new_api_key().secret;
     let mode = Mode::Online {
         server: format!("http://{addr}"),
-        api_key: losscape_server::testing::API_KEY.into(),
+        api_key: api_key.clone(),
     };
-    let run = Run::start(RunOptions::new(mode, root.path(), "e2e")).unwrap();
+    let run = Run::start(RunOptions::new(mode, root.path(), PROJECT)).unwrap();
     let id = run.id().to_string();
     log_steps(&run, 0, 500);
     tokio::time::sleep(Duration::from_millis(700)).await;
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    let Some(server) = TestServer::start_on(listener).await else {
+    let Some(server) =
+        TestServer::start_with(listener, |_| Default::default(), Some(api_key)).await
+    else {
         return;
     };
     log_steps(&run, 500, 500);
@@ -204,7 +208,7 @@ async fn rejected_api_key_keeps_data_locally() {
         server: server.url.clone(),
         api_key: "wrong".into(),
     };
-    let run = Run::start(RunOptions::new(mode, root.path(), "e2e")).unwrap();
+    let run = Run::start(RunOptions::new(mode, root.path(), PROJECT)).unwrap();
     log_steps(&run, 0, 100);
     let (run, outcome) = finish(run, RunExitState::Finished, Duration::from_secs(10)).await;
     assert!(
