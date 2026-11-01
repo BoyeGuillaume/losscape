@@ -8,7 +8,8 @@ use axum::http::{Request, StatusCode, header};
 use losscape_core::PROTOCOL_HEADER;
 use losscape_core::ids::RunId;
 use losscape_core::proto::v0::{
-    Ack, Heartbeat, LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse, ScalarColumns,
+    Ack, ConsoleLine, ConsoleStream, Heartbeat, LogBatch, RunEnvironment, RunExitState, RunFinish,
+    RunInit, RunInitResponse, ScalarColumns,
 };
 use http_body_util::BodyExt;
 use prost::Message;
@@ -266,6 +267,134 @@ async fn resume_continues_after_stored_data() {
     server.stop().await;
 }
 
+fn console(lines: &[(u64, &str)]) -> Vec<ConsoleLine> {
+    lines
+        .iter()
+        .map(|&(line, text)| ConsoleLine {
+            line,
+            time_ms: 1_700_000_000_000 + line as i64,
+            stream: if text.contains("warn") {
+                ConsoleStream::Stderr
+            } else {
+                ConsoleStream::Stdout
+            } as i32,
+            text: text.into(),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn console_lines_are_replaced_and_read_from_the_end() {
+    let server = server!();
+    let run = RunId::new();
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    assert_eq!(server.create_project("test").await, StatusCode::CREATED);
+    let init = RunInit {
+        run_id: run.as_bytes().to_vec(),
+        project: "test".into(),
+        environment: Some(RunEnvironment {
+            hostname: "gpu-node-1".into(),
+            git_commit: "abc".into(),
+            details_json: r#"{"packages": ["torch==2.5.1"], "hostname": "ignored"}"#.into(),
+            git_diff: "diff --git a/train.py b/train.py\n+lr = 3e-4\n".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (status, body) = server.send("/api/v0/runs/init", init.clone(), false).await;
+    assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
+
+    let mut first = batch(run, 0, 0, 1);
+    first.console = console(&[
+        (0, "epoch 1"),
+        (1, "\x1b[31mERROR\x1b[0m: disk almost full"),
+        (2, "  0%|"),
+        (3, "warning: slow"),
+    ]);
+    server.log(first).await;
+    let mut second = batch(run, 1, 1, 1);
+    // The progress bar (line 2) is sent again; new lines follow.
+    second.console = console(&[(2, "100%|"), (4, "epoch 2"), (5, "done")]);
+    // System metrics use unix seconds as steps; resuming must ignore them.
+    second
+        .scalars
+        .as_mut()
+        .unwrap()
+        .keys
+        .push("system/cpu/util_pct".into());
+    let s = second.scalars.as_mut().unwrap();
+    s.key_idx.push(2);
+    s.step.push(1_700_000_000);
+    s.time_ms.push(1_700_000_000_000);
+    s.value.push(12.0);
+    server.log(second).await;
+
+    let texts = |logs: &serde_json::Value| -> Vec<(u64, String)> {
+        logs["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["line"].as_u64().unwrap(),
+                    l["text"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let (status, tail) = get_json(&server, &format!("/api/v0/runs/{id}/logs?tail=2")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tail["count"], 6);
+    assert_eq!(texts(&tail), [(4, "epoch 2".into()), (5, "done".into())]);
+
+    let (_, page) = get_json(&server, &format!("/api/v0/runs/{id}/logs?from=1&to=4")).await;
+    assert_eq!(
+        texts(&page),
+        [
+            (1, "\x1b[31mERROR\x1b[0m: disk almost full".into()),
+            (2, "100%|".into()),
+            (3, "warning: slow".into())
+        ],
+        "the redrawn line keeps only its last version"
+    );
+    assert_eq!(page["lines"][2]["stream"], "stderr");
+    assert_eq!(page["lines"][0]["ts_ms"], 1_700_000_000_001i64);
+
+    // Search ignores colors: "ERROR: disk" spans an escape sequence.
+    let (_, found) = get_json(&server, &format!("/api/v0/runs/{id}/logs?q=error:%20DISK")).await;
+    assert_eq!(texts(&found).iter().map(|l| l.0).collect::<Vec<_>>(), [1]);
+
+    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    assert_eq!(
+        detail["environment"]["hostname"], "gpu-node-1",
+        "details can't override"
+    );
+    assert_eq!(detail["environment"]["packages"][0], "torch==2.5.1");
+    assert_eq!(detail["environment"]["git"]["diff_bytes"], 44);
+    let req = Request::get(format!("/api/v0/runs/{id}/files/git.diff"))
+        .header(header::AUTHORIZATION, server.bearer())
+        .body(Body::empty())
+        .unwrap();
+    let (status, diff) = server.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&diff).contains("+lr = 3e-4"));
+
+    let resumed = RunInit {
+        resume: true,
+        ..init
+    };
+    let (_, body) = server.send("/api/v0/runs/init", resumed, false).await;
+    let resumed = RunInitResponse::decode(body).unwrap();
+    assert_eq!(resumed.next_console_line, 6);
+    assert_eq!(resumed.last_step, Some(1), "system metrics ignored");
+    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    assert_eq!(
+        detail["last_step"], 1,
+        "system metrics don't count as steps"
+    );
+    server.stop().await;
+}
+
 #[tokio::test]
 async fn rejects_bad_requests() {
     let server = server!();
@@ -388,6 +517,106 @@ async fn read_api_lists_projects_runs_and_metrics() {
     let (status, _) = get_json(&server, "/api/v0/projects/nope/runs").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    assert_eq!(runs[0]["aliases"], serde_json::json!([]));
+    assert_eq!(runs[0]["last_step"], 4999, "kept by ingest");
+
+    // Older runs get it from ClickHouse at startup.
+    sqlx::query("UPDATE runs SET last_step = NULL")
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    assert_eq!(
+        losscape_server::purge::backfill_last_step(&server.state)
+            .await
+            .unwrap(),
+        1
+    );
+    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    assert_eq!(runs[0]["last_step"], 4999);
+    assert!(runs[0]["start_ms"].as_i64().unwrap() > 0);
+
+    // Metrics of several runs at once; ids of other projects or unknown runs are ignored.
+    let req = Request::post("/api/v0/projects/test/metrics")
+        .header(header::AUTHORIZATION, server.bearer())
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({"runs": [id, RunId::new().to_string()]}).to_string(),
+        ))
+        .unwrap();
+    let (status, body) = server.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+    let metrics: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        metrics,
+        serde_json::json!([
+            {"run": uuid::Uuid::from_bytes(*run.as_bytes()).to_string(), "key": "acc", "points": 5000, "min_step": 0, "max_step": 4999},
+            {"run": uuid::Uuid::from_bytes(*run.as_bytes()).to_string(), "key": "loss", "points": 5000, "min_step": 0, "max_step": 4999},
+        ])
+    );
+
+    // Aliases: set, moved by setting them on another run, removed.
+    let alias = |method: &str, name: &str, run: Option<&str>| {
+        Request::builder()
+            .method(method)
+            .uri(format!("/api/v0/projects/test/aliases/{name}"))
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                run.map(|r| serde_json::json!({ "run": r }).to_string())
+                    .unwrap_or_default(),
+            ))
+            .unwrap()
+    };
+    let other = RunId::new();
+    server.init(other, false).await;
+    let other_id = uuid::Uuid::from_bytes(*other.as_bytes())
+        .simple()
+        .to_string();
+    for (run, expected) in [
+        (&id, StatusCode::NO_CONTENT),
+        (&other_id, StatusCode::NO_CONTENT),
+    ] {
+        assert_eq!(
+            server.call(alias("PUT", "best", Some(run))).await.0,
+            expected
+        );
+    }
+    assert_eq!(
+        server.call(alias("PUT", "@bad", Some(&id))).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        server
+            .call(alias("PUT", "best", Some(&RunId::new().to_string())))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    let aliases_of = |runs: &serde_json::Value, id: &str| {
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"].as_str().unwrap().replace('-', "") == id)
+            .unwrap()["aliases"]
+            .clone()
+    };
+    assert_eq!(aliases_of(&runs, &id), serde_json::json!([]), "moved");
+    assert_eq!(aliases_of(&runs, &other_id), serde_json::json!(["best"]));
+    let (status, target) = get_json(&server, "/api/v0/projects/test/aliases/best").await;
+    assert_eq!(
+        (status, target["run"].as_str().unwrap().replace('-', "")),
+        (StatusCode::OK, other_id.clone())
+    );
+    assert_eq!(
+        server.call(alias("DELETE", "best", None)).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        server.call(alias("DELETE", "best", None)).await.0,
+        StatusCode::NOT_FOUND
+    );
+
     let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
     assert_eq!(detail["tags"], serde_json::json!(["baseline"]));
     let metrics = detail["metrics"].as_array().unwrap();
@@ -443,7 +672,13 @@ async fn tiles_aggregate_buckets_and_skip_nan() {
     assert_eq!(acc.len(), 2, "level 12: 4096 steps per bucket");
     assert_eq!(acc[0]["n"], 4096);
 
-    // The web UI reads fixed 56-byte little-endian rows (web/src/charts/tiles.ts).
+    assert_eq!(
+        f(first, "t_mean"),
+        1_700_000_000_007.5,
+        "mean time of steps 0-15"
+    );
+
+    // The web UI reads fixed 64-byte little-endian rows (web/src/lib/charts/tiles.svelte.ts).
     let req = Request::post("/api/v0/series?format=rowbinary")
         .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/json")
@@ -454,13 +689,13 @@ async fn tiles_aggregate_buckets_and_skip_nan() {
         .unwrap();
     let (status, body) = server.call(req).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.len(), 313 * 56);
-    let row = &body[..56];
+    assert_eq!(body.len(), 313 * 64);
+    let row = &body[..64];
     let f64_at = |at: usize| f64::from_le_bytes(row[at..at + 8].try_into().unwrap());
     assert_eq!(u32::from_le_bytes(row[12..16].try_into().unwrap()), 15, "n");
     assert_eq!(
-        (f64_at(4), f64_at(16), f64_at(24), f64_at(48)),
-        (0.0, 1.0 / 16.0, 1.0, 1.0 / 16.0)
+        (f64_at(4), f64_at(16), f64_at(24), f64_at(48), f64_at(56)),
+        (0.0, 1.0 / 16.0, 1.0, 1.0 / 16.0, 1_700_000_000_007.5)
     );
     server.stop().await;
 }
@@ -472,7 +707,9 @@ async fn live_pushes_stored_points_and_state() {
     let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
     server.init(run, false).await;
 
-    let req = Request::get(format!("/api/v0/runs/{id}/live"))
+    let other = RunId::new();
+    server.init(other, false).await;
+    let req = Request::get(format!("/api/v0/projects/test/live?runs={id}"))
         .header(header::AUTHORIZATION, server.bearer())
         .body(Body::empty())
         .unwrap();
@@ -480,6 +717,7 @@ async fn live_pushes_stored_points_and_state() {
     assert_eq!(res.status(), StatusCode::OK);
     let mut body = res.into_body();
 
+    server.log(batch(other, 0, 100, 1)).await;
     server.log(batch(run, 0, 0, 3)).await;
     let finish = RunFinish {
         run_id: run.as_bytes().to_vec(),
@@ -501,7 +739,16 @@ async fn live_pushes_stored_points_and_state() {
     }
     assert!(text.contains("event: points"), "{text}");
     assert!(text.contains(r#""step":[0,0,1,1,2,2]"#), "{text}");
-    assert!(text.contains("data: finished"), "{text}");
+    assert!(text.contains(r#""time_ms":[1700000000000,"#), "{text}");
+    assert!(
+        !text.contains(r#""step":[100,100]"#),
+        "unwatched run: {text}"
+    );
+    let run_uuid = uuid::Uuid::from_bytes(*run.as_bytes());
+    assert!(
+        text.contains(&format!(r#"{{"run":"{run_uuid}","state":"finished"}}"#)),
+        "{text}"
+    );
     server.stop().await;
 }
 

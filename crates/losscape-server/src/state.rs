@@ -27,7 +27,7 @@ struct Inner {
     oauth: OAuthRuntime,
     ingest: IngestQueue,
     live: Arc<LiveHub>,
-    /// run id -> project id. Runs never change project, so entries never go stale.
+    /// run id -> project id. Runs never change project; entries go when runs are deleted.
     run_projects: RwLock<HashMap<Uuid, i64>>,
 }
 
@@ -94,6 +94,15 @@ impl AppState {
             .write()
             .expect("not poisoned")
             .insert(run_id, project_id);
+    }
+
+    /// Drops cached runs (deleted runs, or every run of a deleted project).
+    pub fn forget_runs(&self, gone: impl Fn(&Uuid, &i64) -> bool) {
+        self.0
+            .run_projects
+            .write()
+            .expect("not poisoned")
+            .retain(|run, project| !gone(run, project));
     }
 
     pub async fn project_of(&self, run_id: Uuid) -> Result<i64, ApiError> {

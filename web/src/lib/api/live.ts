@@ -1,36 +1,53 @@
-// Server-sent events from GET /api/v0/runs/{id}/live, read with fetch (EventSource can't
-// send the Authorization header). Reconnects after errors; `onReset` then tells the
-// caller that events may have been missed.
+// Server-sent events from GET /api/v0/projects/{project}/live?runs=..., read with fetch
+// (one stream for many runs). Reconnects after errors; `onReset` then tells the caller
+// that events may have been missed.
 
 import { apiFetch } from './client.js';
 
 export type LivePoints = {
+	run: string;
 	keys: string[];
 	key_idx: number[];
 	step: number[];
+	time_ms: number[];
 	value: (number | null)[];
 };
 
+/** Console lines, new or replacing an earlier version of the same line. */
+export type LogLine = { line: number; stream: 'stdout' | 'stderr'; ts_ms: number; text: string };
+export type LiveConsole = { run: string; lines: LogLine[] };
+
 export type LiveHandlers = {
-	onPoints: (points: LivePoints) => void;
-	onState: (state: string) => void;
+	onPoints?: (points: LivePoints) => void;
+	onConsole?: (console: LiveConsole) => void;
+	onState?: (run: string, state: string) => void;
 	onReset: () => void;
 };
 
-export function subscribeLive(runId: string, handlers: LiveHandlers): () => void {
+export function subscribeLive(
+	project: string,
+	runIds: string[],
+	handlers: LiveHandlers
+): () => void {
 	const controller = new AbortController();
 	let connected = false;
 
 	const dispatch = (event: string, data: string) => {
-		if (event === 'points') handlers.onPoints(JSON.parse(data) as LivePoints);
-		else if (event === 'state') handlers.onState(data);
-		else if (event === 'reset') handlers.onReset();
+		if (event === 'points') handlers.onPoints?.(JSON.parse(data) as LivePoints);
+		else if (event === 'console') handlers.onConsole?.(JSON.parse(data) as LiveConsole);
+		else if (event === 'state') {
+			const { run, state } = JSON.parse(data) as { run: string; state: string };
+			handlers.onState?.(run, state);
+		} else if (event === 'reset') handlers.onReset();
 	};
 
 	const connect = async () => {
 		while (!controller.signal.aborted) {
 			try {
-				const res = await apiFetch(`/runs/${runId}/live`, { signal: controller.signal });
+				const query = new URLSearchParams({ runs: runIds.join(',') });
+				const res = await apiFetch(`/projects/${encodeURIComponent(project)}/live?${query}`, {
+					signal: controller.signal
+				});
 				if (connected) handlers.onReset();
 				connected = true;
 				const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();

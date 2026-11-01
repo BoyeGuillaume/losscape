@@ -9,6 +9,7 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use base64::Engine;
 use sha2::{Digest, Sha256};
+use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{account, avatar, members, oauth};
@@ -25,14 +26,38 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/ingest", post(ingest::ingest))
         // Web UI (JSON, binary tiles, SSE)
         .route("/projects", get(read::projects).post(projects::create))
+        .route(
+            "/projects/{project}",
+            get(projects::project_info)
+                .patch(projects::update_project)
+                .delete(projects::delete_project),
+        )
+        .route("/projects/{project}/transfer", post(members::transfer))
+        .route(
+            "/projects/{project}/runs/archive",
+            post(projects::archive_runs),
+        )
+        .route(
+            "/projects/{project}/runs/restore",
+            post(projects::restore_runs),
+        )
         .route("/projects/{project}/runs", get(read::project_runs))
         .route("/projects/{project}/members", get(members::list))
         .route(
             "/projects/{project}/members/{username}",
             put(members::set_role).delete(members::remove),
         )
+        .route("/projects/{project}/metrics", post(read::project_metrics))
+        .route("/projects/{project}/live", get(live::live))
+        .route(
+            "/projects/{project}/aliases/{alias}",
+            get(projects::get_alias)
+                .put(projects::set_alias)
+                .delete(projects::remove_alias),
+        )
         .route("/runs/{run}", get(read::run_detail))
-        .route("/runs/{run}/live", get(live::live))
+        .route("/runs/{run}/logs", get(read::run_logs))
+        .route("/runs/{run}/files/{name}", get(read::run_file))
         .route("/series", post(read::series))
         .route("/auth/me", get(account::me))
         .route("/me", patch(account::update_profile))
@@ -75,9 +100,12 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         router = router.fallback_service(app);
     }
     let policy = Arc::new(Policy::new(web_dir));
-    router.layer(middleware::map_response(move |response| {
-        security_headers(response, policy.current())
-    }))
+    router
+        .layer(middleware::map_response(move |response| {
+            security_headers(response, policy.current())
+        }))
+        // Run lists and tiles shrink ~10x; event streams and small bodies are left alone.
+        .layer(CompressionLayer::new())
 }
 
 /// The Content-Security-Policy, recomputed when the built app's `index.html` changes (its

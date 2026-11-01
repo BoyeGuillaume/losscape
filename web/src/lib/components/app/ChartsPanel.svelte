@@ -1,0 +1,312 @@
+<script lang="ts">
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import Search from '@lucide/svelte/icons/search';
+	import { ChartGroup } from 'layerchart';
+	import { untrack } from 'svelte';
+
+	import { apiJson } from '#lib/api/client.js';
+	import { subscribeLive } from '#lib/api/live.js';
+	import type { RunMetricInfo } from '#lib/api/types.js';
+	import {
+		xLabel,
+		type ChartOverride,
+		type ChartSeries,
+		type ChartSettings,
+		type XAxis
+	} from '#lib/charts/settings.js';
+	import { tileStore } from '#lib/charts/tiles.svelte.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import * as Select from '#lib/components/ui/select/index.js';
+	import { Toggle } from '#lib/components/ui/toggle/index.js';
+	import MetricChart from './MetricChart.svelte';
+
+	type Extent = { min: number; max: number };
+
+	const SYSTEM_PREFIX = 'system/';
+
+	let {
+		project,
+		series,
+		running,
+		settings = $bindable(),
+		metricFilter = $bindable(''),
+		view = $bindable(null),
+		overrides = $bindable({}),
+		onRunState,
+		prefix,
+		empty = 'No metrics logged yet.'
+	}: {
+		project: string;
+		/** Lines to draw (runs, or groups of runs), in legend order. */
+		series: ChartSeries[];
+		/** Ids of drawn runs that are still running (followed live). */
+		running: string[];
+		settings: ChartSettings;
+		/** Regular expression (or plain text) on metric names. */
+		metricFilter?: string;
+		view?: [number, number] | null;
+		/** Settings changed for single charts, by metric. */
+		overrides?: Record<string, ChartOverride>;
+		/** A followed run changed state. */
+		onRunState?: (run: string) => void;
+		/** Only metrics under this prefix (e.g. `system/`), sectioned by what follows it.
+		 * Without it, system metrics are left out. */
+		prefix?: string;
+		/** Shown when the runs have no metrics. */
+		empty?: string;
+	} = $props();
+
+	const sep = '\u0000';
+	const ids = $derived([...new Set(series.flatMap((s) => s.runs.map((r) => r.id)))]);
+	const grouped = $derived(series.some((s) => s.runs.length > 1));
+	const idsKey = $derived(ids.join(','));
+	const runningKey = $derived(running.join(','));
+
+	// Metric step ranges per run, from the server; kept while a new list loads so charts
+	// don't flash when a run is added.
+	let stored = $state<Map<string, Extent>>(new Map());
+	let loaded = $state(false);
+	let generation = 0;
+	async function loadMetrics() {
+		const gen = ++generation;
+		const list = untrack(() => ids);
+		const rows = list.length
+			? await apiJson<RunMetricInfo[]>(`/projects/${encodeURIComponent(project)}/metrics`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ runs: list })
+				})
+			: [];
+		if (gen !== generation) return;
+		stored = new Map(
+			rows.map((m) => [m.run + sep + m.key, { min: m.min_step, max: m.max_step }])
+		);
+		loaded = true;
+	}
+	$effect(() => {
+		void idsKey;
+		void project;
+		loadMetrics().catch((err) => console.warn('losscape: loading metrics failed', err));
+	});
+	// New metrics of running runs show up without a reload.
+	$effect(() => {
+		if (!runningKey) return;
+		const timer = setInterval(() => void loadMetrics().catch(() => {}), 15_000);
+		return () => clearInterval(timer);
+	});
+
+	// Live points: folded into cached tiles, and extend the step ranges.
+	let live = $state<Map<string, Extent>>(new Map());
+	$effect(() => {
+		if (!runningKey) return;
+		const followed = runningKey.split(',');
+		return subscribeLive(project, followed, {
+			onPoints: (p) => {
+				// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copied, filled, then assigned once
+				const next = new Map(live);
+				for (let i = 0; i < p.step.length; i++) {
+					const key = p.keys[p.key_idx[i]];
+					const step = p.step[i];
+					tileStore.addLivePoint(p.run, key, step, p.value[i] ?? NaN, p.time_ms[i]);
+					const id = p.run + sep + key;
+					const e = next.get(id);
+					next.set(id, {
+						min: Math.min(e?.min ?? step, step),
+						max: Math.max(e?.max ?? step, step)
+					});
+				}
+				live = next;
+			},
+			onState: (run) => onRunState?.(run),
+			onReset: () => {
+				for (const run of followed) tileStore.invalidate(run);
+				void loadMetrics().catch(() => {});
+			}
+		});
+	});
+
+	function extentOf(run: string, key: string): Extent | undefined {
+		const id = run + sep + key;
+		const [a, b] = [stored.get(id), live.get(id)];
+		if (!a || !b) return a ?? b;
+		return { min: Math.min(a.min, b.min), max: Math.max(a.max, b.max) };
+	}
+
+	const keys = $derived(
+		[...new Set([...stored.keys(), ...live.keys()].map((id) => id.slice(id.indexOf(sep) + 1)))]
+			.filter((key) => (prefix ? key.startsWith(prefix) : !key.startsWith(SYSTEM_PREFIX)))
+			.sort()
+	);
+
+	/** The filter as a case-insensitive regular expression, or plain text if it isn't one. */
+	const metricMatch = $derived.by(() => {
+		const q = metricFilter.trim();
+		if (!q) return () => true;
+		try {
+			const re = new RegExp(q, 'i');
+			return (key: string) => re.test(key);
+		} catch {
+			return (key: string) => key.toLowerCase().includes(q.toLowerCase());
+		}
+	});
+
+	let collapsed = $state<Record<string, boolean>>({});
+
+	/** Charts grouped by the metric name's prefix: `train/loss` goes to "train". */
+	const sections = $derived.by(() => {
+		const groups: Record<string, string[]> = {};
+		for (const key of keys) {
+			const name = prefix ? key.slice(prefix.length) : key;
+			if (!metricMatch(name)) continue;
+			const section = name.includes('/') ? name.slice(0, name.indexOf('/')) : '';
+			(groups[section] ??= []).push(key);
+		}
+		return Object.entries(groups).sort(([a], [b]) =>
+			a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)
+		);
+	});
+
+	const xOptions = $derived<XAxis[]>([
+		'step',
+		'time',
+		'relative',
+		...keys.map((k): XAxis => `metric:${k}`)
+	]);
+
+	function setOverride(key: string, override: ChartOverride | null) {
+		const next = { ...overrides };
+		if (override) next[key] = override;
+		else delete next[key];
+		overrides = next;
+	}
+
+	function setX(x: string) {
+		settings = { ...settings, x: x as XAxis };
+		view = null;
+	}
+</script>
+
+<div class="mb-4 flex flex-wrap items-center gap-2">
+	<div class="relative w-full sm:w-64">
+		<Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+		<Input
+			class="pl-8"
+			placeholder="Metrics (regex)"
+			aria-label="Filter metrics"
+			bind:value={metricFilter}
+		/>
+	</div>
+	<Select.Root type="single" value={settings.x} onValueChange={setX}>
+		<Select.Trigger size="sm" class="w-44" aria-label="X axis">
+			<span class="truncate"
+				><span class="text-muted-foreground">X</span> {xLabel(settings.x)}</span
+			>
+		</Select.Trigger>
+		<Select.Content>
+			{#each xOptions as x (x)}
+				<Select.Item value={x} label={xLabel(x)} />
+			{/each}
+		</Select.Content>
+	</Select.Root>
+	<label class="flex h-8 items-center gap-2 rounded-md border px-2.5 text-sm">
+		<span class="text-muted-foreground">Smoothing</span>
+		<input
+			type="range"
+			min="0"
+			max="0.99"
+			step="0.01"
+			class="w-24 accent-primary"
+			value={settings.smoothing}
+			oninput={(e) => (settings = { ...settings, smoothing: Number(e.currentTarget.value) })}
+		/>
+		<span class="w-8 text-right font-mono text-xs tabular-nums"
+			>{settings.smoothing.toFixed(2)}</span
+		>
+	</label>
+	<Toggle
+		size="sm"
+		variant="outline"
+		pressed={settings.logY}
+		onPressedChange={(logY) => (settings = { ...settings, logY })}
+	>
+		Log y
+	</Toggle>
+	<Toggle
+		size="sm"
+		variant="outline"
+		pressed={settings.band}
+		onPressedChange={(band) => (settings = { ...settings, band })}
+		title="Min/max of downsampled points"
+	>
+		Range band
+	</Toggle>
+	{#if grouped}
+		<Select.Root
+			type="single"
+			value={settings.spread}
+			onValueChange={(v) =>
+				(settings = { ...settings, spread: v as ChartSettings['spread'] })}
+		>
+			<Select.Trigger size="sm" class="w-40" aria-label="Group band">
+				<span class="text-muted-foreground">Groups</span>
+				{settings.spread === 'std' ? 'mean ± std' : 'min – max'}
+			</Select.Trigger>
+			<Select.Content>
+				<Select.Item value="std" label="mean ± std" />
+				<Select.Item value="range" label="min – max" />
+			</Select.Content>
+		</Select.Root>
+	{/if}
+	{#if view}
+		<Button variant="ghost" size="sm" onclick={() => (view = null)}>
+			<RotateCcw /> Reset zoom
+		</Button>
+	{/if}
+</div>
+
+{#if series.length === 0}
+	<p class="text-sm text-muted-foreground">Select runs to chart them.</p>
+{:else if loaded && sections.length === 0}
+	<p class="text-sm text-muted-foreground">
+		{keys.length ? 'No metric matches.' : empty}
+	</p>
+{/if}
+
+<!-- Hovering one chart marks the same x on all of them; zoom is shared through `view`. -->
+<ChartGroup brush={false} domain={false}>
+	<div class="grid gap-6">
+		{#each sections as [section, sectionKeys] (section)}
+			{@const open = !collapsed[section]}
+			<section>
+				<button
+					class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+					onclick={() => (collapsed[section] = open)}
+					aria-expanded={open}
+				>
+					<ChevronRight class={['size-4 transition-transform', open && 'rotate-90']} />
+					{section || 'Charts'}
+					<span class="text-xs tabular-nums">{sectionKeys.length}</span>
+				</button>
+				{#if open}
+					<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+						{#each sectionKeys as key (key)}
+							<MetricChart
+								{series}
+								metric={key}
+								title={prefix ? key.slice(prefix.length) : key}
+								{extentOf}
+								{settings}
+								override={overrides[key]}
+								onOverride={(o) => setOverride(key, o)}
+								{xOptions}
+								bind:view
+							/>
+						{/each}
+					</div>
+				{/if}
+			</section>
+		{/each}
+	</div>
+</ChartGroup>

@@ -5,11 +5,18 @@ use clickhouse::Client;
 use crate::config::ClickHouseConfig;
 
 /// (version, name, sql), applied in order and recorded in `schema_migrations`.
-const MIGRATIONS: &[(u32, &str, &str)] = &[(
-    1,
-    "metrics",
-    include_str!("../migrations/clickhouse/0001_metrics.sql"),
-)];
+const MIGRATIONS: &[(u32, &str, &str)] = &[
+    (
+        1,
+        "metrics",
+        include_str!("../migrations/clickhouse/0001_metrics.sql"),
+    ),
+    (
+        2,
+        "console",
+        include_str!("../migrations/clickhouse/0002_console.sql"),
+    ),
+];
 
 pub async fn connect_and_migrate(
     config: &ClickHouseConfig,

@@ -4,7 +4,7 @@ mod flusher;
 pub mod window;
 
 use axum::extract::State;
-use losscape_core::proto::v0::{Ack, LogBatch, ScalarColumns};
+use losscape_core::proto::v0::{Ack, ConsoleLine, ConsoleStream, LogBatch, ScalarColumns};
 use uuid::Uuid;
 
 pub use flusher::{IngestQueue, spawn_flusher};
@@ -16,6 +16,9 @@ use crate::state::AppState;
 
 const MAX_KEY_LEN: usize = 256;
 const MAX_KEYS_PER_BATCH: usize = 10_000;
+const MAX_CONSOLE_LINES_PER_BATCH: usize = 100_000;
+/// Longer console lines are cut (the client already cuts at 16 KB).
+const MAX_CONSOLE_LINE_BYTES: usize = 64 * 1024;
 
 /// A validated batch waiting to be written.
 #[derive(Debug)]
@@ -27,11 +30,13 @@ pub struct Batch {
     pub scalars: ScalarColumns,
     pub summary_json: Option<String>,
     pub config_json: Option<String>,
+    pub console: Vec<ConsoleLine>,
 }
 
 impl Batch {
+    /// Points and console lines: what a flush writes.
     pub fn rows(&self) -> usize {
-        self.scalars.value.len()
+        self.scalars.value.len() + self.console.len()
     }
 }
 
@@ -45,6 +50,7 @@ pub async fn ingest(
     validate_scalars(&scalars)?;
     let summary_json = json_object_or_none(batch.summary_json, "summary_json")?;
     let config_json = json_object_or_none(batch.config_json, "config_json")?;
+    let console = validate_console(batch.console)?;
     let project_id = auth::require_run(&state, &user, run_id, Role::Editor).await?;
 
     let duplicate = state
@@ -57,6 +63,7 @@ pub async fn ingest(
             scalars,
             summary_json,
             config_json,
+            console,
         })
         .await?;
 
@@ -100,6 +107,29 @@ fn validate_scalars(s: &ScalarColumns) -> Result<(), ApiError> {
         return Err(ApiError::invalid("scalars: key_idx out of range"));
     }
     Ok(())
+}
+
+fn validate_console(mut lines: Vec<ConsoleLine>) -> Result<Vec<ConsoleLine>, ApiError> {
+    if lines.len() > MAX_CONSOLE_LINES_PER_BATCH {
+        return Err(ApiError::invalid(format!(
+            "console: at most {MAX_CONSOLE_LINES_PER_BATCH} lines per batch"
+        )));
+    }
+    for line in &mut lines {
+        if !matches!(line.stream(), ConsoleStream::Stdout | ConsoleStream::Stderr) {
+            return Err(ApiError::invalid(
+                "console: stream must be stdout or stderr",
+            ));
+        }
+        if line.text.len() > MAX_CONSOLE_LINE_BYTES {
+            let mut end = MAX_CONSOLE_LINE_BYTES;
+            while !line.text.is_char_boundary(end) {
+                end -= 1;
+            }
+            line.text.truncate(end);
+        }
+    }
+    Ok(lines)
 }
 
 /// Empty string means "nothing to merge"; anything else must be a JSON object.
@@ -150,6 +180,20 @@ mod tests {
         let mut c = columns(1);
         c.keys[0] = String::new();
         assert!(validate_scalars(&c).is_err());
+    }
+
+    #[test]
+    fn console_lines_are_checked_and_cut() {
+        let line = |stream: ConsoleStream, text: String| ConsoleLine {
+            line: 0,
+            time_ms: 0,
+            stream: stream as i32,
+            text,
+        };
+        let long = "é".repeat(MAX_CONSOLE_LINE_BYTES);
+        let lines = validate_console(vec![line(ConsoleStream::Stderr, long)]).unwrap();
+        assert!(lines[0].text.len() <= MAX_CONSOLE_LINE_BYTES);
+        assert!(validate_console(vec![line(ConsoleStream::Unspecified, "x".into())]).is_err());
     }
 
     #[test]

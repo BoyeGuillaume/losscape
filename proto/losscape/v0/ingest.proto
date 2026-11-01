@@ -42,6 +42,11 @@ message RunEnvironment {
   string git_remote = 5;
   string git_commit = 6;
   bool git_dirty = 7;
+  // Everything else, as a JSON object: OS, CPUs, memory, GPUs and driver, Slurm job,
+  // container, installed packages, selected environment variables (secrets hidden).
+  string details_json = 8;
+  // `git diff HEAD` (uncommitted changes), truncated to 2 MB.
+  string git_diff = 9;
 }
 
 message RunInitResponse {
@@ -52,6 +57,8 @@ message RunInitResponse {
   uint64 next_seq = 4;
   // Highest step already stored, so a resumed run can continue from there.
   optional uint64 last_step = 5;
+  // Next console line number, so a resumed run appends after its earlier output.
+  uint64 next_console_line = 6;
 }
 
 // Scalar points in columnar form. All columns have the same length; row i is
@@ -76,6 +83,23 @@ message LogBatch {
   // again. Lets the server close gaps in its dedup window (e.g. after losing recent
   // window updates in a database crash). 0 = unknown.
   uint64 confirmed_below = 6;
+  // Console output (stdout/stderr) since the last batch.
+  repeated ConsoleLine console = 7;
+}
+
+enum ConsoleStream {
+  CONSOLE_STREAM_UNSPECIFIED = 0;
+  CONSOLE_STREAM_STDOUT = 1;
+  CONSOLE_STREAM_STDERR = 2;
+}
+
+// One line of console output. Lines are numbered per run from 0; a line sent again
+// (a progress bar being redrawn) replaces the earlier version.
+message ConsoleLine {
+  uint64 line = 1;
+  int64 time_ms = 2;       // unix epoch ms, client clock
+  ConsoleStream stream = 3;
+  string text = 4;         // without the newline; ANSI color codes (SGR) kept
 }
 
 message Heartbeat {

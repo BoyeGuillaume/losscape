@@ -41,10 +41,10 @@ pub async fn init(
     let config: Value = json_object_or_none(req.config_json, "config_json")?
         .map(|raw| serde_json::from_str(&raw).expect("validated"))
         .unwrap_or_else(|| json!({}));
-    let environment = req
-        .environment
-        .map(environment_json)
-        .unwrap_or_else(|| json!({}));
+    let (environment, git_diff) = match req.environment {
+        Some(env) => environment_json(env)?,
+        None => (json!({}), String::new()),
+    };
     let group = Some(req.group.trim()).filter(|g| !g.is_empty());
 
     let mut tx = state.pg().begin().await?;
@@ -91,6 +91,15 @@ pub async fn init(
         == 1;
 
     if created {
+        if !git_diff.is_empty() {
+            sqlx::query(
+                "INSERT INTO run_files (run_id, name, content) VALUES ($1, 'git.diff', $2)",
+            )
+            .bind(run_id)
+            .bind(git_diff.as_bytes())
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         state.remember_run(run_id, project_id);
         return Ok(Proto(RunInitResponse {
@@ -99,6 +108,7 @@ pub async fn init(
             name,
             next_seq: 0,
             last_step: None,
+            next_console_line: 0,
         }));
     }
 
@@ -125,7 +135,7 @@ pub async fn init(
     }
     sqlx::query(
         "UPDATE runs SET state = 'running', heartbeat_at = now(), finished_at = NULL,
-                         exit_code = NULL, config = config || $2
+                         exit_code = NULL, archived_at = NULL, config = config || $2
          WHERE id = $1",
     )
     .bind(run_id)
@@ -141,6 +151,7 @@ pub async fn init(
         name: existing_name,
         next_seq: SeqWindow::from_db(next_seq, &pending).resume_seq(),
         last_step: last_step(&state, project_id, run_id).await?,
+        next_console_line: next_console_line(&state, project_id, run_id).await?,
     }))
 }
 
@@ -233,8 +244,9 @@ async fn last_step(
     let range: StepRange = state
         .ch()
         .query(
+            // System metrics are left out: their step is the unix time.
             "SELECT count() AS points, max(step) AS max_step FROM metrics
-             WHERE project_id = ? AND run_id = toUUID(?)",
+             WHERE project_id = ? AND run_id = toUUID(?) AND NOT startsWith(key, 'system/')",
         )
         .bind(project_id as u64)
         .bind(run_id.to_string())
@@ -243,9 +255,23 @@ async fn last_step(
     Ok((range.points > 0).then_some(range.max_step))
 }
 
-/// Creates the project on first use. `DO NOTHING` + lookup instead of `DO UPDATE`, which
-/// row-locks the project and serialized every concurrent init in it.
-/// The project's id, and whether this call created it.
+async fn next_console_line(
+    state: &AppState,
+    project_id: i64,
+    run_id: Uuid,
+) -> Result<u64, ApiError> {
+    Ok(state
+        .ch()
+        .query(
+            "SELECT if(count() = 0, 0, max(line) + 1) FROM console_lines
+             WHERE project_id = ? AND run_id = toUUID(?)",
+        )
+        .bind(project_id as u64)
+        .bind(run_id.to_string())
+        .fetch_one::<u64>()
+        .await?)
+}
+
 fn validate_tags(tags: &[String]) -> Result<(), ApiError> {
     if tags.len() > MAX_TAGS {
         return Err(ApiError::invalid(format!("tags: at most {MAX_TAGS}")));
@@ -258,14 +284,48 @@ fn validate_tags(tags: &[String]) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn environment_json(env: RunEnvironment) -> Value {
-    json!({
+/// Largest `details_json` accepted, and largest git diff stored.
+const MAX_DETAILS_BYTES: usize = 1 << 20;
+const MAX_GIT_DIFF_BYTES: usize = 2 << 20;
+
+/// The environment as stored on the run (details merged in), and the git diff, which is
+/// kept as a run file instead (it can be large).
+fn environment_json(env: RunEnvironment) -> Result<(Value, String), ApiError> {
+    let mut out = json!({
         "hostname": env.hostname,
         "command": env.command,
         "python_version": env.python_version,
         "sdk_version": env.sdk_version,
-        "git": {"remote": env.git_remote, "commit": env.git_commit, "dirty": env.git_dirty},
-    })
+        "git": {
+            "remote": env.git_remote,
+            "commit": env.git_commit,
+            "dirty": env.git_dirty,
+            "diff_bytes": env.git_diff.len(),
+        },
+    });
+    if env.details_json.len() > MAX_DETAILS_BYTES {
+        return Err(ApiError::invalid("environment.details_json: at most 1 MB"));
+    }
+    if let Some(raw) = json_object_or_none(env.details_json, "environment.details_json")? {
+        let Value::Object(details) = serde_json::from_str(&raw).expect("validated") else {
+            unreachable!("validated as an object")
+        };
+        let target = out.as_object_mut().expect("object");
+        for (key, value) in details {
+            // The fields above win over details with the same name.
+            target.entry(key).or_insert(value);
+        }
+    }
+    let mut diff = env.git_diff;
+    if diff.len() > MAX_GIT_DIFF_BYTES {
+        let mut end = MAX_GIT_DIFF_BYTES;
+        while !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        diff.truncate(end);
+        diff.push_str("\n[truncated]\n");
+    }
+    Ok((out, diff))
 }
 
 #[cfg(test)]

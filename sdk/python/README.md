@@ -27,6 +27,12 @@ so `losscape sync` uploads it once the project is created.
 - Killed process, server down, offline mode: the data stays in the local log.
   `losscape sync` uploads it. At most ~100 ms of logging is lost on `kill -9`.
 
+Also recorded with every run: console output (what the process and its subprocesses
+print, progress bars kept as one line), system metrics, and the environment (git commit
+and uncommitted diff, packages, OS, CPU, GPUs and driver, Slurm job, container). Values
+that look like secrets are hidden: config strings under names like `api_key` or
+`hf_token`, and strings shaped like known tokens.
+
 ## Settings
 
 | Argument | Environment | Default |
@@ -36,6 +42,9 @@ so `losscape sync` uploads it once the project is created.
 | `dir` | `LOSSCAPE_DIR` | `./.losscape` |
 | `server` | `LOSSCAPE_SERVER` | `http://localhost:8080` |
 | `api_key` | `LOSSCAPE_API_KEY` | required online: create one in the web UI, Settings > API keys |
+| `console` | `LOSSCAPE_CONSOLE` | on: stdout and stderr are recorded (off on Windows and in Jupyter) |
+| `system_metrics` | `LOSSCAPE_SYSTEM_METRICS` | on: CPU, memory, disk, network, NVIDIA GPUs |
+| | `LOSSCAPE_SYSTEM_INTERVAL` | 5 s |
 | `finish(timeout=)` | `LOSSCAPE_FINISH_TIMEOUT` | 60 s |
 | | `LOSSCAPE_SILENT=1` | print nothing |
 

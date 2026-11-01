@@ -107,10 +107,10 @@ Targets to aim for, not measurements.
 - **P2** Fork or rewind a run from step N.
 
 ### Captured automatically
-- **P0** Git commit + diff of uncommitted changes, command line, Python environment (`pip freeze` or `uv.lock`), CUDA version, driver, GPU model, hostname, Slurm job ID, container image.
-- **P0** System metrics: NVIDIA GPU usage, memory, power, temperature (NVML); CPU, RAM, disk, network.
-- **P0** stdout and stderr, processed so `\r` progress bars display correctly (see Design 3).
-- **P0** Values that look like secrets (`*KEY*`, `*TOKEN*`, `*SECRET*`) are hidden in captured environment variables and configs.
+- **P0 (done)** Git commit + diff of uncommitted changes, command line, Python environment (`pip freeze` or `uv.lock`), CUDA version, driver, GPU model, hostname, Slurm job ID, container image. (Packages come from `*.dist-info` names on `sys.path`; the diff is stored as a run file, up to 2 MB; the container image is known for Apptainer, privileged Podman, or `LOSSCAPE_CONTAINER_IMAGE`.)
+- **P0 (done)** System metrics: NVIDIA GPU usage, memory, power, temperature (NVML); CPU, RAM, disk, network. Logged as `system/...` metrics every 5 s (step = unix seconds), kept out of the summary.
+- **P0 (done)** stdout and stderr, processed so `\r` progress bars display correctly (see Design 3). Captured at the file-descriptor level (C extensions, subprocesses), through a pseudo-terminal when the output was one; off on Windows and in Jupyter for now; 100 MB per run.
+- **P0 (done)** Values that look like secrets (`*KEY*`, `*TOKEN*`, `*SECRET*`) are hidden in captured environment variables and configs (whole words in the name, so `max_tokens` is kept; also strings shaped like known tokens).
 - **P1** AMD (ROCm) and Apple Silicon GPU metrics.
 
 ### Packaging
@@ -123,9 +123,9 @@ Targets to aim for, not measurements.
 ### Runs
 - **P0** Projects, runs, groups (e.g. seeds of the same config), notes.
 - **P0** **Tags**: many per run.
-- **P0** **Aliases**: a name unique within a project that points to exactly one run (e.g. `baseline`, `best`). Setting it on another run moves it. Usable everywhere: `api.run("proj/@baseline")`, URLs, chart filters.
+- **P0 (partly done)** **Aliases**: a name unique within a project that points to exactly one run (e.g. `baseline`, `best`). Setting it on another run moves it. Usable everywhere: `api.run("proj/@baseline")`, URLs, chart filters. Done: set and remove on the run page, `/p/<project>/r/@best`, `alias:best` in filters. To do: `api.run`.
 - **P0** Run states (running, finished, crashed, killed) with crash detection through heartbeats. Crashed runs show exit code and last log lines.
-- **P1** Bulk actions: tag, alias, move, archive, delete with a trash bin.
+- **P1 (partly done)** Bulk actions: tag, alias, move, archive, delete with a trash bin. Done: archive (the trash bin: hidden, restorable, deleted for good after a per-project number of days, 30 by default) and chart selected. To do: tag, alias, move.
 
 ### Overview page, configurable from the UI (P0, main feature)
 - A grid of widgets you can drag and resize: runs table, line charts, scatter and bar charts of summary values, parallel coordinates, leaderboard, config diff, markdown.
@@ -133,30 +133,30 @@ Targets to aim for, not measurements.
 - **Saved views:** multiple layouts per project, each with a shareable URL. Layouts are stored as versioned JSON in Postgres.
 
 ### Runs table
-- **P0** Any config or summary value as a column; sort, group, pin columns.
-- **P0** Filter syntax, e.g. `config.lr < 1e-3 and tag:baseline and state:finished and alias:best`.
-- **P0** Virtualized rendering for 100k rows.
+- **P0 (done)** Any config or summary value as a column; sort, group, pin columns. (Group rows by a run field or config value; group headers show column means.)
+- **P0 (done)** Filter syntax, e.g. `config.lr < 1e-3 and tag:baseline and state:finished and alias:best` (also `or`, `not`, parentheses, `~` regex, bare-word search; `web/src/lib/filter.ts`).
+- **P0 (done)** Virtualized rendering for 100k rows (only visible rows are in the DOM; 20k runs load in < 1 s, filter in ~250 ms).
 
 ### Line charts
-- **P0** Every metric's chart is configurable: x-axis, smoothing (EMA, time-weighted EMA, running average), log scale, range, aggregation (mean, min/max band, last).
+- **P0 (partly done)** Every metric's chart is configurable: x-axis, smoothing (EMA, time-weighted EMA, running average), log scale, range, aggregation (mean, min/max band, last). Done, for the page and per chart: x-axis (step, wall time, relative time, any metric), EMA weighted by points per bucket, log y, min/max band. To do: other smoothers, range, `last` aggregation.
 - **P0** Downsampled when large, with a min/max band so spikes stay visible.
 - **P0** Incremental updates: zoom, pan and live data never re-fetch everything (see Design 1).
-- **P0** Pick metrics by regex; synced zoom and cursor across charts; tooltips sorted by value.
-- **P0** Live updates: new points and new runs appear without a reload.
+- **P0 (done)** Pick metrics by regex; synced zoom and cursor across charts; tooltips sorted by value.
+- **P0 (done)** Live updates: new points and new runs appear without a reload (one SSE stream per page for all its running runs; the run list is polled).
 
 ### Comparing
-- **P0** Overlay any set of runs on one chart.
-- **P0** Plot metric A against metric B.
+- **P0 (done)** Overlay any set of runs on one chart (tick runs in the table; up to 40).
+- **P0 (done)** Plot metric A against metric B (pairs the two metrics' buckets at the same steps).
 - **P0** Side-by-side charts with linked axes.
 - **P0** "Relative to baseline" mode: plot run − `@baseline`.
-- **P1** Group runs by any key and show mean ± std or min–max bands across seeds.
+- **P1 (done)** Group runs by any key and show mean ± std or min–max bands across seeds.
 - **P1** Config diff highlighting only the keys that differ; code diff; environment diff.
 
 ### Other views
-- **P0** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info.
-- **P0** The whole view state lives in the URL, so a link opens exactly the same view.
-- **P0** Dark mode.
-- **P1** Workspace with charts created automatically from logged keys, in sections by prefix (`train/`, `val/`).
+- **P0 (partly done)** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info. Done except files (artifacts).
+- **P0 (done)** The whole view state lives in the URL, so a link opens exactly the same view (filter, sort, columns, pins, charted runs, chart settings, metric regex, zoom).
+- **P0 (done)** Dark mode.
+- **P1 (done)** Workspace with charts created automatically from logged keys, in sections by prefix (`train/`, `val/`).
 - **P1** Other chart types: scatter, parallel coordinates, hyperparameter importance, histograms over time, media with a step slider, tables, markdown.
 - **P1** Command palette (Cmd+K), keyboard shortcuts, export charts as PNG/SVG/CSV.
 - **P1** Mobile layout good enough to check a run from your phone.
@@ -225,7 +225,7 @@ Targets to aim for, not measurements.
 - **P0 (done)** Accounts with username + password: Argon2id (OWASP parameters, random salt per hash), constant-response sign-in, rate-limited failures. The first account is administrator.
 - **P0 (done)** Browser sessions in an `HttpOnly`, `SameSite=Lax` (`Secure` on HTTPS) cookie, stored hashed; cross-site state-changing requests refused (`Sec-Fetch-Site` / `Origin`).
 - **P0 (done)** Per-user API keys for the SDK: shown once, stored as SHA-256, revocable, last-use shown.
-- **P0 (done)** Project roles: owner (manages members), editor (logs runs), viewer (reads). Checked on the server for every request; non-members get 404 so ids reveal nothing. A project always keeps an owner. Projects are created explicitly in the UI (`POST /projects`, the creator becomes owner); `runs/init` on an unknown project is refused (404 `unknown_project`), so a typo in `project=` never starts a new project.
+- **P0 (done)** Project roles: owner (manages members), editor (logs runs), viewer (reads). Checked on the server for every request; non-members get 404 so ids reveal nothing. A project has exactly one owner (a unique index); ownership moves only by transfer in the project settings (danger zone), never by changing roles or removing the owner. Projects are created explicitly in the UI (`POST /projects`, the creator becomes owner); `runs/init` on an unknown project is refused (404 `unknown_project`), so a typo in `project=` never starts a new project.
 - **P0 (done)** Parameterized SQL everywhere; UI output escaped; strict Content-Security-Policy, `nosniff`, no framing.
 - **P1 (done)** Sign-in with external providers, free: any OpenID Connect provider (PKCE, verified ID token, nonce) and GitHub; accounts can link providers.
 - **P1** Teams / organizations, project visibility (private, team, public); admin user management (disable users, reset passwords).

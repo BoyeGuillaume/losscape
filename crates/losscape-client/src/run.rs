@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use losscape_core::ids::RunId;
 use losscape_core::proto::v0::{LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse};
@@ -16,6 +16,9 @@ use serde_json::{Map, Value};
 use tokio::sync::Notify;
 
 use crate::buffer::Buffer;
+use crate::console::{Console, MAX_LINES_PER_BATCH};
+use crate::env::Extra;
+use crate::system::Sampler;
 use crate::upload::{Client, Live, UploadError, upload_run};
 use crate::wal::{self, FINISH_FILE, INIT_FILE, RunLock, WalReader, WalWriter};
 
@@ -24,6 +27,10 @@ pub const WAKE_ROWS: usize = 50_000;
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 const RESUME_TIMEOUT: Duration = Duration::from_secs(15);
 const ZSTD_LEVEL: i32 = 3;
+/// How long finish waits for console output still in flight.
+const CONSOLE_DRAIN: Duration = Duration::from_millis(500);
+/// Metrics under this prefix are system metrics (step = unix seconds).
+pub const SYSTEM_PREFIX: &str = "system/";
 
 #[derive(Clone, Debug)]
 pub enum Mode {
@@ -52,6 +59,11 @@ pub struct RunOptions {
     pub python_version: String,
     pub sdk_version: String,
     pub batch_interval: Duration,
+    /// Capture stdout and stderr (Unix).
+    pub console: bool,
+    /// Sample system metrics this often; None: off.
+    pub system_interval: Option<Duration>,
+    pub env: Extra,
 }
 
 impl RunOptions {
@@ -70,6 +82,9 @@ impl RunOptions {
             python_version: String::new(),
             sdk_version: losscape_core::VERSION.to_owned(),
             batch_interval: Duration::from_millis(100),
+            console: false,
+            system_interval: None,
+            env: Extra::default(),
         }
     }
 }
@@ -102,6 +117,9 @@ pub enum FinishOutcome {
 pub struct Run {
     shared: Arc<Shared>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(unix)]
+    capture: Mutex<Option<crate::console::Capture>>,
+    sampler: Mutex<Option<Sampler>>,
     owner_pid: u32,
     run_id: RunId,
     dir: PathBuf,
@@ -110,6 +128,7 @@ pub struct Run {
 
 struct Shared {
     buffer: Mutex<Buffer>,
+    console: Arc<Mutex<Console>>,
     /// Make a batch now (buffer is large, or finish was requested).
     wake: Notify,
     finish: Mutex<Option<RunFinish>>,
@@ -132,7 +151,8 @@ impl Run {
     /// Returns immediately for a new run: the server is contacted in the background, and
     /// nothing is lost if it can't be reached. Resuming without local state asks the
     /// server where the run stopped first.
-    pub fn start(opts: RunOptions) -> Result<Self, StartError> {
+    pub fn start(mut opts: RunOptions) -> Result<Self, StartError> {
+        crate::redact::redact_json(&mut opts.config);
         let run_id = opts.run_id.unwrap_or_default();
         let dir = opts.root.join("runs").join(run_id.to_string());
         let local = |err| StartError::Local {
@@ -164,16 +184,22 @@ impl Run {
         };
 
         let mut next_step = None;
+        let mut first_console_line = 0;
         if opts.resume {
-            let local_next = has_local_log
-                .then(|| max_logged_step(&dir).map(|s| s + 1))
-                .flatten();
+            let logged = if has_local_log {
+                logged_so_far(&dir)
+            } else {
+                Logged::default()
+            };
+            let local_next = logged.max_step.map(|s| s + 1);
+            first_console_line = logged.next_console_line;
             match &opts.mode {
                 Mode::Online { server, api_key } => {
                     let server = fetch_resume_point(server, api_key, &init)
                         .map_err(|err| StartError::Resume { run_id, err })?;
                     writer.start_at(server.next_seq).map_err(local)?;
                     next_step = local_next.max(server.last_step.map(|s| s + 1));
+                    first_console_line = first_console_line.max(server.next_console_line);
                 }
                 Mode::Offline if has_local_log => next_step = local_next,
                 Mode::Offline => return Err(StartError::ResumeOffline(run_id)),
@@ -190,6 +216,7 @@ impl Run {
         let acked = wal::read_acked(&dir).map_err(local)?;
         let shared = Arc::new(Shared {
             buffer: Mutex::default(),
+            console: Arc::new(Mutex::new(Console::new(first_console_line))),
             wake: Notify::new(),
             finish: Mutex::default(),
             cancel: Notify::new(),
@@ -220,15 +247,41 @@ impl Run {
             interval: opts.batch_interval,
             python_version: opts.python_version,
             sdk_version: opts.sdk_version,
+            env: opts.env,
         };
         let thread = std::thread::Builder::new()
             .name("losscape-run".into())
             .spawn(move || background.run())
             .map_err(local)?;
 
+        let sampler = opts.system_interval.and_then(|interval| {
+            let shared = shared.clone();
+            let push = move |points: &[(String, f64)], time_ms: i64, step: u64| {
+                let mut buffer = shared.buffer.lock().expect("not poisoned");
+                for (key, value) in points {
+                    buffer.push_untracked(key, step, time_ms, *value);
+                }
+            };
+            Sampler::start(interval, push)
+                .inspect_err(|err| eprintln!("losscape: system metrics are off: {err}"))
+                .ok()
+        });
+        #[cfg(unix)]
+        let capture = opts
+            .console
+            .then(|| {
+                crate::console::Capture::start(shared.console.clone())
+                    .inspect_err(|err| eprintln!("losscape: console capture is off: {err}"))
+                    .ok()
+            })
+            .flatten();
+
         Ok(Self {
             shared,
             thread: Mutex::new(Some(thread)),
+            #[cfg(unix)]
+            capture: Mutex::new(capture),
+            sampler: Mutex::new(sampler),
             owner_pid: std::process::id(),
             run_id,
             dir,
@@ -277,7 +330,8 @@ impl Run {
         self.buffer().update_summary(update);
     }
 
-    pub fn update_config(&self, update: Map<String, Value>) {
+    pub fn update_config(&self, mut update: Map<String, Value>) {
+        crate::redact::redact_json(&mut update);
         self.buffer().update_config(update);
     }
 
@@ -292,6 +346,14 @@ impl Run {
                 .wait_outcome(None)
                 .unwrap_or_else(|| FinishOutcome::Failed("run finished".into()));
         };
+        if let Some(sampler) = self.sampler.lock().expect("not poisoned").take() {
+            sampler.stop();
+        }
+        // Output written before finish is in the last batch.
+        #[cfg(unix)]
+        if let Some(capture) = self.capture.lock().expect("not poisoned").take() {
+            capture.stop(CONSOLE_DRAIN);
+        }
         *self.shared.finish.lock().expect("not poisoned") = Some(RunFinish {
             run_id: self.run_id.as_bytes().to_vec(),
             state: state as i32,
@@ -349,6 +411,7 @@ struct Background {
     interval: Duration,
     python_version: String,
     sdk_version: String,
+    env: Extra,
 }
 
 impl Background {
@@ -372,7 +435,11 @@ impl Background {
     }
 
     async fn work(&mut self) -> FinishOutcome {
-        self.init.environment = Some(crate::env::capture(&self.python_version, &self.sdk_version));
+        self.init.environment = Some(crate::env::capture(
+            &self.python_version,
+            &self.sdk_version,
+            &self.env,
+        ));
         if let Err(err) = wal::write_atomic(&self.dir.join(INIT_FILE), &self.init.encode_to_vec()) {
             return FinishOutcome::Failed(format!("writing local log: {err}"));
         }
@@ -448,11 +515,19 @@ async fn batch_loop(
         }
         // Taken before draining, so every point logged before finish() is included.
         let finish = shared.finish.lock().expect("not poisoned").take();
-        let drained = {
-            let mut buffer = shared.buffer.lock().expect("not poisoned");
-            (!buffer.is_empty()).then(|| buffer.drain())
-        };
-        if let Some(drained) = drained {
+        // Several batches when the console produced a lot since the last one.
+        loop {
+            let console = shared.console.lock().expect("not poisoned").take(
+                Instant::now(),
+                finish.is_some(),
+                MAX_LINES_PER_BATCH,
+            );
+            let more = console.len() == MAX_LINES_PER_BATCH;
+            let drained = {
+                let mut buffer = shared.buffer.lock().expect("not poisoned");
+                (!buffer.is_empty() || !console.is_empty()).then(|| buffer.drain())
+            };
+            let Some(drained) = drained else { break };
             let batch = LogBatch {
                 run_id: run_id.to_vec(),
                 seq: writer.next_seq(),
@@ -460,11 +535,15 @@ async fn batch_loop(
                 scalars: Some(drained.scalars),
                 summary_json: json_object(drained.summary),
                 config_json: json_object(drained.config),
+                console,
             };
             let payload = zstd::bulk::compress(&batch.encode_to_vec(), ZSTD_LEVEL)?;
             writer.append(&payload)?;
             shared.written.store(writer.next_seq(), Ordering::SeqCst);
             shared.live.notify.notify_one();
+            if !more {
+                break;
+            }
         }
         if let Some(mut finish) = finish {
             finish.last_seq = writer.next_seq().saturating_sub(1);
@@ -533,10 +612,17 @@ fn fetch_resume_point(
     })
 }
 
-/// Highest step in a run's local log (for resuming after a crash).
-fn max_logged_step(dir: &Path) -> Option<u64> {
+#[derive(Default)]
+struct Logged {
+    /// Highest step of a metric (system metrics aside: their step is the time).
+    max_step: Option<u64>,
+    next_console_line: u64,
+}
+
+/// What a run's local log holds (for resuming after a crash).
+fn logged_so_far(dir: &Path) -> Logged {
     let mut reader = WalReader::new(dir, 0);
-    let mut max = None;
+    let mut logged = Logged::default();
     while let Ok(Some((_, payload))) = reader.next_batch() {
         let Ok(raw) = zstd::decode_all(payload.as_slice()) else {
             continue;
@@ -544,9 +630,16 @@ fn max_logged_step(dir: &Path) -> Option<u64> {
         let Ok(batch) = LogBatch::decode(raw.as_slice()) else {
             continue;
         };
-        if let Some(step) = batch.scalars.and_then(|s| s.step.into_iter().max()) {
-            max = max.max(Some(step));
+        if let Some(s) = batch.scalars {
+            for (i, &step) in s.step.iter().enumerate() {
+                if !s.keys[s.key_idx[i] as usize].starts_with(SYSTEM_PREFIX) {
+                    logged.max_step = logged.max_step.max(Some(step));
+                }
+            }
+        }
+        if let Some(last) = batch.console.iter().map(|l| l.line).max() {
+            logged.next_console_line = logged.next_console_line.max(last + 1);
         }
     }
-    max
+    logged
 }

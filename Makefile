@@ -26,6 +26,7 @@ build: ## Build everything
 test: ## Run all tests
 	cargo test --workspace
 	$(PY) pytest
+	cd web && npm test
 
 lint: ## Lint and type-check everything
 	cargo fmt --all --check

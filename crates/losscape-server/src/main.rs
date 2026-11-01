@@ -14,6 +14,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let config = Config::from_env()?;
     let (state, flusher) = AppState::start(&config).await?;
+    losscape_server::purge::spawn_purger(state.clone());
+    let backfill = state.clone();
+    tokio::spawn(async move {
+        match losscape_server::purge::backfill_last_step(&backfill).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(runs = n, "filled in step counts of older runs"),
+            Err(err) => tracing::warn!(%err.message, "filling in step counts failed"),
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(addr = %config.listen, version = losscape_core::VERSION, "losscape server listening");

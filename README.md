@@ -41,8 +41,9 @@ test (`LOSSCAPE_API_KEY=df_...`).
 - Browser sessions: random 256-bit token in an `HttpOnly`, `SameSite=Lax` cookie (`Secure` over
   HTTPS); stored as SHA-256. Cross-site state-changing requests are refused.
 - API keys (`df_...`): per user, shown once, stored as SHA-256, revocable.
-- Projects: created in the UI (New project), never by the SDK; the creator is owner. Roles:
-  owner (manages members), editor (logs runs), viewer (reads). Non-members get 404.
+- Projects: created in the UI (New project), never by the SDK; the creator is owner. One owner
+  per project (manages members and settings; ownership moves only by transfer), editors (log
+  runs), viewers (read). Non-members get 404.
 - External sign-in: OpenID Connect (PKCE, verified ID token) and GitHub; see `.env.example`.
 - SQL is always parameterized; the UI escapes all output, behind a strict
   Content-Security-Policy (scripts from the server only, inline bootstrap allowed by hash).

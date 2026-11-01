@@ -9,6 +9,7 @@ pub mod ingest;
 pub mod live;
 pub mod projects;
 pub mod proto_body;
+pub mod purge;
 pub mod read;
 pub mod runs;
 pub mod state;

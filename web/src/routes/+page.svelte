@@ -5,6 +5,7 @@
 
 	import { apiJson } from '#lib/api/client.js';
 	import type { ProjectSummary } from '#lib/api/types.js';
+	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import NewProjectDialog from '#lib/components/app/NewProjectDialog.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
@@ -50,15 +51,7 @@
 				</Card.Description>
 			</Card.Header>
 			<Card.Content>
-				<pre
-					class="overflow-x-auto rounded-lg bg-muted p-4 font-mono text-xs leading-relaxed">pip install losscape-sdk
-export LOSSCAPE_API_KEY=...
-
-import losscape
-
-with losscape.init(project="my-project", config=&#123;"lr": 1e-3&#125;) as run:
-    for step in range(1000):
-        run.log(&#123;"train/loss": 1 / (step + 1)&#125;)</pre>
+				<SdkQuickstart project="my-project" />
 			</Card.Content>
 		</Card.Root>
 	{:else}

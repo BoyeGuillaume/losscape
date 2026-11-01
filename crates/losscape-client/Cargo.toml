@@ -10,9 +10,11 @@ bytes = "1.12.1"
 crc32fast = "1.5.3"
 losscape-core = { path = "../losscape-core" }
 gethostname = "1.1.0"
+nvml-wrapper = "0.13.0"
 prost = "0.14.4"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
 serde_json = "1.0.154"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk", "network"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt", "time", "sync", "macros"] }
 zstd = "0.14.3"
@@ -24,3 +26,6 @@ workspace = true
 losscape-server = { path = "../losscape-server", features = ["testing"] }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full"] }
+
+[target."cfg(unix)".dependencies]
+rustix = { version = "1.1.6", features = ["pipe", "pty", "termios", "stdio", "fs", "std"] }

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import FolderPlus from '@lucide/svelte/icons/folder-plus';
+	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 
@@ -31,6 +32,9 @@
 		error = null;
 		try {
 			await apiSend('POST', '/projects', { name: trimmed });
+			toast.success(`Project ${trimmed} created`, {
+				description: `You own it. Log runs with losscape.init(project="${trimmed}"), and add members in its settings.`
+			});
 			projectsChanged();
 			open = false;
 			goto(resolve('/p/[project]', { project: trimmed }));

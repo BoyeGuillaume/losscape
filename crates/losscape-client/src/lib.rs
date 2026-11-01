@@ -6,12 +6,16 @@
 //! `sync` uploads whatever is left.
 
 pub mod buffer;
+pub mod console;
 mod env;
+mod redact;
 mod run;
 mod sync;
+pub mod system;
 mod upload;
 pub mod wal;
 
-pub use run::{FinishOutcome, Mode, Run, RunOptions, StartError, WAKE_ROWS, now_ms};
+pub use env::Extra as EnvExtra;
+pub use run::{FinishOutcome, Mode, Run, RunOptions, SYSTEM_PREFIX, StartError, WAKE_ROWS, now_ms};
 pub use sync::{SyncResult, SyncStatus, sync};
 pub use upload::UploadError;

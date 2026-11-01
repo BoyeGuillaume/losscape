@@ -6,7 +6,9 @@
 	import Plus from '@lucide/svelte/icons/plus';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 
-	import { ApiError, apiFetch, apiJson, apiSend } from '#lib/api/client.js';
+	import { toast } from 'svelte-sonner';
+
+	import { apiFetch, apiJson, apiSend } from '#lib/api/client.js';
 	import type { ApiKey, AuthSettings, Me } from '#lib/api/types.js';
 	import { auth, loadMe } from '#lib/auth.svelte.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
@@ -20,29 +22,33 @@
 	import { timeAgo } from '#lib/format.js';
 	import { poll } from '#lib/poll.svelte.js';
 	import AvatarCropDialog from '#lib/components/app/AvatarCropDialog.svelte';
+	import CodeBlock from '#lib/components/app/CodeBlock.svelte';
 	import UserAvatar from '#lib/components/app/UserAvatar.svelte';
+	import { notifyError, withToast } from '#lib/notify.js';
 
 	const keys = poll(() => apiJson<ApiKey[]>('/me/api-keys'));
 	const settings = poll(() => apiJson<AuthSettings>('/auth/settings'));
-	const message = (err: unknown) =>
-		err instanceof ApiError ? err.message : 'Something went wrong.';
 
 	// Profile
 	let displayName = $state(auth.user?.display_name ?? '');
-	let profileError = $state<string | null>(null);
-	let profileSaved = $state(false);
 	const profileChanged = $derived(displayName.trim() !== (auth.user?.display_name ?? ''));
 
 	async function saveProfile(event: SubmitEvent) {
 		event.preventDefault();
-		profileError = null;
-		try {
-			auth.user = await apiSend<Me>('PATCH', '/me', { display_name: displayName.trim() });
-			displayName = auth.user.display_name ?? '';
-			profileSaved = true;
-			setTimeout(() => (profileSaved = false), 2000);
-		} catch (err) {
-			profileError = message(err);
+		const me = await withToast(
+			() => apiSend<Me>('PATCH', '/me', { display_name: displayName.trim() }),
+			{
+				done: 'Display name saved',
+				detail: (me) =>
+					me.display_name
+						? `Other members now see you as ${me.display_name}.`
+						: `Other members now see your username, @${me.username}.`,
+				failed: "Couldn't save your display name"
+			}
+		);
+		if (me) {
+			auth.user = me;
+			displayName = me.display_name ?? '';
 		}
 	}
 
@@ -50,53 +56,66 @@
 	const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
 	let fileInput = $state<HTMLInputElement>();
 	let cropping = $state<File | null>(null);
-	let pictureError = $state<string | null>(null);
 
 	function pick(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
 		input.value = '';
-		pictureError = null;
 		if (!file) return;
 		if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-			pictureError = 'Use a PNG, JPEG or WebP image.';
+			toast.error("Can't use this file", {
+				description: 'Pick a PNG, JPEG or WebP image.'
+			});
 		} else if (file.size > MAX_SOURCE_BYTES) {
-			pictureError = 'That image is larger than 15 MB.';
+			toast.error('This image is too large', {
+				description: 'Pick one under 15 MB; it is cropped and resized to 256 × 256 anyway.'
+			});
 		} else {
 			cropping = file;
 		}
 	}
 
 	async function uploadPicture(png: Blob) {
-		try {
-			await apiFetch('/me/avatar', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'image/png' },
-				body: png
-			});
-			await loadMe();
-		} catch (err) {
-			pictureError = message(err);
-		} finally {
-			cropping = null;
-		}
+		cropping = null;
+		await withToast(
+			async () => {
+				await apiFetch('/me/avatar', {
+					method: 'PUT',
+					headers: { 'Content-Type': 'image/png' },
+					body: png
+				});
+				await loadMe();
+			},
+			{
+				pending: 'Uploading your picture…',
+				done: 'Profile picture saved',
+				detail: 'It shows next to your name in projects you are a member of.',
+				failed: "Couldn't save your picture"
+			}
+		);
 	}
 
 	async function removePicture() {
-		pictureError = null;
-		await apiSend('DELETE', '/me/avatar');
-		await loadMe();
+		await withToast(
+			async () => {
+				await apiSend('DELETE', '/me/avatar');
+				await loadMe();
+			},
+			{
+				done: 'Profile picture removed',
+				detail: 'Your initials are shown instead.',
+				failed: "Couldn't remove your picture"
+			}
+		);
 	}
 
 	// API keys
 	let keyName = $state('');
-	let keyError = $state<string | null>(null);
 	let created = $state<{ name: string; secret: string } | null>(null);
 	let copied = $state<string | null>(null);
 
 	async function createKey(event: SubmitEvent) {
 		event.preventDefault();
-		keyError = null;
 		try {
 			created = await apiSend<{ name: string; secret: string }>('POST', '/me/api-keys', {
 				name: keyName.trim()
@@ -104,12 +123,16 @@
 			keyName = '';
 			keys.refresh();
 		} catch (err) {
-			keyError = message(err);
+			notifyError(err, "Couldn't create the API key");
 		}
 	}
 
 	async function revoke(key: ApiKey) {
-		await apiSend('DELETE', `/me/api-keys/${key.id}`);
+		await withToast(() => apiSend('DELETE', `/me/api-keys/${key.id}`), {
+			done: `API key “${key.name}” revoked`,
+			detail: 'Scripts using it can no longer log runs.',
+			failed: `Couldn't revoke “${key.name}”`
+		});
 		keys.refresh();
 	}
 
@@ -129,27 +152,27 @@
 	let current = $state('');
 	let next = $state('');
 	let repeat = $state('');
-	let passwordError = $state<string | null>(null);
-	let passwordDone = $state(false);
+	/** Checked as you type, so it stays next to the field. */
+	const mismatch = $derived(repeat !== '' && next !== repeat);
 
 	async function changePassword(event: SubmitEvent) {
 		event.preventDefault();
-		passwordError = null;
-		passwordDone = false;
-		if (next !== repeat) {
-			passwordError = 'The new passwords do not match.';
-			return;
-		}
-		try {
-			await apiSend('POST', '/me/password', {
-				current: auth.user?.has_password ? current : null,
-				new: next
-			});
+		if (mismatch) return;
+		const saved = await withToast(
+			() =>
+				apiSend('POST', '/me/password', {
+					current: auth.user?.has_password ? current : null,
+					new: next
+				}).then(() => true),
+			{
+				done: 'Password changed',
+				detail: 'Your other browser sessions were signed out; this one stays signed in.',
+				failed: "Couldn't change your password"
+			}
+		);
+		if (saved) {
 			current = next = repeat = '';
-			passwordDone = true;
 			await loadMe();
-		} catch (err) {
-			passwordError = message(err);
 		}
 	}
 </script>
@@ -196,9 +219,6 @@
 						aria-label="Profile picture file"
 						onchange={pick}
 					/>
-					{#if pictureError}
-						<p class="max-w-48 text-center text-xs text-destructive">{pictureError}</p>
-					{/if}
 				</div>
 				<form class="grid content-start gap-4" onsubmit={saveProfile}>
 					<div class="grid gap-1.5">
@@ -214,12 +234,9 @@
 							picture, your initials are shown on a color picked from your name.
 						</p>
 					</div>
-					{#if profileError}<p class="text-sm text-destructive">{profileError}</p>{/if}
-					<div class="flex items-center gap-3">
-						<Button type="submit" disabled={!profileChanged}>Save name</Button>
-						{#if profileSaved}<span class="text-sm text-state-finished">Saved.</span
-							>{/if}
-					</div>
+					<Button type="submit" class="justify-self-start" disabled={!profileChanged}
+						>Save name</Button
+					>
 				</form>
 			</div>
 		</Card.Content>
@@ -247,7 +264,6 @@
 				</div>
 				<Button type="submit" disabled={!keyName.trim()}><Plus /> Create key</Button>
 			</form>
-			{#if keyError}<p class="text-sm text-destructive">{keyError}</p>{/if}
 
 			{#if keys.data?.length}
 				<div class="overflow-x-auto rounded-lg border">
@@ -366,11 +382,16 @@
 							bind:value={repeat}
 						/>
 					</div>
-					{#if passwordError}<p class="text-sm text-destructive">{passwordError}</p>{/if}
-					{#if passwordDone}<p class="text-sm text-state-finished">
-							Password saved.
-						</p>{/if}
-					<Button type="submit" class="justify-self-start" disabled={!next || !repeat}>
+					{#if mismatch}
+						<p class="text-sm text-destructive" role="alert">
+							The new passwords do not match.
+						</p>
+					{/if}
+					<Button
+						type="submit"
+						class="justify-self-start"
+						disabled={!next || !repeat || mismatch}
+					>
 						Save password
 					</Button>
 				</form>
@@ -443,20 +464,10 @@
 			</Button>
 		</div>
 		<div class="grid gap-1.5">
-			<p class="text-sm text-muted-foreground">Then, where you train:</p>
-			<div class="relative">
-				<pre
-					class="rounded-md bg-muted p-3 pr-12 font-mono text-xs break-all whitespace-pre-wrap">{snippet}</pre>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					class="absolute top-1.5 right-1.5"
-					aria-label="Copy snippet"
-					onclick={() => copy(snippet, 'snippet')}
-				>
-					{#if copied === 'snippet'}<Check />{:else}<Copy />{/if}
-				</Button>
-			</div>
+			<p class="text-sm text-muted-foreground">
+				Then, where you train (<code class="font-mono text-xs">pip install losscape-sdk</code> first):
+			</p>
+			<CodeBlock lang="shellscript" title="Terminal" code={snippet} />
 		</div>
 		<Alert.Root>
 			<Alert.Description>

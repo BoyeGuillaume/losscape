@@ -12,7 +12,7 @@ const MAX_RANGES_PER_REQUEST = 512;
 const FALLBACK_LEVELS = 9;
 /** Live points kept per metric, to apply to tiles whose fetch raced with them. */
 const LIVE_TAIL = 5_000;
-const ROW_BYTES = 56;
+const ROW_BYTES = 64;
 
 /** Non-empty buckets of one tile, sorted by bucket index. */
 export type Tile = {
@@ -22,10 +22,17 @@ export type Tile = {
 	max: number[];
 	sum: number[];
 	last: number[];
+	/** Mean timestamp (epoch ms, client clock). */
+	time: number[];
 };
 
 export type SeriesPoints = {
+	/** Bucket centers, in steps. */
 	x: number[];
+	/** Finite points per bucket. */
+	n: number[];
+	/** Mean timestamp per bucket (epoch ms). */
+	time: number[];
 	mean: (number | null)[];
 	min: (number | null)[];
 	max: (number | null)[];
@@ -33,7 +40,7 @@ export type SeriesPoints = {
 	complete: boolean;
 };
 
-type LivePoint = { step: number; value: number; at: number };
+type LivePoint = { step: number; value: number; time: number; at: number };
 type Queued = { run: string; key: string; level: number; indices: Set<number> };
 
 const SEP = '\u0000';
@@ -49,7 +56,7 @@ export function levelFor(steps: number, widthPx: number): number {
 }
 
 function emptyTile(): Tile {
-	return { bucket: [], n: [], min: [], max: [], sum: [], last: [] };
+	return { bucket: [], n: [], min: [], max: [], sum: [], last: [], time: [] };
 }
 
 /** Index of `bucket` in the sorted tile, or where it would be inserted. */
@@ -64,9 +71,10 @@ function search(tile: Tile, bucket: number): number {
 	return lo;
 }
 
-function fold(tile: Tile, bucket: number, value: number) {
+function fold(tile: Tile, bucket: number, value: number, time: number) {
 	const i = search(tile, bucket);
 	if (tile.bucket[i] === bucket) {
+		tile.time[i] += (time - tile.time[i]) / (tile.n[i] + 1);
 		tile.n[i] += 1;
 		tile.min[i] = Math.min(tile.min[i], value);
 		tile.max[i] = Math.max(tile.max[i], value);
@@ -79,6 +87,7 @@ function fold(tile: Tile, bucket: number, value: number) {
 		tile.max.splice(i, 0, value);
 		tile.sum.splice(i, 0, value);
 		tile.last.splice(i, 0, value);
+		tile.time.splice(i, 0, time);
 	}
 }
 
@@ -169,7 +178,7 @@ class TileStore {
 
 			const loaded = new Map<string, Tile>(ids.map((id) => [id, emptyTile()]));
 			// RowBinary, little-endian: req u32, bucket f64, n u32, then min, max, sum, first,
-			// last as f64 (see crates/losscape-server/src/read.rs).
+			// last, mean time as f64 (see crates/losscape-server/src/read.rs).
 			for (let at = 0; at + ROW_BYTES <= view.byteLength; at += ROW_BYTES) {
 				const range = ranges[view.getUint32(at, true)];
 				const bucket = view.getFloat64(at + 4, true);
@@ -183,6 +192,7 @@ class TileStore {
 				tile.max.push(view.getFloat64(at + 24, true));
 				tile.sum.push(view.getFloat64(at + 32, true));
 				tile.last.push(view.getFloat64(at + 48, true));
+				tile.time.push(view.getFloat64(at + 56, true));
 			}
 			for (const range of ranges) {
 				const series = seriesId(range.run, range.key);
@@ -197,7 +207,7 @@ class TileStore {
 					const index = Math.floor(point.step / span);
 					const tile = loaded.get(tileId(series, range.level, index));
 					if (tile && index >= range.from_tile && index < range.to_tile) {
-						fold(tile, Math.floor(point.step / 2 ** range.level), point.value);
+						fold(tile, Math.floor(point.step / 2 ** range.level), point.value, point.time);
 					}
 				}
 			}
@@ -211,16 +221,16 @@ class TileStore {
 	}
 
 	/** Adds a live point to every cached tile that covers it. */
-	addLivePoint(run: string, key: string, step: number, value: number) {
+	addLivePoint(run: string, key: string, step: number, value: number, time: number) {
 		if (!Number.isFinite(value)) return;
 		const series = seriesId(run, key);
 		const tail = this.liveTail.get(series) ?? [];
-		tail.push({ step, value, at: performance.now() });
+		tail.push({ step, value, time, at: performance.now() });
 		if (tail.length > LIVE_TAIL) tail.splice(0, tail.length - LIVE_TAIL);
 		this.liveTail.set(series, tail);
 		for (const level of this.levels.get(series) ?? []) {
 			const tile = this.tiles.get(tileId(series, level, Math.floor(step / tileSpan(level))));
-			if (tile) fold(tile, Math.floor(step / 2 ** level), value);
+			if (tile) fold(tile, Math.floor(step / 2 ** level), value, time);
 		}
 		this.changed();
 	}
@@ -254,7 +264,15 @@ export function seriesInRange(
 	const last = Math.floor(to / span);
 	tileStore.request(run, key, level, first, last + 1);
 
-	const out: SeriesPoints = { x: [], mean: [], min: [], max: [], complete: true };
+	const out: SeriesPoints = {
+		x: [],
+		n: [],
+		time: [],
+		mean: [],
+		min: [],
+		max: [],
+		complete: true
+	};
 	for (let index = first; index <= last; index++) {
 		let tile = tileStore.tile(run, key, level, index);
 		let tileLevel = level;
@@ -278,6 +296,8 @@ export function seriesInRange(
 			if (start < lo || start >= hi) continue; // part of a neighbouring tile (coarse fallback)
 			const n = tile.n[j];
 			out.x.push(width === 1 ? start : start + (width - 1) / 2);
+			out.n.push(n);
+			out.time.push(tile.time[j]);
 			out.mean.push(n > 0 ? tile.sum[j] / n : null);
 			out.min.push(n > 0 ? tile.min[j] : null);
 			out.max.push(n > 0 ? tile.max[j] : null);

@@ -1,22 +1,23 @@
 //! Live updates for the UI: points of watched runs are pushed over SSE as soon as the
-//! flusher has stored them (after dedup, so a retried batch is never shown twice).
+//! flusher has stored them (after dedup, so a retried batch is never shown twice). One
+//! stream covers many runs, since browsers allow only a few connections per server.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use losscape_core::proto::v0::ScalarColumns;
-use serde::Serialize;
+use losscape_core::proto::v0::{ConsoleLine, ScalarColumns};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use uuid::Uuid;
 
-use crate::auth::{self, AuthUser, Role};
-use crate::read::{UiError, parse_run_id};
+use crate::auth::{self, AuthUser, Role, members};
+use crate::read::{UiError, parse_run_ids, unknown_project};
 use crate::state::AppState;
 
 const CHANNEL_CAPACITY: usize = 1024;
@@ -31,12 +32,18 @@ pub enum LiveEvent {
         run_id: Uuid,
         state: &'static str,
     },
+    Console {
+        run_id: Uuid,
+        lines: Arc<Vec<ConsoleLine>>,
+    },
 }
 
 impl LiveEvent {
     fn run_id(&self) -> Uuid {
         match self {
-            Self::Points { run_id, .. } | Self::State { run_id, .. } => *run_id,
+            Self::Points { run_id, .. }
+            | Self::State { run_id, .. }
+            | Self::Console { run_id, .. } => *run_id,
         }
     }
 }
@@ -71,20 +78,17 @@ impl LiveHub {
         }
     }
 
-    fn watch(self: &Arc<Self>, run_id: Uuid) -> (broadcast::Receiver<LiveEvent>, WatchGuard) {
+    fn watch(self: &Arc<Self>, run_id: Uuid) -> WatchGuard {
         *self
             .watchers
             .lock()
             .expect("not poisoned")
             .entry(run_id)
             .or_default() += 1;
-        (
-            self.tx.subscribe(),
-            WatchGuard {
-                hub: self.clone(),
-                run_id,
-            },
-        )
+        WatchGuard {
+            hub: self.clone(),
+            run_id,
+        }
     }
 }
 
@@ -109,50 +113,94 @@ impl Drop for WatchGuard {
 /// values are sent as null.
 #[derive(Serialize)]
 struct PointsEvent<'a> {
+    run: Uuid,
     keys: &'a [String],
     key_idx: &'a [u32],
     step: &'a [u64],
+    time_ms: &'a [i64],
     value: Vec<Option<f64>>,
 }
 
-/// `GET /api/v0/runs/{id}/live`: events `points`, `state`, and `reset` (some events were
-/// missed; reload the data).
+/// One SSE `console` event: lines that are new or replace earlier versions.
+#[derive(Serialize)]
+struct ConsoleEvent<'a> {
+    run: Uuid,
+    lines: Vec<crate::read::LogLine<'a>>,
+}
+
+#[derive(Serialize)]
+struct StateEvent {
+    run: Uuid,
+    state: &'static str,
+}
+
+#[derive(Deserialize)]
+pub struct LiveParams {
+    /// Comma-separated run ids.
+    runs: String,
+}
+
+/// `GET /api/v0/projects/{project}/live?runs=<id>,<id>`: events `points`, `console` and
+/// `state` (JSON, each with its `run`), and `reset` (some events were missed; reload). Runs of
+/// other projects are ignored.
 pub async fn live(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(run): Path<String>,
+    Path(project): Path<String>,
+    Query(params): Query<LiveParams>,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, UiError> {
-    let run_id = parse_run_id(&run)?;
-    auth::require_run(&state, &user, run_id, Role::Viewer).await?;
-    let (rx, guard) = state.live().watch(run_id);
+    let project_id = members::project_id(&state, &project).await?;
+    auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
+    let requested: Vec<String> = params
+        .runs
+        .split(',')
+        .filter(|r| !r.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let requested = parse_run_ids(&requested)?;
+    let runs: HashSet<Uuid> =
+        sqlx::query_scalar("SELECT id FROM runs WHERE project_id = $1 AND id = ANY($2)")
+            .bind(project_id)
+            .bind(&requested)
+            .fetch_all(state.pg())
+            .await?
+            .into_iter()
+            .collect();
+    let rx = state.live().tx.subscribe();
+    let guards: Vec<WatchGuard> = runs.iter().map(|&run| state.live().watch(run)).collect();
 
     let events = BroadcastStream::new(rx).filter_map(move |item| {
-        let _keep_watching = &guard;
-        match item {
-            Ok(event) if event.run_id() != run_id => None,
-            Ok(LiveEvent::Points { scalars, .. }) => {
-                let event = PointsEvent {
+        let _keep_watching = &guards;
+        let event = match item {
+            Ok(event) if !runs.contains(&event.run_id()) => return None,
+            Ok(LiveEvent::Points { run_id, scalars }) => {
+                Event::default().event("points").json_data(PointsEvent {
+                    run: run_id,
                     keys: &scalars.keys,
                     key_idx: &scalars.key_idx,
                     step: &scalars.step,
+                    time_ms: &scalars.time_ms,
                     value: scalars
                         .value
                         .iter()
                         .map(|v| v.is_finite().then_some(*v))
                         .collect(),
-                };
-                Some(Ok(Event::default()
-                    .event("points")
-                    .json_data(event)
-                    .expect("serializable")))
+                })
             }
-            Ok(LiveEvent::State { state, .. }) => {
-                Some(Ok(Event::default().event("state").data(state)))
+            Ok(LiveEvent::Console { run_id, lines }) => {
+                Event::default().event("console").json_data(ConsoleEvent {
+                    run: run_id,
+                    lines: lines.iter().map(crate::read::LogLine::from).collect(),
+                })
             }
+            Ok(LiveEvent::State { run_id, state }) => Event::default()
+                .event("state")
+                .json_data(StateEvent { run: run_id, state }),
             Err(BroadcastStreamRecvError::Lagged(_)) => {
-                Some(Ok(Event::default().event("reset").data("")))
+                Ok(Event::default().event("reset").data(""))
             }
-        }
+        };
+        Some(Ok(event.expect("serializable")))
     });
     Ok(Sse::new(events).keep_alive(KeepAlive::default()))
 }

@@ -638,6 +638,301 @@ async fn password_change_signs_out_other_sessions() {
     server.stop().await;
 }
 
+fn transfer_call<'a>(key: &'a str, to: &str, then: &str) -> Call<'a> {
+    Call::post(
+        "/api/v0/projects/p/transfer",
+        json!({ "username": to, "then": then }),
+    )
+    .bearer(key)
+}
+
+fn role_call<'a>(key: &'a str, who: &str, role: &str) -> Call<'a> {
+    Call {
+        body: Some(json!({ "role": role })),
+        ..Call::new(Method::PUT, format!("/api/v0/projects/p/members/{who}"))
+    }
+    .bearer(key)
+}
+
+async fn role_in_p(server: &TestServer, key: &str) -> Value {
+    Call::get("/api/v0/projects/p")
+        .bearer(key)
+        .send(server)
+        .await
+        .json()["role"]
+        .clone()
+}
+
+#[tokio::test]
+async fn owners_transfer_ownership() {
+    let server = server_with!(TestServer::start());
+    let (_, alice) = user(&server.state, "alice").await;
+    let (_, bob) = user(&server.state, "bob").await;
+    let (_, carol) = user(&server.state, "carol").await;
+    create_project(&server, &alice, "p").await;
+    role_call(&alice, "bob", "editor").send(&server).await;
+
+    // Only owners, only to members, not to oneself, and the old owner steps down.
+    assert_eq!(
+        transfer_call(&bob, "bob", "editor")
+            .send(&server)
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        transfer_call(&alice, "carol", "editor")
+            .send(&server)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        transfer_call(&alice, "alice", "editor")
+            .send(&server)
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        transfer_call(&alice, "bob", "owner")
+            .send(&server)
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+
+    assert_eq!(
+        transfer_call(&alice, "bob", "viewer")
+            .send(&server)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(role_in_p(&server, &bob).await, "owner");
+    assert_eq!(role_in_p(&server, &alice).await, "viewer");
+
+    // An admin can transfer too: the owner (not the admin) steps down.
+    let admin = server.api_key.clone();
+    assert_eq!(
+        transfer_call(&admin, "alice", "editor")
+            .send(&server)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(role_in_p(&server, &alice).await, "owner");
+    assert_eq!(role_in_p(&server, &bob).await, "editor");
+    transfer_call(&alice, "bob", "viewer").send(&server).await;
+
+    // Bob hands it on to carol and leaves.
+    role_call(&bob, "carol", "viewer").send(&server).await;
+    assert_eq!(
+        transfer_call(&bob, "carol", "leave")
+            .send(&server)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(role_in_p(&server, &carol).await, "owner");
+    assert_eq!(
+        Call::get("/api/v0/projects/p")
+            .bearer(&bob)
+            .send(&server)
+            .await
+            .status,
+        StatusCode::NOT_FOUND,
+        "bob left"
+    );
+    server.stop().await;
+}
+
+async fn list_runs(server: &TestServer, key: &str, archived: bool) -> Response {
+    Call::get(format!("/api/v0/projects/p/runs?archived={archived}"))
+        .bearer(key)
+        .send(server)
+        .await
+}
+
+fn archive_call<'a>(key: &'a str, action: &str, run: RunId) -> Call<'a> {
+    Call::post(
+        format!("/api/v0/projects/p/runs/{action}"),
+        json!({ "runs": [run_path(run)] }),
+    )
+    .bearer(key)
+}
+
+fn patch<'a>(key: &'a str, days: i64) -> Call<'a> {
+    Call {
+        body: Some(json!({ "archive_days": days })),
+        ..Call::new(Method::PATCH, "/api/v0/projects/p")
+    }
+    .bearer(key)
+}
+
+#[tokio::test]
+async fn archived_runs_are_hidden_restorable_then_purged() {
+    let server = server_with!(TestServer::start());
+    let (_, alice) = user(&server.state, "alice").await;
+    let (bob_id, bob) = user(&server.state, "bob").await;
+    assert_eq!(
+        create_project(&server, &alice, "p").await.status,
+        StatusCode::CREATED
+    );
+    let project_id: i64 = sqlx::query_scalar("SELECT id FROM projects WHERE name = 'p'")
+        .fetch_one(server.state.pg())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'viewer')",
+    )
+    .bind(project_id)
+    .bind(bob_id)
+    .execute(server.state.pg())
+    .await
+    .unwrap();
+    let (_, keep, _) = init_run(&server, &alice, "p").await;
+    let (_, old, _) = init_run(&server, &alice, "p").await;
+    for run in [keep, old] {
+        assert_eq!(log_point(&server, &alice, run, 0).await.0, StatusCode::OK);
+    }
+    let names = |runs: &Value| -> Vec<String> {
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().replace('-', ""))
+            .collect()
+    };
+    // Viewers can't archive; editors can.
+    let (alice, bob) = (alice.as_str(), bob.as_str());
+    let list = |archived: bool| list_runs(&server, alice, archived);
+    assert_eq!(
+        archive_call(bob, "archive", old).send(&server).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let res = archive_call(alice, "archive", old).send(&server).await;
+    assert_eq!(res.json()["changed"], 1);
+    assert_eq!(names(&list(false).await.json()), [run_path(keep)]);
+    let archived = list(true).await.json();
+    assert_eq!(names(&archived), [run_path(old)]);
+    assert!(archived[0]["archived_at_ms"].as_i64().is_some());
+    let info = Call::get("/api/v0/projects/p")
+        .bearer(alice)
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(
+        (info["runs"].clone(), info["archived_runs"].clone()),
+        (json!(1), json!(1))
+    );
+
+    // Restore, archive again.
+    assert_eq!(
+        archive_call(alice, "restore", old)
+            .send(&server)
+            .await
+            .json()["changed"],
+        1
+    );
+    assert_eq!(names(&list(true).await.json()), Vec::<String>::new());
+    archive_call(alice, "archive", old).send(&server).await;
+
+    // Retention: owners only, 1-3650 days.
+    assert_eq!(
+        patch(bob, 5).send(&server).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        patch(alice, 0).send(&server).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        patch(alice, 7).send(&server).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let info = Call::get("/api/v0/projects/p")
+        .bearer(alice)
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(info["archive_days"], 7);
+
+    // Purged once older than the project's retention, metrics included.
+    assert_eq!(
+        losscape_server::purge::purge_archived(&server.state)
+            .await
+            .unwrap(),
+        0
+    );
+    sqlx::query("UPDATE runs SET archived_at = now() - interval '8 days' WHERE id = $1")
+        .bind(uuid::Uuid::from_bytes(*old.as_bytes()))
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    assert_eq!(
+        losscape_server::purge::purge_archived(&server.state)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(names(&list(true).await.json()), Vec::<String>::new());
+    let points: u64 = server
+        .state
+        .ch()
+        .query("SELECT count() FROM metrics WHERE run_id = toUUID(?)")
+        .bind(run_path(old))
+        .fetch_one()
+        .await
+        .unwrap();
+    assert_eq!(points, 0);
+    assert_eq!(
+        Call::get(format!("/api/v0/runs/{}", run_path(old)))
+            .bearer(alice)
+            .send(&server)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Deleting the project: owners only; runs and memberships go with it.
+    let delete = |key| Call::new(Method::DELETE, "/api/v0/projects/p").bearer(key);
+    assert_eq!(
+        delete(bob).send(&server).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        delete(alice).send(&server).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        Call::get("/api/v0/projects")
+            .bearer(bob)
+            .send(&server)
+            .await
+            .json(),
+        json!([])
+    );
+    assert_eq!(
+        Call::get(format!("/api/v0/runs/{}", run_path(keep)))
+            .bearer(alice)
+            .send(&server)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        log_point(&server, alice, keep, 1).await.0,
+        StatusCode::NOT_FOUND,
+        "no logging into a deleted project's run"
+    );
+    // The name is free again.
+    assert_eq!(
+        create_project(&server, alice, "p").await.status,
+        StatusCode::CREATED
+    );
+    server.stop().await;
+}
+
 #[tokio::test]
 async fn project_roles_control_access() {
     let server = server_with!(TestServer::start());
@@ -693,7 +988,14 @@ async fn project_roles_control_access() {
     let hidden = [
         Call::get("/api/v0/projects/alice-proj/runs"),
         Call::get(format!("/api/v0/runs/{}", run_path(run))),
-        Call::get(format!("/api/v0/runs/{}/live", run_path(run))),
+        Call::get(format!(
+            "/api/v0/projects/alice-proj/live?runs={}",
+            run_path(run)
+        )),
+        Call::post(
+            "/api/v0/projects/alice-proj/metrics",
+            json!({ "runs": [run_path(run)] }),
+        ),
         Call::get("/api/v0/projects/alice-proj/members"),
     ];
     for call in hidden {
@@ -785,7 +1087,7 @@ async fn project_roles_control_access() {
         StatusCode::OK
     );
 
-    // A project keeps an owner; members can leave; only owners remove others.
+    // One owner, fixed outside of transfers; members can leave; only owners remove others.
     let leave = |who: &str| {
         Call::new(
             Method::DELETE,
@@ -794,7 +1096,7 @@ async fn project_roles_control_access() {
     };
     assert_eq!(
         leave("alice").bearer(&alice).send(&server).await.code(),
-        "last_owner"
+        "owner_fixed"
     );
     assert_eq!(
         set("alice", "viewer")
@@ -802,7 +1104,25 @@ async fn project_roles_control_access() {
             .send(&server)
             .await
             .code(),
-        "last_owner"
+        "owner_fixed"
+    );
+    assert_eq!(
+        set("bob", "owner")
+            .bearer(&alice)
+            .send(&server)
+            .await
+            .status,
+        StatusCode::BAD_REQUEST,
+        "no second owner"
+    );
+    assert_eq!(
+        leave("alice")
+            .bearer(&server.api_key)
+            .send(&server)
+            .await
+            .code(),
+        "owner_fixed",
+        "not even an admin removes the owner"
     );
     assert_eq!(
         leave("alice").bearer(&bob).send(&server).await.status,

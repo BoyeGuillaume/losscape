@@ -9,6 +9,7 @@ defaults match deploy/docker-compose.dev.yml).
 """
 
 import base64
+import json
 import os
 import signal
 import subprocess
@@ -58,7 +59,7 @@ def stored(run_id: str) -> tuple[int, int]:
     """(distinct (key, step) points, max step) of a run."""
     out = clickhouse(
         "SELECT uniqExact(key, step), max(step) FROM metrics "
-        f"WHERE run_id = toUUID('{run_id}') FORMAT TSV"
+        f"WHERE run_id = toUUID('{run_id}') AND NOT startsWith(key, 'system/') FORMAT TSV"
     )
     points, max_step = out.split("\t")
     return int(points), int(max_step)
@@ -117,3 +118,90 @@ def test_killed_process_loses_at_most_a_moment(tmp_path):
     assert lost_seconds <= 1.0, f"lost {lost_seconds:.2f}s of logging"
     lost_ms = lost_seconds * 1000
     print(f"\nkilled at step >= {last_step}, stored up to {max_step} ({lost_ms:.0f} ms lost)")
+
+
+CONSOLE_CHILD = r"""
+import os, subprocess, sys, time, losscape
+run = losscape.init(project="pytest-e2e", mode="online", server=sys.argv[1], dir=sys.argv[2])
+print("hello from python")
+print("isatty", sys.stdout.isatty())
+for i in range(101):
+    print(f"\rprogress {i:3d}%", end="", flush=True)
+    time.sleep(0.005)
+print()
+print("\x1b[31mred\x1b[0m on stderr", file=sys.stderr)
+sys.stdout.flush()
+subprocess.run(["echo", "from a subprocess"])
+os.write(1, b"raw descriptor write\n")
+time.sleep(2.5)  # a few system metric samples
+run.log({"loss": 1.0})
+print("unflushed last line", end="")
+outcome = run.finish()
+sys.__stderr__.write(f"RESULT {run.id} {outcome}\n")
+"""
+
+
+def api(path: str):
+    req = urllib.request.Request(
+        f"{SERVER}/api/v0{path}",
+        headers={"Authorization": f"Bearer {os.environ['LOSSCAPE_API_KEY']}"},
+    )
+    return json.loads(urllib.request.urlopen(req, timeout=10).read())
+
+
+@pytest.mark.parametrize("terminal", [False, True], ids=["pipe", "terminal"])
+def test_console_and_system_metrics_are_captured(tmp_path, terminal):
+    env = {**os.environ, "LOSSCAPE_SYSTEM_INTERVAL": "1", "LOSSCAPE_SILENT": "1"}
+    args = [sys.executable, "-c", CONSOLE_CHILD, SERVER, str(tmp_path)]
+    if terminal:
+        import pty
+
+        master, slave = pty.openpty()
+        child = subprocess.Popen(args, stdout=slave, stderr=subprocess.PIPE, env=env)
+        os.close(slave)
+        shown = b""
+        while True:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:  # EIO: the child closed the terminal
+                break
+            if not chunk:
+                break
+            shown += chunk
+        os.close(master)
+        stderr = child.stderr.read().decode()
+        child.wait()
+        shown = shown.decode()
+    else:
+        done = subprocess.run(args, capture_output=True, text=True, env=env)
+        shown, stderr = done.stdout, done.stderr
+    result = [line for line in stderr.splitlines() if line.startswith("RESULT")]
+    assert result, stderr
+    _, run_id, outcome = result[0].split()
+    assert outcome == "uploaded"
+
+    # Still shown where it would have gone without losscape.
+    assert "hello from python" in shown and "raw descriptor write" in shown
+    assert f"isatty {terminal}" in shown, "programs see the same kind of output"
+
+    logs = api(f"/runs/{run_id}/logs?from=0&to=100")
+    lines = [(line["stream"], line["text"]) for line in logs["lines"]]
+    assert [t for _, t in lines] == [
+        "hello from python",
+        f"isatty {terminal}",
+        "progress 100%",
+        "\x1b[31mred\x1b[0m on stderr",
+        "from a subprocess",
+        "raw descriptor write",
+        "unflushed last line",
+    ], lines
+    assert lines[3][0] == "stderr"
+
+    detail = api(f"/runs/{run_id}")
+    keys = {m["key"] for m in detail["metrics"]}
+    assert {"system/cpu/util_pct", "system/memory/used_pct", "loss"} <= keys, keys
+    assert not any(k.startswith("system/") for k in detail["summary"]), "kept out of summary"
+    environment = detail["environment"]
+    assert environment["python"]["executable"] == sys.executable
+    assert any(p.startswith("pytest==") for p in environment["packages"])
+    assert environment["cpu"]["threads"] >= 1

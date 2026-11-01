@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use losscape_client::buffer::Buffer;
-use losscape_client::{FinishOutcome, Mode, Run, RunOptions, StartError, SyncStatus, now_ms};
+use losscape_client::{
+    EnvExtra, FinishOutcome, Mode, Run, RunOptions, StartError, SyncStatus, now_ms,
+};
 use losscape_core::ids::RunId;
 use losscape_core::proto::v0::RunExitState;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
@@ -169,7 +171,8 @@ fn parse_object(json: &str) -> PyResult<Map<String, Value>> {
 #[pyo3(signature = (
     *, project, root, server=None, api_key=None, run_id=None, resume=false, name=String::new(),
     group=String::new(), tags=Vec::new(), notes=String::new(), config_json=String::new(),
-    python_version=String::new(), sdk_version=String::new(),
+    python_version=String::new(), sdk_version=String::new(), console=false,
+    system_interval=None, python_path=Vec::new(), details_json=String::new(),
 ))]
 #[allow(clippy::too_many_arguments)]
 fn start_run(
@@ -187,6 +190,10 @@ fn start_run(
     config_json: String,
     python_version: String,
     sdk_version: String,
+    console: bool,
+    system_interval: Option<f64>,
+    python_path: Vec<PathBuf>,
+    details_json: String,
 ) -> PyResult<NativeRun> {
     let mode = match (server, api_key) {
         (Some(server), Some(api_key)) => Mode::Online { server, api_key },
@@ -210,6 +217,18 @@ fn start_run(
     }
     opts.python_version = python_version;
     opts.sdk_version = sdk_version;
+    opts.console = console;
+    opts.system_interval = system_interval
+        .filter(|s| *s > 0.0)
+        .map(|s| Duration::from_secs_f64(s.max(1.0)));
+    opts.env = EnvExtra {
+        python_path,
+        details: if details_json.is_empty() {
+            Map::new()
+        } else {
+            parse_object(&details_json)?
+        },
+    };
 
     // Resuming may wait on the server.
     let run = py.detach(|| Run::start(opts)).map_err(|err| match err {

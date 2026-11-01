@@ -59,6 +59,18 @@ impl Buffer {
         }
     }
 
+    /// Like [`Buffer::push`], without updating the run summary (system metrics).
+    pub fn push_untracked(&mut self, key: &str, step: u64, time_ms: i64, value: f64) {
+        let idx = match self.index.get(key) {
+            Some(&idx) => idx,
+            None => self.intern(key),
+        };
+        self.key_idx.push(idx);
+        self.step.push(step);
+        self.time_ms.push(time_ms);
+        self.value.push(value);
+    }
+
     fn intern(&mut self, key: &str) -> u32 {
         let idx = self.names.len() as u32;
         self.names.push(key.to_owned());
@@ -184,6 +196,16 @@ mod tests {
         b.update_summary(obj(json!({"acc": 0.9})));
         b.push("acc", 1, 0, 0.6);
         assert_eq!(b.drain().summary, obj(json!({"acc": 0.6})));
+    }
+
+    #[test]
+    fn untracked_points_stay_out_of_the_summary() {
+        let mut b = Buffer::default();
+        b.push_untracked("system/cpu", 1, 0, 50.0);
+        b.push("loss", 0, 0, 1.0);
+        let d = b.drain();
+        assert_eq!(d.scalars.value, [50.0, 1.0]);
+        assert_eq!(d.summary, obj(json!({"loss": 1.0})));
     }
 
     #[test]

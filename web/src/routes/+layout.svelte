@@ -12,6 +12,7 @@
 	import * as Breadcrumb from '#lib/components/ui/breadcrumb/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
+	import { Toaster } from '#lib/components/ui/sonner/index.js';
 	import * as Tooltip from '#lib/components/ui/tooltip/index.js';
 	import { nav } from '#lib/nav.svelte.js';
 
@@ -31,7 +32,7 @@
 			{ label: 'Projects', href: resolve('/') }
 		];
 		if (project) trail.push({ label: project, href: resolve('/p/[project]', { project }) });
-		if (page.route.id === '/p/[project]/members') trail.push({ label: 'Members' });
+		if (page.route.id === '/p/[project]/settings') trail.push({ label: 'Settings' });
 		if (run) trail.push({ label: nav.runName ?? run.slice(0, 8) });
 		return trail;
 	});
@@ -43,6 +44,7 @@
 </svelte:head>
 
 <ModeWatcher />
+<Toaster position="bottom-right" closeButton />
 <Tooltip.Provider>
 	{#if auth.user === undefined}
 		<div class="grid min-h-svh place-items-center" aria-busy="true"></div>

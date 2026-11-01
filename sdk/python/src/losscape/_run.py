@@ -194,6 +194,12 @@ class Run:
             state = "finished" if exit_code == 0 else "failed"
         if timeout is None:
             timeout = float(os.environ.get("LOSSCAPE_FINISH_TIMEOUT", "60"))
+        # Output still in Python's buffers goes into the captured console.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except (AttributeError, OSError, ValueError):
+                pass
 
         outcome, message, pending = self._native.finish(state, exit_code, timeout)
         if outcome == "uploaded":
@@ -267,6 +273,42 @@ def _finish_at_exit() -> None:
             run.finish(exit_code=_Exit.exit_code, state=_Exit.state)
 
 
+def _flag(value: bool | None, env: str, default: bool) -> bool:
+    if value is not None:
+        return value
+    raw = os.environ.get(env, "").strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    return default
+
+
+def _console_default() -> bool:
+    """Capture the console unless it can't work well: Windows (no file-descriptor capture
+    yet) and Jupyter (the kernel captures the descriptors itself)."""
+    return os.name != "nt" and "ipykernel" not in sys.modules
+
+
+def _python_details() -> dict[str, Any]:
+    """Details only Python knows. Frameworks are described only if already imported:
+    importing (or initializing CUDA) here would slow down init and break fork safety."""
+    details: dict[str, Any] = {
+        "python": {
+            "executable": sys.executable,
+            "implementation": platform.python_implementation(),
+        }
+    }
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        version = getattr(torch, "version", None)
+        details["torch"] = {
+            "version": getattr(torch, "__version__", None),
+            "cuda": getattr(version, "cuda", None),
+        }
+    return details
+
+
 def init(
     project: str | None = None,
     *,
@@ -281,13 +323,17 @@ def init(
     dir: str | os.PathLike[str] | None = None,  # noqa: A002
     server: str | None = None,
     api_key: str | None = None,
+    console: bool | None = None,
+    system_metrics: bool | None = None,
 ) -> Run:
     """Start a run. Returns immediately; the server is contacted in the background.
 
     Settings fall back to environment variables: ``LOSSCAPE_PROJECT``,
     ``LOSSCAPE_MODE`` (online | offline | disabled), ``LOSSCAPE_DIR`` (local logs,
-    default ``./.losscape``), ``LOSSCAPE_SERVER`` (default http://localhost:8080) and
-    ``LOSSCAPE_API_KEY``.
+    default ``./.losscape``), ``LOSSCAPE_SERVER`` (default http://localhost:8080),
+    ``LOSSCAPE_API_KEY``, ``LOSSCAPE_CONSOLE`` (capture stdout/stderr; default on,
+    except on Windows and in Jupyter), ``LOSSCAPE_SYSTEM_METRICS`` (CPU, memory, disk,
+    network, NVIDIA GPUs; default on) and ``LOSSCAPE_SYSTEM_INTERVAL`` (seconds, 5).
     """
     import losscape
 
@@ -318,6 +364,7 @@ def init(
             "api_key": api_key,
         }
 
+    interval = float(os.environ.get("LOSSCAPE_SYSTEM_INTERVAL") or 5)
     native = _native.start_run(
         project=project,
         root=Path(dir or os.environ.get("LOSSCAPE_DIR") or ".losscape"),
@@ -330,6 +377,12 @@ def init(
         config_json=_to_json(config) if config else "",
         python_version=platform.python_version(),
         sdk_version=_native.__version__,
+        console=_flag(console, "LOSSCAPE_CONSOLE", _console_default()),
+        system_interval=interval
+        if _flag(system_metrics, "LOSSCAPE_SYSTEM_METRICS", True)
+        else None,
+        python_path=[p for p in sys.path if p],
+        details_json=json.dumps(_jsonable(_python_details())),
         **server_args,
     )
     start_step = native.next_step or 0

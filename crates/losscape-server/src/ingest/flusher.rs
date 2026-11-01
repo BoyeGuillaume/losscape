@@ -164,6 +164,7 @@ async fn flush(pg: &PgPool, ch: &clickhouse::Client, live: &LiveHub, chunk: Vec<
     let result = async {
         let ch_started = std::time::Instant::now();
         write_metrics(ch, &accepted).await?;
+        write_console(ch, &accepted).await?;
         clickhouse_ms = ch_started.elapsed().as_millis() as u64;
         publish(live, &accepted);
         update_runs(pg, &accepted, &windows).await?;
@@ -190,10 +191,19 @@ async fn flush(pg: &PgPool, ch: &clickhouse::Client, live: &LiveHub, chunk: Vec<
 /// Pushes stored points of watched runs to live viewers.
 fn publish(live: &LiveHub, accepted: &[Accepted]) {
     for Accepted { batch, .. } in accepted {
-        if batch.rows() > 0 && live.is_watched(batch.run_id) {
+        if !live.is_watched(batch.run_id) {
+            continue;
+        }
+        if !batch.scalars.value.is_empty() {
             live.publish(LiveEvent::Points {
                 run_id: batch.run_id,
                 scalars: Arc::new(batch.scalars.clone()),
+            });
+        }
+        if !batch.console.is_empty() {
+            live.publish(LiveEvent::Console {
+                run_id: batch.run_id,
+                lines: Arc::new(batch.console.clone()),
             });
         }
     }
@@ -227,7 +237,7 @@ async fn write_metrics(
     ch: &clickhouse::Client,
     accepted: &[Accepted],
 ) -> clickhouse::error::Result<()> {
-    if accepted.iter().all(|a| a.batch.rows() == 0) {
+    if accepted.iter().all(|a| a.batch.scalars.value.is_empty()) {
         return Ok(());
     }
     let mut insert = ch.insert::<MetricRow<'_>>("metrics")?;
@@ -250,11 +260,63 @@ async fn write_metrics(
     insert.end().await
 }
 
+#[derive(clickhouse::Row, serde::Serialize)]
+struct ConsoleRow<'a> {
+    project_id: u64,
+    #[serde(with = "clickhouse::serde::uuid")]
+    run_id: Uuid,
+    line: u64,
+    ts: i64,
+    /// Enum8: 1 = stdout, 2 = stderr (validated by the request handler).
+    stream: i8,
+    text: &'a str,
+    seq: u64,
+}
+
+async fn write_console(
+    ch: &clickhouse::Client,
+    accepted: &[Accepted],
+) -> clickhouse::error::Result<()> {
+    if accepted.iter().all(|a| a.batch.console.is_empty()) {
+        return Ok(());
+    }
+    let mut insert = ch.insert::<ConsoleRow<'_>>("console_lines")?;
+    for Accepted { batch, .. } in accepted {
+        for line in &batch.console {
+            insert
+                .write(&ConsoleRow {
+                    project_id: batch.project_id as u64,
+                    run_id: batch.run_id,
+                    line: line.line,
+                    ts: line.time_ms,
+                    stream: line.stream as i8,
+                    text: &line.text,
+                    seq: batch.seq,
+                })
+                .await?;
+        }
+    }
+    insert.end().await
+}
+
 /// Summary/config changes for one run, merged across the batches of a flush.
 struct RunUpdate {
     run_id: Uuid,
     summary: Option<Map<String, Value>>,
     config: Option<Map<String, Value>>,
+    last_step: Option<u64>,
+}
+
+/// Highest step in a batch, system metrics aside (their step is the time).
+fn max_step(batch: &Batch) -> Option<u64> {
+    let s = &batch.scalars;
+    let system: Vec<bool> = s.keys.iter().map(|k| k.starts_with("system/")).collect();
+    s.step
+        .iter()
+        .zip(&s.key_idx)
+        .filter(|&(_, &k)| !system[k as usize])
+        .map(|(&step, _)| step)
+        .max()
 }
 
 async fn update_runs(
@@ -272,11 +334,13 @@ async fn update_runs(
                 run_id: batch.run_id,
                 summary: None,
                 config: None,
+                last_step: None,
             });
         }
         let update = merged.last_mut().expect("pushed above");
         merge_into(&mut update.summary, batch.summary_json.as_deref());
         merge_into(&mut update.config, batch.config_json.as_deref());
+        update.last_step = update.last_step.max(max_step(batch));
     }
 
     // Runs are updated in id order so concurrent transactions can't deadlock.
@@ -292,13 +356,15 @@ async fn update_runs(
         run_id,
         summary,
         config,
+        last_step,
     } in merged
     {
         let (next_seq, pending) = windows[&run_id].to_db();
         sqlx::query(
             "UPDATE runs SET next_seq = $2, pending_seqs = $3, heartbeat_at = now(),
                  summary = summary || COALESCE($4, '{}'::jsonb),
-                 config = config || COALESCE($5, '{}'::jsonb)
+                 config = config || COALESCE($5, '{}'::jsonb),
+                 last_step = GREATEST(last_step, $6)
              WHERE id = $1",
         )
         .bind(run_id)
@@ -306,6 +372,7 @@ async fn update_runs(
         .bind(pending)
         .bind(summary.map(Json))
         .bind(config.map(Json))
+        .bind(last_step.map(|s| s as i64))
         .execute(&mut *tx)
         .await?;
     }
