@@ -440,6 +440,7 @@ def init(
     api_key: str | None = None,
     console: bool | None = None,
     system_metrics: bool | None = None,
+    git_diff: bool | None = None,
 ) -> Run:
     """Start a run. Returns immediately; the server is contacted in the background.
 
@@ -448,7 +449,8 @@ def init(
     default ``./.losscape``), ``LOSSCAPE_SERVER`` (default http://localhost:8080),
     ``LOSSCAPE_API_KEY``, ``LOSSCAPE_CONSOLE`` (capture stdout/stderr; default on,
     except on Windows and in Jupyter), ``LOSSCAPE_SYSTEM_METRICS`` (CPU, memory, disk,
-    network, NVIDIA GPUs; default on) and ``LOSSCAPE_SYSTEM_INTERVAL`` (seconds, 5).
+    network, NVIDIA GPUs; default on), ``LOSSCAPE_SYSTEM_INTERVAL`` (seconds, 5) and
+    ``LOSSCAPE_GIT_DIFF`` (record uncommitted changes; default on).
     """
     import lsc
 
@@ -503,6 +505,7 @@ def init(
         else None,
         python_path=[p for p in sys.path if p],
         details_json=json.dumps(_jsonable(details)),
+        git_diff=_flag(git_diff, "LOSSCAPE_GIT_DIFF", True),
         **server_args,
     )
     start_step = native.next_step or 0

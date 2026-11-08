@@ -2,6 +2,7 @@ import math
 import os
 import random
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -233,3 +234,25 @@ def test_describe_model_does_not_advance_the_step(tmp_path):
     with pytest.raises(ValueError, match="name"):
         run.describe_model(Linear(3), name="")
     assert run.finish() in ("saved_locally", "uploaded")
+
+
+def test_the_git_diff_setting(tmp_path, monkeypatch):
+    # Accepted, as an argument and from the environment; what it does is tested in Rust.
+    run = lsc.init(project="p", mode="offline", dir=tmp_path, console=False, git_diff=False)
+    run.finish()
+    monkeypatch.setenv("LOSSCAPE_GIT_DIFF", "0")
+    run = lsc.init(project="p", mode="offline", dir=tmp_path, console=False)
+    run.finish()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")
+def test_the_local_log_is_private(tmp_path):
+    run = lsc.init(project="p", mode="offline", dir=tmp_path / "log", console=False)
+    run.log({"x": 1.0})
+    run.finish()
+    folder = tmp_path / "log" / "runs" / run.id
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    files = list(folder.iterdir())
+    assert files
+    for file in files:
+        assert stat.S_IMODE(file.stat().st_mode) == 0o600, file

@@ -33,5 +33,10 @@ def start_run(
     config_json: str = "",
     python_version: str = "",
     sdk_version: str = "",
+    console: bool = False,
+    system_interval: float | None = None,
+    python_path: list[str] = ...,
+    details_json: str = "",
+    git_diff: bool = True,
 ) -> NativeRun: ...
 def sync(root: str | PathLike[str], server: str, api_key: str) -> list[tuple[str, str, str]]: ...

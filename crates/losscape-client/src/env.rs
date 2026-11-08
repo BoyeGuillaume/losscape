@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use losscape_core::proto::v0::RunEnvironment;
 use serde_json::{Map, Value, json};
 
-use crate::redact::redact_str;
+use crate::redact::{HIDDEN, redact_str, scrub, secret_name};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Larger diffs are cut (the server keeps 2 MB).
@@ -51,11 +51,22 @@ const ENV_NAMES: &[&str] = &[
 pub struct Extra {
     pub python_path: Vec<PathBuf>,
     pub details: Map<String, Value>,
+    /// Don't record the uncommitted changes, only whether there are any.
+    pub skip_git_diff: bool,
 }
 
 pub fn capture(python_version: &str, sdk_version: &str, extra: &Extra) -> RunEnvironment {
     let cwd = std::env::current_dir().unwrap_or_default();
-    let commit = git(&cwd, &["rev-parse", "HEAD"], 1 << 10);
+    capture_at(&cwd, python_version, sdk_version, extra)
+}
+
+fn capture_at(
+    cwd: &Path,
+    python_version: &str,
+    sdk_version: &str,
+    extra: &Extra,
+) -> RunEnvironment {
+    let commit = git(cwd, &["rev-parse", "HEAD"], 1 << 10);
     let in_repo = commit.is_some();
 
     let mut details = extra.details.clone();
@@ -81,11 +92,11 @@ pub fn capture(python_version: &str, sdk_version: &str, extra: &Extra) -> RunEnv
     }
     let mut git_diff = String::new();
     if in_repo {
-        if let Some(branch) = git(&cwd, &["rev-parse", "--abbrev-ref", "HEAD"], 1 << 10) {
+        if let Some(branch) = git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"], 1 << 10) {
             details.insert("git_branch".into(), json!(branch));
         }
         if let Some(untracked) = git(
-            &cwd,
+            cwd,
             &["ls-files", "--others", "--exclude-standard"],
             1 << 20,
         ) {
@@ -95,22 +106,29 @@ pub fn capture(python_version: &str, sdk_version: &str, extra: &Extra) -> RunEnv
             }
         }
         git_diff = git(
-            &cwd,
+            cwd,
             &["diff", "HEAD", "--no-color", "--no-ext-diff"],
             MAX_DIFF_BYTES,
         )
         .unwrap_or_default();
     }
 
+    let git_dirty = !git_diff.is_empty();
+    git_diff = if extra.skip_git_diff {
+        String::new()
+    } else {
+        scrub(&git_diff).into_owned()
+    };
+
     RunEnvironment {
         hostname: gethostname::gethostname().to_string_lossy().into_owned(),
         command: redact_args(std::env::args()).join(" "),
         python_version: python_version.to_owned(),
         sdk_version: sdk_version.to_owned(),
-        git_remote: git(&cwd, &["remote", "get-url", "origin"], 1 << 12)
+        git_remote: git(cwd, &["remote", "get-url", "origin"], 1 << 12)
             .map(|u| strip_credentials(&u))
             .unwrap_or_default(),
-        git_dirty: !git_diff.is_empty(),
+        git_dirty,
         git_commit: commit.unwrap_or_default(),
         details_json: Value::Object(details).to_string(),
         git_diff,
@@ -316,39 +334,37 @@ fn git(cwd: &Path, args: &[&str], max: usize) -> Option<String> {
     })
 }
 
-/// `https://user:token@host/repo` -> `https://host/repo`.
+/// `https://user:token@host/repo?token=x` -> `https://host/repo`.
 fn strip_credentials(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
     match url.split_once("://") {
-        Some((scheme, rest)) => match rest.split_once('@') {
-            Some((userinfo, host)) if !userinfo.contains('/') => format!("{scheme}://{host}"),
-            _ => url.to_owned(),
-        },
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            // The password can have an `@` in it.
+            let host = authority.rsplit('@').next().unwrap_or(authority);
+            format!("{scheme}://{host}{path}")
+        }
         None => url.to_owned(),
     }
 }
 
 /// Hides values of arguments that look like secrets: `--api-key X`, `--token=X`, ...
 fn redact_args(args: impl Iterator<Item = String>) -> Vec<String> {
-    let secret = |name: &str| {
-        let name = name.to_ascii_lowercase();
-        ["key", "token", "secret", "password", "passwd"]
-            .iter()
-            .any(|s| name.contains(s))
-    };
     let mut out = Vec::new();
     let mut hide_next = false;
     for arg in args {
         if hide_next {
-            out.push("***".to_owned());
+            out.push(HIDDEN.to_owned());
             hide_next = false;
-        } else if let Some((name, _)) = arg
-            .split_once('=')
-            .filter(|(n, _)| n.starts_with('-') && secret(n))
+        } else if let Some((name, value)) = arg.split_once('=')
+            && secret_name(name)
+            && value.parse::<f64>().is_err()
         {
-            out.push(format!("{name}=***"));
+            // With or without dashes: `--token=x`, `db.password=x` (Hydra).
+            out.push(format!("{name}={HIDDEN}"));
         } else {
-            hide_next = arg.starts_with('-') && secret(&arg);
-            out.push(arg);
+            hide_next = arg.starts_with('-') && !arg.contains('=') && secret_name(&arg);
+            out.push(scrub(&arg).into_owned());
         }
     }
     out
@@ -459,5 +475,99 @@ mod tests {
         let details: Value = serde_json::from_str(&env.details_json).unwrap();
         assert!(details["cpu"]["threads"].as_u64().unwrap() >= 1);
         assert!(details["os"]["arch"].is_string());
+    }
+
+    #[test]
+    fn strips_credentials_however_they_are_written() {
+        for (url, clean) in [
+            ("https://u:p@ss@host/a", "https://host/a"),
+            ("https://host/a?token=abc", "https://host/a"),
+            ("https://host/a#frag", "https://host/a"),
+            ("https://host", "https://host"),
+            ("ssh://git@host/a.git", "ssh://host/a.git"),
+        ] {
+            assert_eq!(strip_credentials(url), clean);
+        }
+    }
+
+    #[test]
+    fn redacts_any_form_of_secret_argument() {
+        let token = "ghp_0123456789abcdefghijABCDEFGHIJ";
+        let args = [
+            "train.py",
+            "db.password=hunter2",
+            "--credentials=abc",
+            "--foo",
+            token,
+            "--note=see postgres://u:p@h/d",
+            "--password",
+            "hunter2",
+            "--max-tokens",
+            "512",
+            "--key-dim=64",
+            "tokenizer=gpt2",
+        ];
+        assert_eq!(
+            redact_args(args.iter().map(|s| s.to_string())),
+            [
+                "train.py",
+                "db.password=***",
+                "--credentials=***",
+                "--foo",
+                "***",
+                "--note=see postgres://u:***@h/d",
+                "--password",
+                "***",
+                "--max-tokens",
+                "512",
+                "--key-dim=64",
+                "tokenizer=gpt2",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_git_diff_is_scrubbed_and_can_be_left_out() {
+        let repo = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(repo.path())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        if !run(&["init", "-q"]) {
+            return; // no git here
+        }
+        let file = repo.path().join("settings.py");
+        std::fs::write(&file, "TOKEN = \"\"\nlr = 1\n").unwrap();
+        assert!(run(&["add", "."]) && run(&["commit", "-qm", "x"]));
+        let token = "ghp_0123456789abcdefghijABCDEFGHIJ";
+        std::fs::write(
+            &file,
+            format!("TOKEN = \"{token}\"\nPASSWORD = \"hunter2\"\nlr = 2\n"),
+        )
+        .unwrap();
+
+        let env = capture_at(repo.path(), "3", "0", &Extra::default());
+        assert!(env.git_dirty);
+        assert!(env.git_diff.contains("+lr = 2"), "{}", env.git_diff);
+        assert!(
+            env.git_diff.contains("+TOKEN = \"***\""),
+            "{}",
+            env.git_diff
+        );
+        assert!(!env.git_diff.contains(token) && !env.git_diff.contains("hunter2"));
+
+        let off = Extra {
+            skip_git_diff: true,
+            ..Extra::default()
+        };
+        let env = capture_at(repo.path(), "3", "0", &off);
+        assert!(env.git_dirty, "whether there are changes is still recorded");
+        assert_eq!(env.git_diff, "");
     }
 }

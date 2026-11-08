@@ -184,7 +184,7 @@ fn parse_object(json: &str) -> PyResult<Map<String, Value>> {
     *, project, root, server=None, api_key=None, run_id=None, resume=false, name=String::new(),
     group=String::new(), tags=Vec::new(), notes=String::new(), config_json=String::new(),
     python_version=String::new(), sdk_version=String::new(), console=false,
-    system_interval=None, python_path=Vec::new(), details_json=String::new(),
+    system_interval=None, python_path=Vec::new(), details_json=String::new(), git_diff=true,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn start_run(
@@ -206,6 +206,7 @@ fn start_run(
     system_interval: Option<f64>,
     python_path: Vec<PathBuf>,
     details_json: String,
+    git_diff: bool,
 ) -> PyResult<NativeRun> {
     let mode = match (server, api_key) {
         (Some(server), Some(api_key)) => Mode::Online { server, api_key },
@@ -240,6 +241,7 @@ fn start_run(
         } else {
             parse_object(&details_json)?
         },
+        skip_git_diff: !git_diff,
     };
 
     // Resuming may wait on the server.

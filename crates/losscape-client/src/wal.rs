@@ -29,10 +29,7 @@ pub struct RunLock(#[allow(dead_code)] File);
 
 /// `Ok(None)` if another live process owns the run.
 pub fn try_lock(dir: &Path) -> io::Result<Option<RunLock>> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
+    let file = private(OpenOptions::new().create(true).truncate(false).write(true))
         .open(dir.join(LOCK_FILE))?;
     match file.try_lock() {
         Ok(()) => Ok(Some(RunLock(file))),
@@ -44,8 +41,44 @@ pub fn try_lock(dir: &Path) -> io::Result<Option<RunLock>> {
 /// Writes `path` atomically (temp file + rename).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)?;
+    // Never through something already there: a link left by someone else, on a shared disk.
+    match fs::remove_file(&tmp) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    private(OpenOptions::new().write(true).create_new(true))
+        .open(&tmp)?
+        .write_all(bytes)?;
     fs::rename(tmp, path)
+}
+
+/// The local log holds everything a run records, on disks that are often shared: for its
+/// owner only. On Windows, files inherit the permissions of the folder.
+#[cfg(unix)]
+fn private(options: &mut OpenOptions) -> &mut OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600)
+}
+
+#[cfg(not(unix))]
+fn private(options: &mut OpenOptions) -> &mut OpenOptions {
+    options
+}
+
+/// Creates a run's folder, and those above it if missing, for its owner only. If folders above
+/// were there already, they stay as they are.
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        builder.mode(0o700);
+        builder.create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    builder.create(dir)
 }
 
 pub fn read_acked(dir: &Path) -> io::Result<u64> {
@@ -187,9 +220,7 @@ impl WalWriter {
     pub fn append(&mut self, payload: &[u8]) -> io::Result<u64> {
         let seq = self.next_seq;
         if self.file.is_none() || self.segment_bytes >= SEGMENT_MAX_BYTES {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
+            let mut file = private(OpenOptions::new().create_new(true).write(true))
                 .open(segment_path(&self.dir, seq))?;
             file.write_all(MAGIC)?;
             self.file = Some(file);
@@ -367,5 +398,47 @@ mod tests {
         assert!(try_lock(dir.path()).unwrap().is_none());
         drop(held);
         assert!(try_lock(dir.path()).unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_local_log_is_for_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        // Folders from an earlier version, and a umask that would leave everything readable.
+        let dir = root.path().join("runs/one");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        create_private_dir(&dir).unwrap();
+        let fresh = root.path().join("new/runs/two");
+        create_private_dir(&fresh).unwrap();
+
+        let mode = |path: &Path| path.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&fresh), 0o700);
+        assert_eq!(mode(&root.path().join("new")), 0o700);
+
+        let _lock = try_lock(&dir).unwrap();
+        let mut writer = WalWriter::open(&dir).unwrap();
+        writer.append(b"batch").unwrap();
+        write_atomic(&dir.join("init.pb"), b"init").unwrap();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            assert_eq!(mode(&path), 0o600, "{}", path.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writing_doesnt_follow_links_left_by_someone_else() {
+        let root = tempfile::tempdir().unwrap();
+        let victim = root.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let target = root.path().join("acked");
+        std::os::unix::fs::symlink(&victim, target.with_extension("tmp")).unwrap();
+        write_atomic(&target, b"12345678").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(std::fs::read(&target).unwrap(), b"12345678");
     }
 }

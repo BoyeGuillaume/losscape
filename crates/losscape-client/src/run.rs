@@ -156,13 +156,17 @@ impl Run {
     /// server where the run stopped first.
     pub fn start(mut opts: RunOptions) -> Result<Self, StartError> {
         crate::redact::redact_json(&mut opts.config);
+        for text in [&mut opts.name, &mut opts.group, &mut opts.notes] {
+            crate::redact::scrub_in_place(text);
+        }
+        opts.tags.iter_mut().for_each(crate::redact::scrub_in_place);
         let run_id = opts.run_id.unwrap_or_default();
         let dir = opts.root.join("runs").join(run_id.to_string());
         let local = |err| StartError::Local {
             dir: dir.clone(),
             err,
         };
-        fs::create_dir_all(&dir).map_err(local)?;
+        wal::create_private_dir(&dir).map_err(local)?;
         let lock = wal::try_lock(&dir)
             .map_err(local)?
             .ok_or(StartError::InUse(run_id))?;
@@ -362,7 +366,8 @@ impl Run {
         self.after_push(rows);
     }
 
-    pub fn update_summary(&self, update: Map<String, Value>) {
+    pub fn update_summary(&self, mut update: Map<String, Value>) {
+        crate::redact::redact_json(&mut update);
         self.buffer().update_summary(update);
     }
 

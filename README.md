@@ -91,8 +91,12 @@ run.finish()                           # waits for the upload; `with` does this 
 ```
 
 - **Recorded for you:** console output, system metrics (CPU, memory, disk, network, NVIDIA GPUs), and
-  the environment (git commit and diff, packages, hardware). Values that look like secrets are
-  hidden. Console capture is off on Windows and in Jupyter.
+  the environment (git commit and uncommitted diff, command line, packages, hardware). Console capture
+  is off on Windows and in Jupyter.
+- **Secrets:** everyone with access to the project can read this, so what looks like a secret is
+  replaced by `***` before it's stored. That only catches what can be recognized, so turn off what
+  you don't want recorded: `lsc.init(git_diff=False, console=False)`. See
+  [Secrets](sdk/python/README.md#secrets).
 - **Models:** `run.describe_model(model, args=(example_input,))` records the layers, shapes, parameters
   and FLOPs of a `torch.nn.Module`, for the run's Model tab.
 - **Resuming:** `lsc.init(id=run_id, resume=True)` continues a run where it stopped.

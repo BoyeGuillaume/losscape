@@ -326,7 +326,8 @@ impl Console {
                 line: line.number.expect("numbered above"),
                 time_ms: line.time_ms,
                 stream: stream as i32,
-                text: String::from_utf8_lossy(&line.text).into_owned(),
+                // What's recorded: the terminal gets it as it was printed.
+                text: crate::redact::scrub(&String::from_utf8_lossy(&line.text)).into_owned(),
             });
         }
         out.sort_by_key(|l| l.line);
