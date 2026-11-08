@@ -568,7 +568,7 @@
 									<span class="truncate">{run.group_name ?? ''}</span>
 								{:else if c.kind === 'tags'}
 									<span class="flex min-w-0 gap-1 overflow-hidden">
-										{#each run.tags as tag (tag)}
+										{#each new Set(run.tags) as tag (tag)}
 											<TagChip name={tag} onclick={() => onTag(tag)} />
 										{/each}
 									</span>

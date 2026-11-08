@@ -203,7 +203,7 @@
 			<p class="text-sm text-muted-foreground">Not captured.</p>
 		{:else}
 			<ul class="max-h-72 columns-1 overflow-auto font-mono text-xs leading-5 sm:columns-2">
-				{#each packages as p (p)}
+				{#each new Set(packages) as p (p)}
 					<li class="truncate" title={p}>{p}</li>
 				{:else}
 					<li class="font-sans text-sm text-muted-foreground">No package matches.</li>

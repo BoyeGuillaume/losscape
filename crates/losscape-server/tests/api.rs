@@ -1591,3 +1591,28 @@ async fn live_streams_end_when_access_does() {
     assert!(ended.is_ok(), "the stream outlived the membership");
     server.stop().await;
 }
+
+#[tokio::test]
+async fn a_tag_given_twice_is_one_tag() {
+    let server = server!();
+    server.create_project("test").await;
+    let run = RunId::new();
+    let init = RunInit {
+        run_id: run.as_bytes().to_vec(),
+        project: "test".into(),
+        tags: vec!["a".into(), "b".into(), "a".into()],
+        config_json: "{}".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        server.send("/api/v0/runs/init", init, false).await.0,
+        StatusCode::OK
+    );
+    let tags: Vec<String> = sqlx::query_scalar("SELECT tags FROM runs WHERE id = $1")
+        .bind(uuid::Uuid::from_bytes(*run.as_bytes()))
+        .fetch_one(server.state.pg())
+        .await
+        .unwrap();
+    assert_eq!(tags, ["a", "b"]);
+    server.stop().await;
+}

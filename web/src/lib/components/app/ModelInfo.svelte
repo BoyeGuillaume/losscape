@@ -265,7 +265,7 @@
 			<span class="text-right">Parameters</span>
 			<span>Share</span>
 		</div>
-		{#each rows as row (row.key)}
+		{#each rows as row (row.id)}
 			<div
 				class="grid min-h-8 min-w-[46rem] grid-cols-[minmax(0,1fr)_16rem_6rem_6rem] items-center gap-3 border-b px-3 py-1 last:border-b-0 hover:bg-muted/50"
 				role="treeitem"

@@ -39,6 +39,8 @@ pub async fn init(
         name => name.to_owned(),
     };
     validate_tags(&req.tags)?;
+    let mut seen = std::collections::HashSet::new();
+    let tags: Vec<&String> = req.tags.iter().filter(|t| seen.insert(*t)).collect();
     let config: Value = json_object_or_none(req.config_json, "config_json")?
         .map(|raw| serde_json::from_str(&raw).expect("validated"))
         .unwrap_or_else(|| json!({}));
@@ -81,7 +83,7 @@ pub async fn init(
     .bind(project_id)
     .bind(&name)
     .bind(group)
-    .bind(&req.tags)
+    .bind(&tags)
     .bind(&req.notes)
     .bind(Json(&config))
     .bind(Json(&environment))

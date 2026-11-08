@@ -129,6 +129,38 @@ describe('model rows', () => {
 			expect(names(expandRepeats(older))).toEqual(['4', '5', '6']);
 		});
 
+		it('finds names for blocks however they are named', () => {
+			const names = (over: Partial<ModelNode>) =>
+				expandRepeats(collapsed(over)).children?.map((c) => c.name);
+			expect(names({ name: 'layer1.0' })).toEqual(['layer1.0', 'layer1.1', 'layer1.2']);
+			expect(names({ name: 'block' })).toEqual(['block', 'block#2', 'block#3']);
+			expect(names({ name: '' })).toEqual(['', '#2', '#3']);
+		});
+
+		it('survives any description: rows are always unique, and few enough to draw', () => {
+			const rowsOf = (tree: ModelNode) => {
+				const open = expandRepeats(tree);
+				const rows = modelRows(open, allKeys(open));
+				expect(new Set(rows.map((r) => r.id)).size).toBe(rows.length);
+				return rows;
+			};
+			// Twice the same name, from `names` or next to each other.
+			rowsOf(collapsed({ names: ['a', 'a', 'a'] }));
+			rowsOf({ ...collapsed({}), children: [block({ name: 'x' }), block({ name: 'x' })] });
+			// A name that looks like what makes others unique.
+			rowsOf({
+				...collapsed({}),
+				children: [block({ name: 'x' }), block({ name: 'x' }), block({ name: 'x~2' })]
+			});
+			// A billion copies, of a billion copies.
+			const started = performance.now();
+			const huge = block({ repeat: 1e9, children: [block({ name: '0', repeat: 1e9 })] });
+			const rows = rowsOf({ ...collapsed({}), children: [huge] });
+			expect(rows.length).toBeLessThanOrEqual(MAX_ROWS + 1);
+			expect(rows.at(-1)?.hiddenRows).toBeGreaterThan(0);
+			expect(performance.now() - started).toBeLessThan(5000);
+		});
+
 		it('reaches blocks inside blocks, with one row each', () => {
 			const inner = block({ name: '0', repeat: 2, last: '1' });
 			const outer = block({

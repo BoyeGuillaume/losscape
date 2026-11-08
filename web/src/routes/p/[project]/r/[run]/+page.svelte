@@ -406,7 +406,7 @@
 						{/if}
 					</p>
 					<div class="mt-2 flex flex-wrap items-center gap-1.5 text-sm">
-						{#each r.tags as tag (tag)}
+						{#each new Set(r.tags) as tag (tag)}
 							<TagChip
 								name={tag}
 								onclick={() => openTag(tag)}
