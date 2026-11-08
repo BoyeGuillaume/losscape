@@ -199,18 +199,18 @@ def test_abort_from_the_ui_interrupts_the_script(monkeypatch):
 
 def test_background_script_ignores_interrupts_but_honors_an_abort():
     script = """
-import os, signal, time
+import signal, time
 from lsc import _run
 
 signal.signal(signal.SIGINT, signal.SIG_IGN)  # as inherited by `python train.py &`
 class R: _aborted = False
 _run._honor_abort_when_ignoring_interrupts(R)
-os.kill(os.getpid(), signal.SIGINT)
+_run._interrupt_main()
 time.sleep(0.05)
 print("still running")
 R._aborted = True
 try:
-    os.kill(os.getpid(), signal.SIGINT)
+    _run._interrupt_main()
     time.sleep(5)
 except KeyboardInterrupt:
     print("interrupted")

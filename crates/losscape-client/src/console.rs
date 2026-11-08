@@ -462,6 +462,23 @@ mod capture {
         }
     }
 
+    #[cfg(not(target_vendor = "apple"))]
+    fn close_on_exec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+        Ok(rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)?)
+    }
+
+    /// Apple systems have no way to do this in one step, so a process started in between by
+    /// another thread could inherit these. It would hold the pipe open, which at worst makes
+    /// stopping the capture wait for its time limit.
+    #[cfg(target_vendor = "apple")]
+    fn close_on_exec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+        use rustix::io::{FdFlags, fcntl_setfd};
+        let (read, write) = rustix::pipe::pipe()?;
+        fcntl_setfd(&read, FdFlags::CLOEXEC)?;
+        fcntl_setfd(&write, FdFlags::CLOEXEC)?;
+        Ok((read, write))
+    }
+
     impl Redirect {
         fn start(stream: ConsoleStream, console: Arc<Mutex<Console>>) -> io::Result<Self> {
             let fd = standard(stream);
@@ -469,7 +486,7 @@ mod capture {
             let (read, write) = if rustix::termios::isatty(fd) {
                 pty(fd)?
             } else {
-                rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)?
+                close_on_exec_pipe()?
             };
             // The standard descriptor now points at the writer (not close-on-exec, so
             // subprocesses write there too); `write` itself closes when dropped.
