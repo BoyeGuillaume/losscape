@@ -39,6 +39,12 @@ impl NativeRun {
     }
 
     /// For a resumed run: the first step after what was already logged.
+    /// Someone asked for this run to stop (the UI's Abort).
+    #[getter]
+    fn abort_requested(&self) -> bool {
+        self.run.abort_requested()
+    }
+
     #[getter]
     fn next_step(&self) -> Option<u64> {
         self.run.next_step()

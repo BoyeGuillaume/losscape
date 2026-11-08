@@ -4,13 +4,13 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::{LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse};
+use losscape_core::proto::v0::{Ack, LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse};
 use prost::Message;
 use serde_json::{Map, Value};
 use tokio::sync::Notify;
@@ -24,7 +24,8 @@ use crate::wal::{self, FINISH_FILE, INIT_FILE, RunLock, WalReader, WalWriter};
 
 /// Buffered points that trigger a batch before the interval is up.
 pub const WAKE_ROWS: usize = 50_000;
-const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
+/// Also how soon a run learns it was aborted.
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 const RESUME_TIMEOUT: Duration = Duration::from_secs(15);
 const ZSTD_LEVEL: i32 = 3;
 /// How long finish waits for console output still in flight.
@@ -139,6 +140,8 @@ struct Shared {
     /// Batches written to the local log so far (= next seq).
     written: AtomicU64,
     live: Live,
+    /// Someone asked for this run to stop (from the server's answer to a heartbeat).
+    abort: AtomicBool,
 }
 
 pub fn now_ms() -> i64 {
@@ -223,6 +226,7 @@ impl Run {
             outcome: Mutex::default(),
             done: Condvar::new(),
             written: AtomicU64::new(writer.next_seq()),
+            abort: AtomicBool::new(false),
             live: Live {
                 acked: Arc::new(AtomicU64::new(acked)),
                 ..Live::default()
@@ -322,6 +326,11 @@ impl Run {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Someone asked for this run to stop (known from its heartbeats).
+    pub fn abort_requested(&self) -> bool {
+        self.shared.abort.load(Ordering::Relaxed)
     }
 
     /// For a resumed run: the first step after what was already logged.
@@ -491,7 +500,7 @@ impl Background {
         let uploader = async {
             let result = tokio::select! {
                 result = upload_run(client, &self.dir, Some(&shared.live)) => result.map(|()| true),
-                _ = heartbeat(client, &self.init.run_id) => unreachable!("heartbeat never ends"),
+                _ = heartbeat(client, &self.init.run_id, &self.shared.abort) => unreachable!("heartbeat never ends"),
                 _ = shared.cancel.notified() => Ok(false),
             };
             if let Err(err) = &result {
@@ -590,8 +599,9 @@ fn json_object(map: Map<String, Value>) -> String {
     }
 }
 
-/// Best effort, so a run that logs rarely isn't marked as crashed.
-async fn heartbeat(client: &Client, run_id: &[u8]) {
+/// Best effort, so a run that logs rarely isn't marked as crashed. The answer also says
+/// whether someone asked this run to stop.
+async fn heartbeat(client: &Client, run_id: &[u8], abort: &AtomicBool) {
     let body = losscape_core::proto::v0::Heartbeat {
         run_id: run_id.to_vec(),
         client_time_ms: 0,
@@ -602,12 +612,16 @@ async fn heartbeat(client: &Client, run_id: &[u8]) {
             client_time_ms: now_ms(),
             ..body.clone()
         };
-        tokio::time::timeout(
+        let answer = tokio::time::timeout(
             Duration::from_secs(10),
             client.post("runs/heartbeat", body.encode_to_vec().into(), false),
         )
-        .await
-        .ok();
+        .await;
+        if let Ok(Ok(bytes)) = answer
+            && Ack::decode(bytes).is_ok_and(|ack| ack.abort)
+        {
+            abort.store(true, Ordering::Relaxed);
+        }
     }
 }
 

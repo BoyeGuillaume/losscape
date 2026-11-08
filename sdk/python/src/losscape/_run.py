@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import _thread
 import atexit
 import json
 import math
 import os
 import platform
 import re
+import signal
 import sys
 import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,6 +22,8 @@ from losscape.utils import random_name
 
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _MODES = ("online", "offline", "disabled")
+# An aborted script gets this long to stop by itself after its interrupt.
+ABORT_GRACE_SECONDS = 60
 
 
 class _Process:
@@ -126,12 +131,37 @@ class Run:
         self._pid = os.getpid()
         self._step = start_step
         self._finished = False
+        self._aborted = False
         self._warned_fork = False
         self.id: str = native.id if native is not None else _native.new_run_id()
         self.name = name
         self.project = project
         self.config = Config(self, config, self._send_config)
         self.summary = Summary(self, {}, self._send_summary)
+
+    def _watch_abort(self) -> None:
+        """Runs in a thread: turns an abort asked for in the UI into an interrupt, like
+        Ctrl-C, so the script stops the way it normally does and what it logged is kept."""
+        while not self._finished:
+            time.sleep(0.5)
+            if self._finished or self._pid != os.getpid():
+                return
+            if self._native.abort_requested:
+                break
+        else:
+            return
+        self._aborted = True
+        _say(f"run {self.name} was aborted from the UI: interrupting the script")
+        _interrupt_main()
+        # A script that ignores interrupts still stops, with its run ended properly.
+        deadline = time.monotonic() + ABORT_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if self._finished:
+                return
+            time.sleep(0.5)
+        _say(f"run {self.name} didn't stop within {ABORT_GRACE_SECONDS} s: terminating")
+        self.finish(exit_code=130, state="killed")
+        os.kill(os.getpid(), signal.SIGTERM)
 
     def __repr__(self) -> str:
         return f"<losscape.Run {self.name} ({self.id}) project={self.project} mode={self._mode}>"
@@ -191,7 +221,7 @@ class Run:
         if self._pid != _Process.pid:
             return "failed"
         if state is None:
-            state = "finished" if exit_code == 0 else "failed"
+            state = "killed" if self._aborted else "finished" if exit_code == 0 else "failed"
         if timeout is None:
             timeout = float(os.environ.get("LOSSCAPE_FINISH_TIMEOUT", "60"))
         # Output still in Python's buffers goes into the captured console.
@@ -282,6 +312,30 @@ def _flag(value: bool | None, env: str, default: bool) -> bool:
     if raw in ("1", "true", "on", "yes"):
         return True
     return default
+
+
+def _honor_abort_when_ignoring_interrupts(run: Run) -> None:
+    """A script started in the background (`python train.py &`) inherits an ignored SIGINT,
+    so an abort's interrupt would do nothing. Such a script still ignores interrupts, except
+    the one meant for it."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+    if signal.getsignal(signal.SIGINT) != signal.SIG_IGN:
+        return
+
+    def on_interrupt(_signum: int, _frame: object) -> None:
+        if run._aborted:
+            raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, on_interrupt)
+
+
+def _interrupt_main() -> None:
+    """KeyboardInterrupt in the main thread, also if it's blocked in a system call."""
+    if os.name == "nt":
+        _thread.interrupt_main()
+    else:
+        os.kill(os.getpid(), signal.SIGINT)
 
 
 def _console_setting(console: bool | None) -> tuple[bool, str | None]:
@@ -408,6 +462,9 @@ def init(
     with _lock:
         _active_runs.add(run)
     losscape.run = run
+    if mode != "offline":
+        _honor_abort_when_ignoring_interrupts(run)
+        threading.Thread(target=run._watch_abort, name="losscape-abort", daemon=True).start()
     where = f"offline, saving to {native.dir}" if mode == "offline" else server_args["server"]
     resumed = f", resuming at step {start_step}" if resume else ""
     _say(f"run {name} ({run.id}) in project {project} -> {where}{resumed}")

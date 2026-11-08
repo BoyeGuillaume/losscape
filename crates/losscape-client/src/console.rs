@@ -19,7 +19,10 @@ const WINDOW: usize = 200;
 /// Longest line kept; the rest of a longer line is dropped.
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 /// A line already sent is sent again at most this often while it keeps changing.
-const RESEND_EVERY: Duration = Duration::from_secs(1);
+const RESEND_EVERY: Duration = Duration::from_millis(250);
+/// A sent line that just went empty is held back this long: progress bars are cleared and
+/// redrawn around every message, and sending that moment would make them blink.
+const CLEARED_HOLD_MS: i64 = 500;
 /// Output stored per run; past it, output still reaches the terminal but isn't kept.
 pub const MAX_CAPTURED_BYTES: u64 = 100 << 20;
 /// Most lines per batch (the server takes up to 100k).
@@ -35,8 +38,12 @@ struct Line {
     sent_at: Option<Instant>,
     /// When the line got its first byte (orders lines of the two streams).
     created_ms: i64,
+    /// Changed since it was started (its first change sets `created_ms`).
+    started: bool,
     /// Last change.
     time_ms: i64,
+    /// Bytes of this line counted as stored (a resend replaces what was sent before).
+    stored_len: u64,
 }
 
 impl Line {
@@ -47,12 +54,16 @@ impl Line {
             dirty: false,
             sent_at: None,
             created_ms: time_ms,
+            started: false,
             time_ms,
+            stored_len: 0,
         }
     }
 
     fn touch(&mut self, time_ms: i64) {
-        if !self.dirty && self.number.is_none() && self.text.is_empty() {
+        // Called after the change, so the text can't tell whether it's the first one.
+        if !self.started {
+            self.started = true;
             self.created_ms = time_ms;
         }
         self.dirty = true;
@@ -225,14 +236,22 @@ impl Screen {
     /// Lines ready to send: `(index, needs a number)`. A line is sent as soon as it has
     /// content, then again at most every `RESEND_EVERY` while it changes.
     fn ready(&self, now: Instant, force: bool) -> Vec<usize> {
+        // A new line goes with what changed around it: a message pushing a bar down clears
+        // the bar's old row, and alone the new row would show the bar twice.
+        let new_line = self.lines.iter().any(|l| l.dirty && l.number.is_none());
         self.lines
             .iter()
             .enumerate()
             .filter(|(_, l)| {
+                let being_redrawn = l.number.is_some()
+                    && l.text.iter().all(u8::is_ascii_whitespace) // tqdm clears with spaces
+                    && crate::run::now_ms() - l.time_ms < CLEARED_HOLD_MS;
                 l.dirty
                     && (force
-                        || l.sent_at
-                            .is_none_or(|at| now.duration_since(at) >= RESEND_EVERY))
+                        || (!being_redrawn
+                            && (new_line
+                                || l.sent_at
+                                    .is_none_or(|at| now.duration_since(at) >= RESEND_EVERY))))
             })
             .map(|(i, _)| i)
             .collect()
@@ -300,7 +319,9 @@ impl Console {
             let line = &mut self.screens[s].lines[i];
             line.dirty = false;
             line.sent_at = Some(now);
-            self.stored_bytes += line.text.len() as u64;
+            let len = line.text.len() as u64;
+            self.stored_bytes = (self.stored_bytes + len).saturating_sub(line.stored_len);
+            line.stored_len = len;
             out.push(ConsoleLine {
                 line: line.number.expect("numbered above"),
                 time_ms: line.time_ms,
@@ -522,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn carriage_return_rewrites_the_line_and_resends_once_a_second() {
+    fn carriage_return_rewrites_the_line_and_limits_resends() {
         let mut c = Console::new(0);
         let t0 = Instant::now();
         c.feed(OUT, b"\r  0%|", 1);
@@ -535,24 +556,28 @@ mod tests {
             c.feed(OUT, format!("\r {pct:2}%|").as_bytes(), 1);
         }
         assert!(
-            c.take(t0 + Duration::from_millis(500), false, MAX_LINES_PER_BATCH)
+            c.take(t0 + Duration::from_millis(100), false, MAX_LINES_PER_BATCH)
                 .is_empty(),
             "throttled"
         );
         assert_eq!(
-            texts(&c.take(t0 + Duration::from_secs(1), false, MAX_LINES_PER_BATCH)),
+            texts(&c.take(t0 + RESEND_EVERY, false, MAX_LINES_PER_BATCH)),
             [(0, " 50%|")],
             "only the latest state, same line number"
         );
         c.feed(OUT, b"\r100%|\ndone\n", 1);
         assert_eq!(
-            texts(&c.take(t0 + Duration::from_millis(1500), false, MAX_LINES_PER_BATCH)),
-            [(1, "done")],
-            "the new line goes now; the rewritten one waits its turn"
+            texts(&c.take(
+                t0 + RESEND_EVERY + Duration::from_millis(50),
+                false,
+                MAX_LINES_PER_BATCH
+            )),
+            [(0, "100%|"), (1, "done")],
+            "the new line goes now, with the rewrite before it"
         );
-        assert_eq!(
-            texts(&c.take(t0 + Duration::from_secs(2), false, MAX_LINES_PER_BATCH)),
-            [(0, "100%|")]
+        assert!(
+            c.take(t0 + RESEND_EVERY * 2, false, MAX_LINES_PER_BATCH)
+                .is_empty()
         );
     }
 
@@ -612,6 +637,63 @@ mod tests {
     }
 
     #[test]
+    fn a_bar_being_redrawn_is_not_sent_empty() {
+        let mut c = Console::new(0);
+        let t0 = Instant::now();
+        c.feed(OUT, b"\r 10%|", 1);
+        assert_eq!(
+            texts(&c.take(t0, false, MAX_LINES_PER_BATCH)),
+            [(0, " 10%|")]
+        );
+        let now = crate::run::now_ms();
+        c.feed(OUT, b"\r\x1b[K", now);
+        let later = t0 + RESEND_EVERY;
+        assert!(
+            c.take(later, false, MAX_LINES_PER_BATCH).is_empty(),
+            "cleared a moment ago: the redraw is coming"
+        );
+        c.feed(OUT, b"\r 20%|", now);
+        assert_eq!(
+            texts(&c.take(later, false, MAX_LINES_PER_BATCH)),
+            [(0, " 20%|")]
+        );
+
+        // Still empty a while later: it was really cleared.
+        c.feed(OUT, b"\r\x1b[K", now - CLEARED_HOLD_MS);
+        assert_eq!(
+            texts(&c.take(later + RESEND_EVERY, false, MAX_LINES_PER_BATCH)),
+            [(0, "")]
+        );
+    }
+
+    #[test]
+    fn rewrites_count_once_toward_the_limit() {
+        let mut c = Console::new(0);
+        let t0 = Instant::now();
+        for i in 0..20u32 {
+            c.feed(OUT, b"\r0123456789", 1);
+            c.take(t0 + RESEND_EVERY * i, false, MAX_LINES_PER_BATCH);
+        }
+        assert_eq!(c.stored_bytes, 10, "each send replaces the one before");
+    }
+
+    #[test]
+    fn a_line_sent_early_keeps_later_lines_in_order() {
+        let mut c = Console::new(0);
+        c.feed(OUT, b"top", 424);
+        c.feed(ERR, b"started\n", 425);
+        let first = c.take(Instant::now(), false, MAX_LINES_PER_BATCH);
+        assert_eq!(texts(&first), [(0, "top"), (1, "started")]);
+        c.feed(OUT, b"\nbanner 1\nbanner 2\n", 427);
+        c.feed(ERR, b"warning\n", 446);
+        let lines = c.take(Instant::now(), false, MAX_LINES_PER_BATCH);
+        assert_eq!(
+            texts(&lines),
+            [(2, "banner 1"), (3, "banner 2"), (4, "warning")]
+        );
+    }
+
+    #[test]
     fn caps_line_length_and_utf8_survives_split_writes() {
         let mut c = Console::new(0);
         let snowman = "☃".as_bytes();
@@ -632,6 +714,40 @@ mod tests {
             texts(&c.take(Instant::now(), false, MAX_LINES_PER_BATCH)),
             [(0, "ac")]
         );
+    }
+
+    #[test]
+    fn a_bar_cleared_with_spaces_is_not_sent_blank() {
+        let mut c = Console::new(0);
+        let start = Instant::now();
+        let now = crate::run::now_ms();
+        c.feed(ERR, b"bar 1%", now);
+        c.take(start, false, MAX_LINES_PER_BATCH);
+        c.feed(ERR, b"\r      \r", now);
+        assert!(
+            c.take(start + RESEND_EVERY, false, MAX_LINES_PER_BATCH)
+                .is_empty()
+        );
+        c.feed(ERR, b"bar 2%", now);
+        let sent = c.take(start + RESEND_EVERY, false, MAX_LINES_PER_BATCH);
+        assert_eq!(texts(&sent), [(0, "bar 2%")]);
+    }
+
+    #[test]
+    fn a_new_line_brings_recent_rewrites_with_it() {
+        let mut c = Console::new(0);
+        let start = Instant::now();
+        let now = crate::run::now_ms();
+        c.feed(ERR, b"bar 1%\r", now);
+        assert_eq!(c.take(start, false, MAX_LINES_PER_BATCH).len(), 1);
+        // Too soon to send the rewrite on its own.
+        c.feed(ERR, b"bar 2%\r", now);
+        assert!(c.take(start, false, MAX_LINES_PER_BATCH).is_empty());
+        // A message takes the bar's row, and the bar moves to a new one: both go together.
+        c.feed(ERR, b"warning\nbar 2%\r", now);
+        let sent = c.take(start, false, MAX_LINES_PER_BATCH);
+        let texts: Vec<_> = sent.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["warning", "bar 2%"]);
     }
 
     #[test]

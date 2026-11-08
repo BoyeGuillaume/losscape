@@ -4,6 +4,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -163,3 +164,56 @@ def test_console_setting_says_why_capture_is_off(monkeypatch):
     monkeypatch.setitem(sys.modules, "ipykernel", object())
     if os.name != "nt":
         assert _console_setting(None) == (False, "notebook")
+
+
+def test_abort_from_the_ui_interrupts_the_script(monkeypatch):
+    from losscape import _run
+
+    class Native:
+        abort_requested = True
+
+    interrupts = []
+    monkeypatch.setattr(_run, "_interrupt_main", lambda: interrupts.append(True))
+    run = _run.Run.__new__(_run.Run)
+    run._native, run._pid, run._finished, run._aborted, run.name = (
+        Native(),
+        os.getpid(),
+        False,
+        False,
+        "r",
+    )
+    finished = threading.Event()
+
+    def stop(*_args, **_kwargs):
+        run._finished = True
+        finished.set()
+
+    monkeypatch.setattr(_run, "ABORT_GRACE_SECONDS", 0)
+    monkeypatch.setattr(_run.Run, "finish", stop)
+    monkeypatch.setattr(_run.os, "kill", lambda *_: None)
+    _run.Run._watch_abort(run)
+    assert interrupts == [True]
+    assert run._aborted
+    assert finished.is_set(), "still running after the grace period: ended anyway"
+
+
+def test_background_script_ignores_interrupts_but_honors_an_abort():
+    script = """
+import os, signal, time
+from losscape import _run
+
+signal.signal(signal.SIGINT, signal.SIG_IGN)  # as inherited by `python train.py &`
+class R: _aborted = False
+_run._honor_abort_when_ignoring_interrupts(R)
+os.kill(os.getpid(), signal.SIGINT)
+time.sleep(0.05)
+print("still running")
+R._aborted = True
+try:
+    os.kill(os.getpid(), signal.SIGINT)
+    time.sleep(5)
+except KeyboardInterrupt:
+    print("interrupted")
+"""
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    assert out.stdout.split("\n")[:2] == ["still running", "interrupted"]

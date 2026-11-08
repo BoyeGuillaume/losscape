@@ -14,7 +14,6 @@ use sysinfo::{Disks, Networks, Pid, ProcessesToUpdate, System};
 
 const GB: f64 = 1024.0 * 1024.0 * 1024.0;
 const FIRST_SAMPLE: Duration = Duration::from_secs(1);
-const MB: f64 = 1024.0 * 1024.0;
 
 /// NVML, initialized once per process (None without an NVIDIA driver).
 pub fn nvml() -> Option<&'static Nvml> {
@@ -137,8 +136,9 @@ impl Probe {
                 put("cpu/process_pct", p.cpu_usage() as f64);
                 put("memory/process_gb", p.memory() as f64 / GB);
                 let io = p.disk_usage();
-                put("disk/read_mbps", io.read_bytes as f64 / MB / seconds);
-                put("disk/write_mbps", io.written_bytes as f64 / MB / seconds);
+                // Bytes per second (the UI scales them).
+                put("disk/read", io.read_bytes as f64 / seconds);
+                put("disk/write", io.written_bytes as f64 / seconds);
             }
         }
 
