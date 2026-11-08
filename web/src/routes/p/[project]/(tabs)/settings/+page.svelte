@@ -20,6 +20,7 @@
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { dateTime, timeAgo } from '#lib/format.js';
 	import { withToast } from '#lib/notify.js';
+	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
 	import { projectsChanged } from '#lib/projects.svelte.js';
 
@@ -196,7 +197,7 @@
 	{/if}
 
 	{#if access.error}
-		<p class="text-sm text-destructive">{String(access.error)}</p>
+		<ErrorCard error={access.error} what="project settings" retry={access.refresh} />
 	{:else if !access.data || !info.data}
 		<Skeleton class="h-48 rounded-xl" />
 	{:else}

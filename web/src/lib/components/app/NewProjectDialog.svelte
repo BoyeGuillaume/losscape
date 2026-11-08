@@ -33,7 +33,7 @@
 		try {
 			await apiSend('POST', '/projects', { name: trimmed });
 			toast.success(`Project ${trimmed} created`, {
-				description: `You own it. Log runs with losscape.init(project="${trimmed}"), and add members in its settings.`
+				description: `You own it. Log runs with lsc.init(project="${trimmed}"), and add members in its settings.`
 			});
 			projectsChanged();
 			open = false;
@@ -74,7 +74,7 @@
 					class={['text-xs', invalid ? 'text-destructive' : 'text-muted-foreground']}
 				>
 					Letters, digits, <code>.</code> <code>_</code> <code>-</code>. Used in
-					<code class="font-mono">losscape.init(project="{trimmed || 'name'}")</code>.
+					<code class="font-mono">lsc.init(project="{trimmed || 'name'}")</code>.
 				</p>
 			</div>
 			{#if error}<p class="text-sm text-destructive" role="alert">{error}</p>{/if}

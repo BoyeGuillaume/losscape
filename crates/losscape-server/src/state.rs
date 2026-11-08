@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthCaches;
 use crate::auth::oauth::OAuthRuntime;
-use crate::config::{AuthConfig, Config};
+use crate::config::{AuthConfig, Branding, Config};
 use crate::error::ApiError;
 use crate::ingest::{IngestQueue, spawn_flusher};
 use crate::live::LiveHub;
@@ -27,6 +27,7 @@ struct Inner {
     oauth: OAuthRuntime,
     ingest: IngestQueue,
     live: Arc<LiveHub>,
+    branding: Branding,
     /// run id -> project id. Runs never change project; entries go when runs are deleted.
     run_projects: RwLock<HashMap<Uuid, i64>>,
 }
@@ -55,6 +56,7 @@ impl AppState {
             oauth: OAuthRuntime::default(),
             ingest,
             live,
+            branding: config.branding.clone(),
             run_projects: RwLock::default(),
         }));
         Ok((state, flusher))
@@ -82,6 +84,10 @@ impl AppState {
 
     pub fn ingest(&self) -> &IngestQueue {
         &self.0.ingest
+    }
+
+    pub fn branding(&self) -> &Branding {
+        &self.0.branding
     }
 
     pub fn live(&self) -> &Arc<LiveHub> {

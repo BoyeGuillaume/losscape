@@ -1,9 +1,12 @@
 # losscape Python SDK
 
-```python
-import losscape
+Install it with `pip install losscape-sdk`, and import it as `lsc`. The package named plain
+`losscape` is an unrelated project.
 
-with losscape.init(project="mnist", config={"lr": 1e-3, "batch_size": 64}) as run:
+```python
+import lsc
+
+with lsc.init(project="mnist", config={"lr": 1e-3, "batch_size": 64}) as run:
     for step in range(10_000):
         loss = train_step()
         run.log({"train/loss": loss, "lr": scheduler.get_last_lr()[0]})
@@ -13,7 +16,7 @@ with losscape.init(project="mnist", config={"lr": 1e-3, "batch_size": 64}) as ru
 ```
 
 The API follows Weights & Biases: `init`, `log` (with `step` / `commit`), `config`,
-`summary`, `finish`, context manager, `losscape.log(...)` on the current run.
+`summary`, `finish`, context manager, `lsc.log(...)` on the current run.
 
 The project must exist: create it in the web UI (New project) and be its owner or an editor.
 A run logged to an unknown project is refused by the server; its data stays in the local log,
@@ -50,8 +53,8 @@ that look like secrets are hidden: config strings under names like `api_key` or
 
 ## Other things
 
-- `losscape.utils.random_name()` -> `brave-falcon-42` (not affected by `random.seed`).
-- `losscape.init(id=..., resume=True)` continues a run where it stopped.
+- `lsc.utils.random_name()` -> `brave-falcon-42` (not affected by `random.seed`).
+- `lsc.init(id=..., resume=True)` continues a run where it stopped.
 - Forked children (e.g. DataLoader workers) can't log to the parent's run; their calls are
   ignored with a warning.
 

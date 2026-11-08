@@ -6,6 +6,7 @@
 	import { apiJson } from '#lib/api/client.js';
 	import type { ProjectSummary } from '#lib/api/types.js';
 	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
+	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import NewProjectDialog from '#lib/components/app/NewProjectDialog.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -34,7 +35,7 @@
 	</div>
 
 	{#if projects.error}
-		<p class="text-sm text-destructive">{String(projects.error)}</p>
+		<ErrorCard error={projects.error} what="project list" retry={projects.refresh} />
 	{:else if !projects.data}
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			{#each [0, 1, 2] as i (i)}<Skeleton class="h-28 rounded-xl" />{/each}

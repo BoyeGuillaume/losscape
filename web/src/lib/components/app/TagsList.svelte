@@ -57,8 +57,8 @@
 	<EmptyCard icon={Tag} title="No tags yet">
 		{#snippet description()}
 			Tag runs on the Runs tab (tick them, then Tags), on a run's page, or from the SDK with
-			<code class="font-mono text-xs">losscape.init(tags=["baseline"])</code>. Their colors
-			and descriptions are set here.
+			<code class="font-mono text-xs">lsc.init(tags=["baseline"])</code>. Their colors and
+			descriptions are set here.
 		{/snippet}
 	</EmptyCard>
 {:else}

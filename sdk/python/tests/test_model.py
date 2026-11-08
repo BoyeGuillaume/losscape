@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from losscape import _model
+from lsc import _model
 
 
 class FakeTensor:

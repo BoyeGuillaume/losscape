@@ -18,8 +18,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from losscape import _model, _native
-from losscape.utils import random_name
+from lsc import _model, _native
+from lsc.utils import random_name
 
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _MODES = ("online", "offline", "disabled")
@@ -115,7 +115,7 @@ class Summary(_SyncedDict):
 
 
 class Run:
-    """A training run. Create it with :func:`losscape.init`."""
+    """A training run. Create it with :func:`lsc.init`."""
 
     def __init__(
         self,
@@ -165,7 +165,7 @@ class Run:
         os.kill(os.getpid(), signal.SIGTERM)
 
     def __repr__(self) -> str:
-        return f"<losscape.Run {self.name} ({self.id}) project={self.project} mode={self._mode}>"
+        return f"<lsc.Run {self.name} ({self.id}) project={self.project} mode={self._mode}>"
 
     @property
     def step(self) -> int:
@@ -317,7 +317,7 @@ class Run:
             _say(
                 f"run {self.name} was created in process {self._pid}; logging from a forked "
                 f"child ({_Process.pid}) is ignored. Log from the parent, or call "
-                "losscape.init() in the child."
+                "lsc.init() in the child."
             )
 
 
@@ -450,7 +450,7 @@ def init(
     except on Windows and in Jupyter), ``LOSSCAPE_SYSTEM_METRICS`` (CPU, memory, disk,
     network, NVIDIA GPUs; default on) and ``LOSSCAPE_SYSTEM_INTERVAL`` (seconds, 5).
     """
-    import losscape
+    import lsc
 
     project = project or os.environ.get("LOSSCAPE_PROJECT") or "uncategorized"
     if not _PROJECT_RE.match(project):
@@ -463,7 +463,7 @@ def init(
 
     if mode == "disabled":
         run = Run(None, project=project, name=name, config=config, mode=mode)
-        losscape.run = run
+        lsc.run = run
         return run
 
     server_args: dict[str, str] = {}
@@ -509,7 +509,7 @@ def init(
     run = Run(native, project=project, name=name, config=config, mode=mode, start_step=start_step)
     with _lock:
         _active_runs.add(run)
-    losscape.run = run
+    lsc.run = run
     if mode != "offline":
         _honor_abort_when_ignoring_interrupts(run)
         threading.Thread(target=run._watch_abort, name="losscape-abort", daemon=True).start()

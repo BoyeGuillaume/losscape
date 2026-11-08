@@ -4,6 +4,7 @@
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import Plus from '@lucide/svelte/icons/plus';
 	import Moon from '@lucide/svelte/icons/moon';
+	import Info from '@lucide/svelte/icons/info';
 	import Settings from '@lucide/svelte/icons/settings';
 	import Sun from '@lucide/svelte/icons/sun';
 	import { toggleMode } from 'mode-watcher';
@@ -128,6 +129,9 @@
 					>
 						<DropdownMenu.Item onSelect={() => goto(resolve('/settings'))}>
 							<Settings /> Settings and API keys
+						</DropdownMenu.Item>
+						<DropdownMenu.Item onSelect={() => goto(resolve('/about'))}>
+							<Info /> About
 						</DropdownMenu.Item>
 						<DropdownMenu.Item onSelect={toggleMode}>
 							<Sun class="dark:hidden" /><Moon class="hidden dark:block" /> Toggle theme

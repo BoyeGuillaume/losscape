@@ -1,0 +1,6 @@
+# HTTPS in front of losscape, with a certificate from Let's Encrypt. Caddy adds
+# X-Forwarded-For, and the server trusts it from this container only (compose.yaml).
+{$LOSSCAPE_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy losscape:8080
+}

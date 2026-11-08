@@ -4,8 +4,7 @@ import { tokenize } from './highlight.js';
 
 describe('tokenize', () => {
 	it('colors Python for both themes and keeps the text', async () => {
-		const code =
-			'import losscape\n\nwith losscape.init(project="mnist") as run:\n    run.log({"loss": 0.5})';
+		const code = 'import lsc\n\nwith lsc.init(project="mnist") as run:\n    run.log({"loss": 0.5})';
 		const lines = (await tokenize(code, 'python'))!;
 		expect(lines).toHaveLength(4);
 		expect(lines.map((l) => l.map((t) => t.content).join('')).join('\n')).toBe(code);

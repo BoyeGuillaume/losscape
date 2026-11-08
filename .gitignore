@@ -24,5 +24,10 @@ node_modules/
 
 # losscape local run logs (SDK)
 .losscape/
+# Generated when building wheels (make notices).
+sdk/python/src/lsc/THIRD-PARTY-NOTICES.txt
 web/build/
 web/.svelte-kit/
+
+# Your own images for a deployment (see deploy/env.example).
+/branding/

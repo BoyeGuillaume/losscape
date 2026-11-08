@@ -15,10 +15,10 @@ import time
 
 os.environ.setdefault("LOSSCAPE_SILENT", "1")
 
-import losscape  # noqa: E402
+import lsc  # noqa: E402
 
 
-def measure(run: losscape.Run, metrics: dict[str, float], calls: int) -> list[int]:
+def measure(run: lsc.Run, metrics: dict[str, float], calls: int) -> list[int]:
     timings = [0] * calls
     clock = time.perf_counter_ns
     for i in range(calls):
@@ -43,7 +43,7 @@ def report(label: str, timings: list[int]) -> None:
 def main() -> None:
     calls = 200_000
     with tempfile.TemporaryDirectory() as root:
-        run = losscape.init(project="bench", mode="offline", dir=root)
+        run = lsc.init(project="bench", mode="offline", dir=root)
         for n in (1, 5, 20):
             metrics = {f"train/metric_{i:02d}": float(i) for i in range(n - 1)}
             metrics["train/loss"] = 0.0

@@ -14,7 +14,9 @@
 	import { dateTime } from '#lib/format.js';
 	import type { RunEnvironment } from '#lib/api/types.js';
 	import AnsiText from './AnsiText.svelte';
+	import { onRestored } from '#lib/connection.svelte.js';
 	import ConsoleEmpty from './ConsoleEmpty.svelte';
+	import ErrorCard from './ErrorCard.svelte';
 
 	type Logs = { count: number; lines: LogLine[] };
 
@@ -49,7 +51,7 @@
 	let loaded = $state(false);
 	/** Scrolled to where the view opens (the end), so nothing above gets fetched first. */
 	let positioned = $state(false);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	/** Bumped when `lines` changes (the map itself isn't reactive: it can be large). */
 	let version = $state(0);
 	/* eslint-disable svelte/prefer-svelte-reactivity -- caches; `version` drives renders */
@@ -146,8 +148,10 @@
 			loaded = true;
 			if (follow) await toEnd();
 			positioned = true;
+			error = null;
 		} catch (err) {
-			error = String(err);
+			// What's here stays through a failed refresh.
+			if (!loaded) error = err;
 		}
 	}
 
@@ -169,6 +173,7 @@
 		positioned = false;
 		follow = true;
 		void loadTail();
+		return onRestored(() => void loadTail());
 	});
 
 	$effect(() => {
@@ -299,7 +304,7 @@
 		const timer = setTimeout(() => {
 			fetchLogs(new URLSearchParams({ q, limit: String(MAX_MATCHES) }).toString())
 				.then((r) => q === query.trim() && (matches = r.lines))
-				.catch((err) => (error = String(err)))
+				.catch((err) => (error = err))
 				.finally(() => (searching = false));
 		}, 250);
 		return () => clearTimeout(timer);
@@ -353,7 +358,7 @@
 	</div>{/if}
 
 {#if error}
-	<p class="text-sm text-destructive">{error}</p>
+	<ErrorCard {error} what="console output" retry={loadTail} />
 {:else if matches}
 	<div class="terminal max-h-[70vh] overflow-auto rounded-xl border py-2 text-[13px]">
 		{#each matches as l (l.line)}

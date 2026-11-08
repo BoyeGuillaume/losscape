@@ -5,7 +5,12 @@
 
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 
+	import { ApiError, apiJson } from '#lib/api/client.js';
+	import type { ProjectInfo } from '#lib/api/types.js';
+	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import UnderlineTabs from '#lib/components/app/UnderlineTabs.svelte';
+	import { buttonVariants } from '#lib/components/ui/button/index.js';
+	import { poll } from '#lib/poll.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
 	import { useProjectMetrics } from '#lib/metrics/store.svelte.js';
 	import { useProjectTags } from '#lib/tags/store.svelte.js';
@@ -15,6 +20,12 @@
 	const project = $derived(page.params.project ?? '');
 	useProjectMetrics(() => project);
 	useProjectTags(() => project);
+	// Mistyped, deleted, or access lost, also while looking at it.
+	const info = poll(
+		() => apiJson<ProjectInfo>(`/projects/${encodeURIComponent(project)}`),
+		() => 60_000
+	);
+	const gone = $derived(info.error instanceof ApiError && info.error.status === 404);
 
 	const tabs = $derived([
 		{
@@ -63,7 +74,7 @@
 	);
 </script>
 
-<div class="mx-auto max-w-[1600px]">
+{#snippet content()}
 	<header class="mb-5">
 		{#if onMetricPage}
 			<!-- eslint-disable svelte/no-navigation-without-resolve -- resolved where it was set -->
@@ -85,4 +96,14 @@
 		/>
 	</header>
 	{@render children()}
+{/snippet}
+
+<div class="mx-auto max-w-[1600px]">
+	{#if gone}
+		<ErrorCard error={info.error} what="project">
+			<a class={buttonVariants({ size: 'sm' })} href={resolve('/')}>Go to projects</a>
+		</ErrorCard>
+	{:else}
+		{@render content()}
+	{/if}
 </div>

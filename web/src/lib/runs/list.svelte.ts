@@ -3,6 +3,7 @@
 
 import { apiJson } from '#lib/api/client.js';
 import type { RunSummary, RunsPage } from '#lib/api/types.js';
+import { onRestored } from '#lib/connection.svelte.js';
 
 const FIRST_PAGE = 500;
 const PAGE = 5_000;
@@ -23,6 +24,7 @@ export class RunList {
 	private stopped = false;
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private busy = false;
+	private unlisten: (() => void) | undefined;
 
 	constructor(
 		/** `/projects/<name>` */
@@ -35,11 +37,16 @@ export class RunList {
 
 	start() {
 		void this.reload(true);
+		this.unlisten = onRestored(() => {
+			if (this.runs === null && !this.busy) void this.reload(true);
+			else this.refresh();
+		});
 	}
 
 	stop() {
 		this.stopped = true;
 		clearTimeout(this.timer);
+		this.unlisten?.();
 	}
 
 	/** Fetches what changed now (after an action on runs). */

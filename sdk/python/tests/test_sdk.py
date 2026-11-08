@@ -8,14 +8,14 @@ import threading
 
 import pytest
 
-import losscape
-from losscape.utils import random_name
+import lsc
+from lsc.utils import random_name
 
 
 def test_version_and_ids():
-    assert losscape.__version__
-    assert losscape.PROTOCOL_VERSION == 0
-    ids = [losscape.new_run_id() for _ in range(100)]
+    assert lsc.__version__
+    assert lsc.PROTOCOL_VERSION == 0
+    ids = [lsc.new_run_id() for _ in range(100)]
     assert len(set(ids)) == 100
     assert ids == sorted(ids), "UUIDv7 ids sort by creation time"
 
@@ -30,7 +30,7 @@ def test_random_name():
 
 
 def test_steps_follow_wandb_semantics(offline):
-    run = losscape.init(project="t")
+    run = lsc.init(project="t")
     run.log({"a": 1})
     run.log({"a": 2})
     assert run.step == 2
@@ -51,7 +51,7 @@ def test_logs_numbers_of_any_kind(offline):
         def __float__(self):
             return 0.5
 
-    run = losscape.init(project="t")
+    run = lsc.init(project="t")
     run.log({"int": 3, "float": 0.1, "bool": True, "nan": math.nan, "custom": Scalar()})
     run.log({"train": {"loss": 0.1, "inner": {"x": 1}}})
     with pytest.raises(TypeError, match="not a number"):
@@ -64,7 +64,7 @@ def test_logs_numbers_of_any_kind(offline):
 
 
 def test_config_and_summary(offline):
-    run = losscape.init(project="t", config={"lr": 1e-3, "layers": [64, 64]})
+    run = lsc.init(project="t", config={"lr": 1e-3, "layers": [64, 64]})
     assert run.config.lr == 1e-3
     run.config.batch_size = 32
     run.config.update({"optimizer": "adam"}, dropout=0.1)
@@ -77,11 +77,11 @@ def test_config_and_summary(offline):
 
 
 def test_offline_files_and_module_api(offline):
-    run = losscape.init(project="t")
-    assert losscape.run is run
-    losscape.log({"loss": 1.0})
+    run = lsc.init(project="t")
+    assert lsc.run is run
+    lsc.log({"loss": 1.0})
     assert run.dir is not None and run.dir.parent.parent == offline
-    assert losscape.finish() == "saved_locally"
+    assert lsc.finish() == "saved_locally"
     files = sorted(p.name for p in run.dir.iterdir())
     assert "init.pb" in files and "finish.pb" in files
     assert any(f.startswith("seg-") for f in files)
@@ -90,7 +90,7 @@ def test_offline_files_and_module_api(offline):
 
 def test_disabled_mode_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("LOSSCAPE_DIR", str(tmp_path))
-    run = losscape.init(project="t", mode="disabled")
+    run = lsc.init(project="t", mode="disabled")
     run.log({"loss": 1.0})
     assert run.finish() == "disabled"
     assert list(tmp_path.iterdir()) == []
@@ -98,20 +98,20 @@ def test_disabled_mode_writes_nothing(tmp_path, monkeypatch):
 
 def test_invalid_settings(offline):
     with pytest.raises(ValueError, match="project"):
-        losscape.init(project="has space")
+        lsc.init(project="has space")
     with pytest.raises(ValueError, match="mode"):
-        losscape.init(project="t", mode="sometimes")
+        lsc.init(project="t", mode="sometimes")
 
 
 def test_online_needs_api_key(monkeypatch):
     monkeypatch.delenv("LOSSCAPE_API_KEY", raising=False)
     with pytest.raises(ValueError, match="API key"):
-        losscape.init(project="t", mode="online")
+        lsc.init(project="t", mode="online")
 
 
 def test_context_manager_records_failure(offline):
     with pytest.raises(RuntimeError):
-        with losscape.init(project="t") as run:
+        with lsc.init(project="t") as run:
             run.log({"loss": 1.0})
             raise RuntimeError("boom")
     assert run._finished
@@ -120,7 +120,7 @@ def test_context_manager_records_failure(offline):
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
 @pytest.mark.filterwarnings("ignore:This process .* is multi-threaded")
 def test_forked_child_does_not_touch_the_parent_run(offline):
-    run = losscape.init(project="t")
+    run = lsc.init(project="t")
     run.log({"before": 1})
     pid = os.fork()
     if pid == 0:  # child: logging is ignored, nothing hangs
@@ -134,8 +134,8 @@ def test_forked_child_does_not_touch_the_parent_run(offline):
 
 def test_unfinished_run_is_finished_at_exit(tmp_path):
     script = (
-        "import losscape\n"
-        f"run = losscape.init(project='t', mode='offline', dir=r'{tmp_path}')\n"
+        "import lsc\n"
+        f"run = lsc.init(project='t', mode='offline', dir=r'{tmp_path}')\n"
         "run.log({'loss': 1.0})\n"
         "print(run.dir)\n"
     )
@@ -145,13 +145,13 @@ def test_unfinished_run_is_finished_at_exit(tmp_path):
 
 
 def test_sync_cli_with_nothing_to_sync(tmp_path):
-    from losscape.cli import main
+    from lsc.cli import main
 
     assert main(["sync", "--dir", str(tmp_path), "--api-key", "x"]) == 0
 
 
 def test_console_setting_says_why_capture_is_off(monkeypatch):
-    from losscape._run import _console_setting
+    from lsc._run import _console_setting
 
     monkeypatch.delenv("LOSSCAPE_CONSOLE", raising=False)
     monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
@@ -167,7 +167,7 @@ def test_console_setting_says_why_capture_is_off(monkeypatch):
 
 
 def test_abort_from_the_ui_interrupts_the_script(monkeypatch):
-    from losscape import _run
+    from lsc import _run
 
     class Native:
         abort_requested = True
@@ -200,7 +200,7 @@ def test_abort_from_the_ui_interrupts_the_script(monkeypatch):
 def test_background_script_ignores_interrupts_but_honors_an_abort():
     script = """
 import os, signal, time
-from losscape import _run
+from lsc import _run
 
 signal.signal(signal.SIGINT, signal.SIG_IGN)  # as inherited by `python train.py &`
 class R: _aborted = False
@@ -222,7 +222,7 @@ except KeyboardInterrupt:
 def test_describe_model_does_not_advance_the_step(tmp_path):
     from test_model import Linear
 
-    run = losscape.init(project="p", mode="offline", dir=tmp_path, console=False)
+    run = lsc.init(project="p", mode="offline", dir=tmp_path, console=False)
     run.log({"loss": 1.0})
     assert run.step == 1
     run.describe_model(Linear(3))

@@ -4,15 +4,19 @@ use std::time::SystemTime;
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::Response;
-use axum::routing::{delete, get, patch, post, put};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use base64::Engine;
 use sha2::{Digest, Sha256};
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{account, avatar, members, oauth};
+use crate::config::BrandingImage;
+use crate::error::ApiError;
+use crate::read::UiError;
 use crate::state::AppState;
 use crate::{auth, board, ingest, live, metric_defs, projects, read, runs, tags};
 
@@ -101,6 +105,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
 
     let public_api = Router::new()
         .route("/version", get(version))
+        .route("/app", get(app_info))
         .route("/auth/settings", get(account::settings))
         .route("/auth/register", post(account::register))
         .route("/auth/login", post(account::login))
@@ -111,16 +116,24 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/branding/favicon", get(favicon))
+        .route("/branding/auth-background", get(auth_background))
         .nest("/api/v0", user_api.merge(public_api))
+        .route("/api/{*rest}", any(unknown_endpoint))
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state);
     if let Some(dir) = web_dir {
-        // Unknown paths get index.html so client-side routes work on reload.
+        // Unknown paths get index.html so client-side routes work on reload. Not under `_app`:
+        // a tab open since before an upgrade must see that the code it asks for is gone.
         let app = ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")));
-        router = router.fallback_service(app);
+        router = router
+            .nest_service("/_app", ServeDir::new(dir.join("_app")))
+            .fallback_service(app);
     }
     let policy = Arc::new(Policy::new(web_dir));
     router
+        // A bug in one request gets an answer, rather than looking like a lost connection.
+        .layer(CatchPanicLayer::custom(panicked))
         .layer(middleware::map_response(move |response| {
             security_headers(response, policy.current())
         }))
@@ -224,6 +237,20 @@ async fn security_headers(mut response: Response, policy: Arc<str>) -> Response 
     response
 }
 
+async fn unknown_endpoint() -> UiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "unknown_endpoint",
+        "no such endpoint",
+    )
+    .into()
+}
+
+fn panicked(_: Box<dyn std::any::Any + Send>) -> Response {
+    // The panic itself has been logged already, by the panic hook.
+    UiError::from(ApiError::internal()).into_response()
+}
+
 async fn healthz() -> &'static str {
     "ok"
 }
@@ -251,9 +278,81 @@ async fn version() -> Json<VersionInfo> {
     })
 }
 
+/// What this deployment calls itself and how it looks: public, for the sign-in and About pages.
+#[derive(serde::Serialize)]
+struct AppInfo {
+    name: String,
+    version: &'static str,
+    protocol: u32,
+    favicon: Option<String>,
+    auth_background: Option<String>,
+}
+
+async fn app_info(State(state): State<AppState>) -> Json<AppInfo> {
+    let branding = state.branding();
+    let url = |path: &str, image: &Option<BrandingImage>| {
+        image
+            .as_ref()
+            .map(|i| format!("/branding/{path}?v={}", i.hash))
+    };
+    Json(AppInfo {
+        name: branding.app_name.clone(),
+        version: losscape_core::VERSION,
+        protocol: losscape_core::PROTOCOL_VERSION,
+        favicon: url("favicon", &branding.favicon),
+        auth_background: url("auth-background", &branding.auth_background),
+    })
+}
+
+fn image_response(image: Option<&BrandingImage>) -> Response {
+    let Some(image) = image else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, image.content_type),
+            // Its URL changes with its content.
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        image.bytes.clone(),
+    )
+        .into_response()
+}
+
+async fn favicon(State(state): State<AppState>) -> Response {
+    image_response(state.branding().favicon.as_ref())
+}
+
+async fn auth_background(State(state): State<AppState>) -> Response {
+    image_response(state.branding().auth_background.as_ref())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::inline_scripts;
+    use axum::Router;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+    use tower_http::catch_panic::CatchPanicLayer;
+
+    use super::{inline_scripts, panicked};
+
+    #[tokio::test]
+    async fn a_panic_gets_an_answer() {
+        async fn broken() -> &'static str {
+            panic!("a bug");
+        }
+        let app = Router::new()
+            .route("/", get(broken))
+            .layer(CatchPanicLayer::custom(panicked));
+        let request = Request::get("/").body(Body::empty()).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "internal");
+    }
 
     #[test]
     fn finds_inline_scripts_only() {

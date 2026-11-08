@@ -1,0 +1,49 @@
+# Settings as a file, for running the server without containers:
+#   losscape-server --config losscape.toml      (or LOSSCAPE_CONFIG=losscape.toml)
+#
+# Environment variables win over this file, so secrets can stay out of it. A key the server
+# doesn't know stops it from starting, rather than quietly leaving a default in place.
+
+listen = "0.0.0.0:8080"
+# Where users reach the server. Needed for OAuth; https:// also makes cookies Secure.
+# public_url = "https://losscape.example.com"
+# open: anyone who can reach the server may create an account; closed: only the first.
+signup = "open"
+# Reverse proxies whose X-Forwarded-For is believed, as addresses or networks.
+# trusted_proxies = ["127.0.0.1"]
+web_dir = "web/build"
+# The name shown in the interface, and your own images, read at startup: png, jpg, webp, avif,
+# gif, svg or ico, up to 16 MB.
+# app_name = "Acme Experiments"
+# favicon = "/etc/losscape/favicon.svg"
+# auth_background = "/etc/losscape/background.jpg"
+max_body_mb = 32
+
+[database]
+url = "postgres://losscape:losscape@localhost:5432/losscape"
+
+[clickhouse]
+url = "http://localhost:8123"
+user = "losscape"
+password = "losscape"
+database = "losscape"
+
+[ingest]
+flush_interval_ms = 250
+flush_max_rows = 200000
+queue = 4096
+
+# Sign-in with external providers: one section each, named as in the redirect URI
+# <public_url>/api/v0/auth/oauth/<id>/callback
+
+# Any OpenID Connect provider:
+# [oauth.google]
+# issuer = "https://accounts.google.com"
+# client_id = "..."
+# client_secret = "..."
+# name = "Google"
+
+# GitHub (url and api_url for GitHub Enterprise):
+# [oauth.github]
+# client_id = "..."
+# client_secret = "..."

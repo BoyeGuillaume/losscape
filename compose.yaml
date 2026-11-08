@@ -1,0 +1,126 @@
+# losscape: the server and web UI, with the two databases it needs.
+#
+#   docker compose up -d --build
+#
+# Then open http://localhost:8080: the first account created becomes administrator.
+# Settings go in .env (see deploy/env.example), all of it optional for a try on this machine.
+# Before opening it to others, read docs/DEPLOYMENT.md.
+name: losscape
+
+services:
+  losscape:
+    image: ${LOSSCAPE_IMAGE:-losscape:local}
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    # Listens on this machine only until you decide otherwise: anyone who can reach an open
+    # server first can create its administrator account.
+    ports:
+      - "${LOSSCAPE_BIND:-127.0.0.1}:${LOSSCAPE_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    # After the file: these describe the containers, whatever .env says for other uses.
+    environment:
+      LOSSCAPE_LISTEN: 0.0.0.0:8080
+      LOSSCAPE_WEB_DIR: /app/web
+      # By default the https profile's Caddy, below; docs/DEPLOYMENT.md for your own proxy.
+      LOSSCAPE_TRUSTED_PROXIES: ${LOSSCAPE_TRUSTED_PROXIES:-172.30.42.10}
+      DATABASE_URL: postgres://losscape:${LOSSCAPE_POSTGRES_PASSWORD:-losscape}@postgres:5432/losscape
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: losscape
+      CLICKHOUSE_PASSWORD: ${LOSSCAPE_CLICKHOUSE_PASSWORD:-losscape}
+      CLICKHOUSE_DATABASE: losscape
+    # Your own images, if any: LOSSCAPE_FAVICON and LOSSCAPE_AUTH_BACKGROUND in .env.
+    volumes:
+      - ./branding:/branding:ro
+    # It keeps nothing on disk, and needs no privileges.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # Long enough to finish what it's writing (it gives up after 25 s).
+    stop_grace_period: 30s
+    networks:
+      edge:
+        ipv4_address: 172.30.42.20
+      data:
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: losscape
+      POSTGRES_PASSWORD: ${LOSSCAPE_POSTGRES_PASSWORD:-losscape}
+      POSTGRES_DB: losscape
+    volumes:
+      # Postgres 18+ images keep data under /var/lib/postgresql/<major>/.
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U losscape -d losscape"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [data]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: losscape
+      CLICKHOUSE_PASSWORD: ${LOSSCAPE_CLICKHOUSE_PASSWORD:-losscape}
+      CLICKHOUSE_DB: losscape
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse client --user losscape --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [data]
+
+  # HTTPS with an automatic certificate: docker compose --profile https up -d
+  # Needs LOSSCAPE_DOMAIN and LOSSCAPE_PUBLIC_URL in .env, and ports 80 and 443 open.
+  caddy:
+    image: caddy:2-alpine
+    profiles: [https]
+    restart: unless-stopped
+    depends_on: [losscape]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      LOSSCAPE_DOMAIN: ${LOSSCAPE_DOMAIN:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      edge:
+        ipv4_address: 172.30.42.10
+
+networks:
+  # The databases can't reach, or be reached from, outside these containers.
+  data:
+    internal: true
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.42.0/24
+
+volumes:
+  postgres:
+  clickhouse:
+  caddy_data:
+  caddy_config:

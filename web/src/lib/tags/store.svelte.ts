@@ -2,6 +2,7 @@
 // shared by its pages.
 
 import { apiJson } from '#lib/api/client.js';
+import { onRestored } from '#lib/connection.svelte.js';
 import type { TagInfo } from '#lib/api/types.js';
 import { colorFromName, isTagColor, type TagColor } from './palette.js';
 
@@ -41,6 +42,7 @@ class ProjectTags {
 }
 
 export const projectTags = new ProjectTags();
+onRestored(() => projectTags.refresh());
 
 /** Loads the tags of `project()` (call from a page's script). */
 export function useProjectTags(project: () => string) {

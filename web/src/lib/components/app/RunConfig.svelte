@@ -93,10 +93,10 @@
 
 	const example = $derived(
 		[
-			'import losscape',
+			'import lsc',
 			'',
 			'config = {"lr": 3e-4, "batch_size": 128, "model": {"depth": 18}}',
-			`run = losscape.init(project=${JSON.stringify(project)}, config=config)`,
+			`run = lsc.init(project=${JSON.stringify(project)}, config=config)`,
 			'run.config.update({"epochs": 10})  # more keys while the run goes',
 			'run.finish()'
 		].join('\n')

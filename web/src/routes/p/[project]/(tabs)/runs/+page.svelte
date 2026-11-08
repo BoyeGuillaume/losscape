@@ -15,6 +15,7 @@
 	import type { ChartSeries, ChartSettings } from '#lib/charts/settings.js';
 	import AbortRuns from '#lib/components/app/AbortRuns.svelte';
 	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
+	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
 	import ColumnsMenu from '#lib/components/app/ColumnsMenu.svelte';
@@ -285,7 +286,7 @@
 	</div>
 
 	{#if list?.error}
-		<p class="text-sm text-destructive">{String(list.error)}</p>
+		<ErrorCard error={list.error} what="run list" />
 	{:else if !list?.runs}
 		<Skeleton class="h-64 rounded-xl" />
 	{:else if all.length === 0 && archived}

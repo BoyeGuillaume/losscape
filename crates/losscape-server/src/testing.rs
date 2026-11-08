@@ -82,6 +82,7 @@ impl TestServer {
             },
             max_body_bytes: 32 * 1024 * 1024,
             web_dir: None,
+            branding: Default::default(),
         };
         let (state, flusher) = AppState::start(&config).await.expect("server starts");
         // Before serving: a client may already be waiting on the listener.

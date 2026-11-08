@@ -4,12 +4,15 @@ import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
+import { thirdPartyNotices } from './third-party-notices.js';
+
 // In dev, API calls go to the Rust server.
 const server = process.env.LOSSCAPE_SERVER ?? 'http://localhost:8080';
 
 export default defineConfig({
 	server: { proxy: { '/api': server, '/healthz': server } },
 	plugins: [
+		thirdPartyNotices(),
 		tailwindcss(),
 		// Brand icons (Iconify sets), compiled into components at build time: no runtime fetch.
 		Icons({ compiler: 'svelte' }),

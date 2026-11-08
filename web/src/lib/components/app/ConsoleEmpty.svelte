@@ -21,7 +21,7 @@
 		if (capture?.error) return `Capture failed to start: ${capture.error}.`;
 		switch (capture?.off) {
 			case 'console=False':
-				return 'Console capture was turned off with `console=False` in `losscape.init()`.';
+				return 'Console capture was turned off with `console=False` in `lsc.init()`.';
 			case 'LOSSCAPE_CONSOLE':
 				return 'Console capture was turned off by the `LOSSCAPE_CONSOLE` environment variable.';
 			case 'windows':
@@ -37,11 +37,11 @@
 
 	const example = $derived(
 		[
-			'import losscape',
+			'import lsc',
 			'',
 			'# stdout and stderr are recorded by default (Linux and macOS),',
 			'# subprocesses and progress bars included.',
-			`run = losscape.init(project=${JSON.stringify(project)}, console=True)`,
+			`run = lsc.init(project=${JSON.stringify(project)}, console=True)`,
 			'print("training started")',
 			'run.finish()'
 		].join('\n')
@@ -68,7 +68,7 @@
 		{#if capture?.off !== 'windows'}
 			<p class="text-sm text-muted-foreground">
 				To record it, start the run from a script; the console is captured from
-				<code class="font-mono text-xs">losscape.init()</code> until the run finishes.
+				<code class="font-mono text-xs">lsc.init()</code> until the run finishes.
 				<code class="font-mono text-xs">LOSSCAPE_CONSOLE=1</code> turns it on without changing
 				the code.
 			</p>

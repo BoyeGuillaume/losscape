@@ -21,9 +21,9 @@
 	);
 	const python = $derived(
 		[
-			'import losscape',
+			'import lsc',
 			'',
-			`with losscape.init(project=${JSON.stringify(project)}, config={"lr": 1e-3}) as run:`,
+			`with lsc.init(project=${JSON.stringify(project)}, config={"lr": 1e-3}) as run:`,
 			'    for step in range(1000):',
 			'        loss = 1 / (step + 1)',
 			'        run.log({"train/loss": loss})'
@@ -60,7 +60,7 @@
 		<div class="flex items-center gap-2">{@render step(2, 'Log a run from your script')}</div>
 		<div class="grid gap-2 pl-8">
 			<p class="text-sm text-muted-foreground">
-				<code class="font-mono text-xs">losscape.init()</code> starts a run in
+				<code class="font-mono text-xs">lsc.init()</code> starts a run in
 				<span class="font-medium text-foreground">{project}</span> and records its
 				<code class="font-mono text-xs">config</code>;
 				<code class="font-mono text-xs">run.log()</code> sends metrics (it's fast enough to

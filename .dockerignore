@@ -1,0 +1,12 @@
+# Only what the image builds from: see the COPY lines in deploy/Dockerfile.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!proto/
+!scripts/third_party_notices.py
+!web/
+**/target
+web/node_modules
+web/build
+web/.svelte-kit

@@ -35,6 +35,7 @@
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
+	import { buttonVariants } from '#lib/components/ui/button/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { dateTime, duration, flatten, timeAgo } from '#lib/format.js';
 	import { formatMetric, formatSteps } from '#lib/metric-units.js';
@@ -51,6 +52,7 @@
 	import { notifyError, withToast } from '#lib/notify.js';
 	import { projectsChanged } from '#lib/projects.svelte.js';
 	import { toast } from 'svelte-sonner';
+	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
 	import {
 		chartSettingsParams,
@@ -335,7 +337,12 @@
 </script>
 
 {#if run.error}
-	<p class="text-sm text-destructive">{String(run.error)}</p>
+	<ErrorCard error={run.error} what="run" retry={run.refresh}>
+		<a
+			class={buttonVariants({ variant: 'outline', size: 'sm' })}
+			href={resolve('/p/[project]/(tabs)/runs', { project })}>Back to the runs of {project}</a
+		>
+	</ErrorCard>
 {:else if !run.data}
 	<div class="grid gap-4">
 		<Skeleton class="h-24 rounded-xl" />

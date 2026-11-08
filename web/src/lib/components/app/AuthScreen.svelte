@@ -9,12 +9,14 @@
 
 	import { ApiError, apiJson, apiSend } from '#lib/api/client.js';
 	import type { AuthSettings, Me } from '#lib/api/types.js';
+	import { app } from '#lib/app.svelte.js';
 	import { auth } from '#lib/auth.svelte.js';
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
+	import { poll } from '#lib/poll.svelte.js';
 	import Logo from './Logo.svelte';
 	import PasswordStrength from './PasswordStrength.svelte';
 	import ProviderIcon from './ProviderIcon.svelte';
@@ -30,10 +32,8 @@
 		account_disabled: 'This account is disabled.'
 	};
 
-	let settings = $state<AuthSettings | null>(null);
-	$effect(() => {
-		apiJson<AuthSettings>('/auth/settings').then((s) => (settings = s));
-	});
+	const loadedSettings = poll(() => apiJson<AuthSettings>('/auth/settings'));
+	const settings = $derived(loadedSettings.data);
 
 	const signup = $derived(page.url.pathname === '/signup' || settings?.first_user === true);
 	const returnTo = $derived(
@@ -65,6 +65,7 @@
 		}
 		busy = true;
 		try {
+			auth.expired = false;
 			auth.user = signup
 				? await apiSend<Me>('POST', '/auth/register', {
 						username: username.trim(),
@@ -78,7 +79,7 @@
 					? err.code === 'invalid_credentials'
 						? 'Wrong username or password.'
 						: err.message
-					: 'The server could not be reached.';
+					: 'Something went wrong. Try again.';
 		} finally {
 			busy = false;
 		}
@@ -118,17 +119,28 @@
 		<Alert.Root variant="destructive">
 			<Alert.Description>{error}</Alert.Description>
 		</Alert.Root>
+	{:else if auth.expired}
+		<Alert.Root>
+			<Alert.Description>
+				Your session ended. Sign in again to continue where you were.
+			</Alert.Description>
+		</Alert.Root>
 	{/if}
 {/snippet}
 
-<main class="grid min-h-svh place-items-center bg-muted/40 p-4">
+<main
+	class="relative grid min-h-svh place-items-center bg-muted/40 bg-cover bg-center p-4 pb-12"
+	style:background-image={app.info?.auth_background
+		? `url("${app.info.auth_background}")`
+		: undefined}
+>
 	{#if !signup}
 		<!-- Sign in: compact, providers first. -->
 		<Card.Root class="w-full max-w-sm">
 			<Card.Header class="items-center text-center">
-				<Logo compact class="mx-auto mb-1 [&>span]:size-10" />
+				<Logo compact class="mx-auto mb-1 w-fit" markClass="size-10" />
 				<Card.Title class="text-xl">Welcome back</Card.Title>
-				<Card.Description>Sign in to your losscape server.</Card.Description>
+				<Card.Description>Sign in to {app.name}.</Card.Description>
 			</Card.Header>
 			<Card.Content class="grid gap-4">
 				{@render errorBox()}
@@ -290,4 +302,9 @@
 			</div>
 		</Card.Root>
 	{/if}
+	<!-- On its own surface: it can be over any image. -->
+	<a
+		class="absolute bottom-3 rounded-md bg-background/85 px-2 py-0.5 text-xs text-muted-foreground backdrop-blur hover:text-foreground"
+		href={resolve('/about')}>About</a
+	>
 </main>

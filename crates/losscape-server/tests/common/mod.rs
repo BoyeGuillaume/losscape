@@ -7,13 +7,13 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode, header};
+use http_body_util::BodyExt;
 use losscape_core::proto::v0::Error;
 use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
 use losscape_server::app;
 use losscape_server::auth::account;
 use losscape_server::config::{AuthConfig, ClickHouseConfig, Config, IngestConfig};
 use losscape_server::state::AppState;
-use http_body_util::BodyExt;
 use prost::Message;
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
@@ -79,6 +79,7 @@ impl TestServer {
             },
             max_body_bytes: 8 * 1024 * 1024,
             web_dir: None,
+            branding: Default::default(),
         };
         let (state, flusher) = AppState::start(&config).await.expect("server starts");
         let router = app::router(state.clone(), config.max_body_bytes, None);

@@ -18,9 +18,11 @@
 		initiallyExpanded,
 		modelRows
 	} from '#lib/runs/model-tree.js';
+	import { onRestored } from '#lib/connection.svelte.js';
 	import { BYTES, COUNT, FLOPS, formatUnit } from '#lib/units.js';
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
+	import ErrorCard from './ErrorCard.svelte';
 
 	/** Seconds between looks while a run is going: a model can be described at any time. */
 	const REFRESH_MS = 10_000;
@@ -40,7 +42,7 @@
 	const runId = $derived(run);
 
 	let models = $state.raw<Record<string, ModelDescription> | null>(null);
-	let error = $state<string | null>(null);
+	let error = $state<unknown>(null);
 	$effect(() => {
 		const id = runId;
 		const load = () =>
@@ -48,14 +50,23 @@
 				`/runs/${encodeURIComponent(id)}/models`
 			).then(
 				(found) => {
-					if (id === runId) models = found;
+					if (id !== runId) return;
+					models = found;
+					error = null;
 				},
-				(err) => (error = String(err))
+				(err) => {
+					// What's here stays through a failed refresh.
+					if (!models) error = err;
+				}
 			);
 		void load();
-		if (!running) return;
+		const stopListening = onRestored(load);
+		if (!running) return stopListening;
 		const timer = setInterval(load, REFRESH_MS);
-		return () => clearInterval(timer);
+		return () => {
+			stopListening();
+			clearInterval(timer);
+		};
 	});
 
 	const names = $derived(Object.keys(models ?? {}).sort());
@@ -98,11 +109,11 @@
 	const example = $derived(
 		[
 			'import torch',
-			'import losscape',
+			'import lsc',
 			'',
 			'model = torch.nn.Sequential(torch.nn.Linear(10, 32), torch.nn.ReLU(), torch.nn.Linear(32, 2))',
 			'',
-			`run = losscape.init(project=${JSON.stringify(project)})`,
+			`run = lsc.init(project=${JSON.stringify(project)})`,
 			'# Layers and parameters; args and kwargs add shapes and FLOPs.',
 			'run.describe_model(model, args=torch.zeros(1, 10))',
 			'run.finish()'
@@ -119,7 +130,7 @@
 {/snippet}
 
 {#if error}
-	<p class="text-sm text-destructive">{error}</p>
+	<ErrorCard {error} what="model information" />
 {:else if !models}
 	<Skeleton class="h-64 rounded-xl" />
 {:else if !model}

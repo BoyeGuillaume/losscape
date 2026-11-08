@@ -160,7 +160,7 @@ def main() -> None:
         encoding="utf-8",
     )
     print(f"{len(words)} words, {OUTPUT.stat().st_size / 1024:.0f} KB")
-    print("The build strips comments: zxcvbn's notice ships in web/static/THIRD-PARTY-NOTICES.txt")
+    print("The build strips comments: zxcvbn's notice ships from web/third-party-notices-data.txt")
 
 
 if __name__ == "__main__":

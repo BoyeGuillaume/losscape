@@ -80,3 +80,79 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # The web bundle's are checked by its build, above.
+      - run: python3 scripts/third_party_notices.py --check
+
+  # The SDK on every platform we ship wheels for, with the native part built there.
+  sdk-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+      - run: uv run pytest
+
+  # What's in tests/test_model.py beyond stand-ins, with a real PyTorch.
+  sdk-pytorch:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run --frozen --with torch --index https://download.pytorch.org/whl/cpu pytest tests/test_model.py
+
+  # The real thing: the image, compose.yaml, a run through the SDK, a restart.
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync
+        working-directory: sdk/python
+      - run: docker compose up -d --build --wait --wait-timeout 300
+      - name: A fresh server works
+        working-directory: sdk/python
+        run: uv run python ../../scripts/deploy_smoke.py --state /tmp/smoke.json
+      - name: Stopping is clean, and quick
+        run: |
+          start=$(date +%s)
+          docker compose stop losscape
+          took=$(( $(date +%s) - start ))
+          echo "stopped in ${took} s"
+          docker compose logs losscape | tail -5
+          docker compose logs losscape | grep -q "stopped"
+          test "$took" -lt 20
+      - run: docker compose up -d --wait --wait-timeout 120
+      - name: Nothing was lost
+        working-directory: sdk/python
+        run: uv run python ../../scripts/deploy_smoke.py --after-restart --state /tmp/smoke.json
+      - name: It runs as it should
+        run: |
+          docker compose exec -T losscape losscape-server --version
+          docker compose exec -T losscape losscape-server healthcheck
+          # The databases aren't published to the host.
+          ! curl -s -m 3 http://localhost:8123/ping
+          ! (exec 3<>/dev/tcp/localhost/5432) 2>/dev/null
+      - if: failure()
+        run: docker compose ps -a; docker compose logs --tail 100

@@ -14,7 +14,7 @@ const EVERY: Duration = Duration::from_secs(3600);
 const BATCH: i64 = 500;
 
 /// Checks every hour, for as long as the server runs.
-pub fn spawn_purger(state: AppState) {
+pub fn spawn_purger(state: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match purge_archived(&state).await {
@@ -24,7 +24,7 @@ pub fn spawn_purger(state: AppState) {
             }
             tokio::time::sleep(EVERY).await;
         }
-    });
+    })
 }
 
 /// Deletes runs archived longer than their project keeps them. Returns how many.

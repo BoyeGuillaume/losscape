@@ -2,7 +2,9 @@
 // (one stream for many runs). Reconnects after errors; `onReset` then tells the caller
 // that events may have been missed.
 
-import { apiFetch } from './client.js';
+import { suspect } from '#lib/connection.svelte.js';
+
+import { ApiError, apiFetch } from './client.js';
 
 export type LivePoints = {
 	run: string;
@@ -54,7 +56,10 @@ export function subscribeLive(
 				let buffer = '';
 				for (;;) {
 					const { value, done } = await reader.read();
-					if (done) break;
+					if (done) {
+						suspect(); // the server is shutting down, most likely
+						break;
+					}
 					buffer += value;
 					let end;
 					while ((end = buffer.indexOf('\n\n')) >= 0) {
@@ -69,8 +74,11 @@ export function subscribeLive(
 						if (data.length) dispatch(event, data.join('\n'));
 					}
 				}
-			} catch {
+			} catch (err) {
 				if (controller.signal.aborted) return;
+				// Refused, not failed: asking again won't change that.
+				if (err instanceof ApiError && err.status >= 400 && err.status < 500) return;
+				suspect();
 			}
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 		}

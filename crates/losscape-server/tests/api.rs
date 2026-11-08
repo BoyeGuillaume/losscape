@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use http_body_util::BodyExt;
 use losscape_core::PROTOCOL_HEADER;
 use losscape_core::ids::RunId;
 use losscape_core::proto::v0::{
     Ack, ConsoleLine, ConsoleStream, Heartbeat, LogBatch, RunEnvironment, RunExitState, RunFinish,
     RunInit, RunInitResponse, ScalarColumns,
 };
-use http_body_util::BodyExt;
 use prost::Message;
 use tower::ServiceExt;
 
@@ -466,6 +466,7 @@ async fn metric_ranges_names_definitions_and_renames() {
     assert_eq!(
         board,
         serde_json::json!({
+            "version": 0,
             "query": "",
             "sort": {"id": "created", "desc": true},
             "limit": 10,
@@ -475,6 +476,7 @@ async fn metric_ranges_names_definitions_and_renames() {
         })
     );
     let board = serde_json::json!({
+        "version": 0,
         "query": "tag:promising",
         "sort": {"id": "summary.val/acc", "desc": true},
         "limit": 20,
@@ -487,17 +489,33 @@ async fn metric_ranges_names_definitions_and_renames() {
             .call(send("PUT", board_uri.clone(), board.clone()))
             .await
             .0,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
-    assert_eq!(get_json(&server, &board_uri).await.1, board);
+    let (_, stored) = get_json(&server, &board_uri).await;
+    assert_eq!(stored["version"], 1);
+    assert_eq!(stored["query"], "tag:promising");
+    assert_eq!(stored["columns"], board["columns"]);
+    // Saved from what was read before that: refused, and nothing changes.
+    let stale = serde_json::json!({
+        "version": 0, "query": "stale", "sort": {"id": "created", "desc": true}, "limit": 5
+    });
+    assert_eq!(
+        server.call(send("PUT", board_uri.clone(), stale)).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(get_json(&server, &board_uri).await.1, stored);
     for limit in [0, 41] {
-        let bad = serde_json::json!({"query": "", "sort": {"id": "created", "desc": true}, "limit": limit});
+        let bad = serde_json::json!({
+            "version": 1, "query": "", "sort": {"id": "created", "desc": true}, "limit": limit
+        });
         assert_eq!(
             server.call(send("PUT", board_uri.clone(), bad)).await.0,
             StatusCode::BAD_REQUEST
         );
     }
-    let bad = serde_json::json!({"query": "", "sort": {"id": "", "desc": true}, "limit": 5});
+    let bad = serde_json::json!({
+        "version": 1, "query": "", "sort": {"id": "", "desc": true}, "limit": 5
+    });
     assert_eq!(
         server.call(send("PUT", board_uri.clone(), bad)).await.0,
         StatusCode::BAD_REQUEST
@@ -508,18 +526,64 @@ async fn metric_ranges_names_definitions_and_renames() {
         {"name": "val/pck-{k}", "kind": "family", "spec": {"direction": "max", "bounds": [0, 1]}}
     ]);
     let uri = "/api/v0/projects/test/metric-definitions".to_owned();
+    let versioned = |version: i64, definitions: &serde_json::Value| serde_json::json!({"version": version, "definitions": definitions});
     assert_eq!(
-        server.call(send("PUT", uri.clone(), defs.clone())).await.0,
-        StatusCode::NO_CONTENT
+        get_json(&server, &uri).await.1,
+        versioned(0, &serde_json::json!([]))
     );
-    let (_, listed) = get_json(&server, &uri).await;
-    assert_eq!(listed, defs, "kept in order");
-    let twice = serde_json::json!([{"name": "a", "kind": "describe", "spec": {}}, {"name": "a", "kind": "describe", "spec": {}}]);
+    assert_eq!(
+        server
+            .call(send("PUT", uri.clone(), versioned(0, &defs)))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get_json(&server, &uri).await.1,
+        versioned(1, &defs),
+        "kept in order"
+    );
+
+    // A stale tab can't overwrite what happened since.
+    let other = serde_json::json!([{"name": "a", "kind": "describe", "spec": {}}]);
+    let (status, body) = server
+        .call(send("PUT", uri.clone(), versioned(0, &other)))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(String::from_utf8_lossy(&body).contains("stale"));
+    assert_eq!(get_json(&server, &uri).await.1, versioned(1, &defs));
+
+    // Of two saves of one version, at the same time, exactly one passes.
+    let (first, second) = tokio::join!(
+        server.call(send("PUT", uri.clone(), versioned(1, &other))),
+        server.call(send("PUT", uri.clone(), versioned(1, &defs)))
+    );
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+    let (_, latest) = get_json(&server, &uri).await;
+    assert_eq!(latest["version"], 2);
+    // Back to a known state for what follows.
+    assert_eq!(
+        server
+            .call(send("PUT", uri.clone(), versioned(2, &defs)))
+            .await
+            .0,
+        StatusCode::OK
+    );
+
+    let twice = versioned(
+        3,
+        &serde_json::json!([{"name": "a", "kind": "describe", "spec": {}}, {"name": "a", "kind": "describe", "spec": {}}]),
+    );
     assert_eq!(
         server.call(send("PUT", uri.clone(), twice)).await.0,
         StatusCode::BAD_REQUEST
     );
-    let bad_kind = serde_json::json!([{"name": "a", "kind": "merge", "spec": {}}]);
+    let bad_kind = versioned(
+        3,
+        &serde_json::json!([{"name": "a", "kind": "merge", "spec": {}}]),
+    );
     assert_eq!(
         server.call(send("PUT", uri.clone(), bad_kind)).await.0,
         StatusCode::BAD_REQUEST
@@ -922,6 +986,24 @@ async fn health_and_version() {
     let (status, body) = server.call(get("/api/v0/version")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(String::from_utf8_lossy(&body).contains(r#""protocol":0"#));
+    // For the sign-in and About pages, so without signing in; `get` sends no credentials.
+    let (status, body) = server.call(get("/api/v0/app")).await;
+    assert_eq!(status, StatusCode::OK);
+    let app: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(app["name"], "losscape");
+    assert_eq!(app["protocol"], 0);
+    assert!(app["favicon"].is_null() && app["auth_background"].is_null());
+    assert_eq!(
+        server.call(get("/branding/favicon")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // Endpoints that don't exist say so, in the format of the others.
+    for uri in ["/api/v0/nope", "/api/v0/nope/further", "/api/v9/runs"] {
+        let (status, body) = server.call(get(uri)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "unknown_endpoint");
+    }
     server.stop().await;
 }
 

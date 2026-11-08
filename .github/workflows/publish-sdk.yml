@@ -1,0 +1,95 @@
+name: Publish SDK
+
+# Push a tag `sdk-v<version>` to publish the SDK on PyPI as `losscape-sdk`, for the platforms
+# CI tests it on. PyPI trusts this workflow, so there's no password: see docs/DEPLOYMENT.md.
+# Run by hand, it builds and checks the wheels but publishes nothing. Wheels only: a source
+# package wouldn't build, since `proto/` is outside the crates it would contain.
+on:
+  push:
+    tags: ["sdk-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The tag is the version being built
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            python3 -c "import json, sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          if [ "$GITHUB_REF_NAME" != "sdk-v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml"
+            exit 1
+          fi
+      - name: License notices, shipped inside the package
+        run: python3 scripts/third_party_notices.py --package losscape-py --output THIRD-PARTY-NOTICES.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notices
+          path: THIRD-PARTY-NOTICES.txt
+          if-no-files-found: error
+
+  wheels:
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            manylinux: "2_28"
+          - os: ubuntu-24.04-arm
+            manylinux: "2_28"
+          - os: macos-14
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: notices
+          path: sdk/python/src/lsc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: sdk/python
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux || 'off' }}
+          rust-toolchain: stable
+      - name: The wheel installs and runs
+        shell: bash
+        run: |
+          python -m venv ../check
+          source ../check/bin/activate 2>/dev/null || source ../check/Scripts/activate
+          pip install sdk/python/dist/*.whl
+          cd ..
+          losscape --version
+          python -c "import lsc; print(lsc.__version__)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: sdk/python/dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    needs: wheels
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/losscape-sdk/
+    permissions:
+      id-token: write # how PyPI recognises this workflow
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

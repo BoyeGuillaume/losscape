@@ -6,20 +6,30 @@
 	import { page } from '$app/state';
 	import type { LayoutProps } from './$types';
 
+	import { app, loadApp } from '#lib/app.svelte.js';
 	import { auth, loadMe } from '#lib/auth.svelte.js';
 	import AuthScreen from '#lib/components/app/AuthScreen.svelte';
 	import AppSidebar from '#lib/components/app/AppSidebar.svelte';
+	import ConnectionBanner from '#lib/components/app/ConnectionBanner.svelte';
+	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import * as Breadcrumb from '#lib/components/ui/breadcrumb/index.js';
 	import { Separator } from '#lib/components/ui/separator/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import { Toaster } from '#lib/components/ui/sonner/index.js';
 	import * as Tooltip from '#lib/components/ui/tooltip/index.js';
+	import { onRestored } from '#lib/connection.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
 
 	let { children }: LayoutProps = $props();
 
 	$effect(() => {
-		loadMe();
+		void loadMe();
+		void loadApp();
+		// It may have been upgraded, or have been the reason these failed.
+		return onRestored(() => {
+			if (auth.user === undefined) void loadMe();
+			void loadApp();
+		});
 	});
 
 	/** Project tabs other than the run list, named in the header. */
@@ -35,7 +45,11 @@
 
 	/** Where we are, for the header. */
 	const crumbs = $derived.by((): { label: string; href?: string }[] => {
+		if (page.error) {
+			return [{ label: page.status === 404 ? 'Page not found' : 'Something went wrong' }];
+		}
 		if (page.route.id === '/settings') return [{ label: 'Settings' }];
+		if (page.route.id === '/about') return [{ label: 'About' }];
 		const trail: { label: string; href?: string }[] = [
 			{ label: 'Projects', href: resolve('/') }
 		];
@@ -56,15 +70,25 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
-	<title>{crumbs[crumbs.length - 1].label} · losscape</title>
+	<!-- Only once known, so a custom icon doesn't follow a flash of the built-in one. -->
+	{#if app.name}
+		<link rel="icon" href={app.info?.favicon ?? favicon} />
+		<title>{crumbs[crumbs.length - 1].label} · {app.name}</title>
+	{/if}
 </svelte:head>
 
 <ModeWatcher />
 <Toaster position="bottom-right" closeButton />
+<ConnectionBanner />
 <Tooltip.Provider>
 	{#if auth.user === undefined}
-		<div class="grid min-h-svh place-items-center" aria-busy="true"></div>
+		<div class="grid min-h-svh place-items-center p-4" aria-busy={!auth.error}>
+			{#if auth.error}
+				<div class="w-full max-w-lg">
+					<ErrorCard error={auth.error} what="session" retry={() => void loadMe()} />
+				</div>
+			{/if}
+		</div>
 	{:else if auth.user}
 		<Sidebar.Provider>
 			<AppSidebar />
@@ -101,6 +125,8 @@
 				</div>
 			</Sidebar.Inset>
 		</Sidebar.Provider>
+	{:else if page.route.id === '/about'}
+		{@render children()}
 	{:else}
 		<AuthScreen />
 	{/if}

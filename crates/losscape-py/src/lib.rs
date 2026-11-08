@@ -1,5 +1,5 @@
-//! Native core of the losscape Python SDK, exposed as `losscape._native`.
-//! The Python-facing API lives in `sdk/python/src/losscape`.
+//! Native core of the losscape Python SDK, exposed as `lsc._native`.
+//! The Python-facing API lives in `sdk/python/src/lsc`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -21,7 +21,7 @@ fn new_run_id() -> String {
     RunId::new().to_string()
 }
 
-#[pyclass(frozen, module = "losscape._native")]
+#[pyclass(frozen, module = "lsc._native")]
 struct NativeRun {
     run: Run,
 }

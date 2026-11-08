@@ -157,11 +157,13 @@
 			</Card.Description>
 			<Card.Action class="flex items-center gap-3">
 				<span class="text-xs text-muted-foreground" aria-live="polite">
-					{projectMetrics.status === 'pending' || projectMetrics.status === 'saving'
-						? 'Saving…'
-						: projectMetrics.status === 'saved'
-							? 'Saved'
-							: ''}
+					{projectMetrics.status === 'waiting'
+						? 'Will save when back'
+						: projectMetrics.status === 'pending' || projectMetrics.status === 'saving'
+							? 'Saving…'
+							: projectMetrics.status === 'saved'
+								? 'Saved'
+								: ''}
 				</span>
 				{#if canEdit}
 					<Button size="sm" variant="outline" onclick={create}>

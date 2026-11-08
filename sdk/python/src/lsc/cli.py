@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from losscape import __version__, _native
+from lsc import __version__, _native
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -20,7 +20,7 @@ import urllib.request
 
 import pytest
 
-import losscape
+import lsc
 
 SERVER = os.environ.get("LOSSCAPE_TEST_SERVER")
 pytestmark = pytest.mark.skipif(not SERVER, reason="set LOSSCAPE_TEST_SERVER to run")
@@ -66,7 +66,7 @@ def stored(run_id: str) -> tuple[int, int]:
 
 
 def test_online_run_is_uploaded(tmp_path):
-    run = losscape.init(project="pytest-e2e", mode="online", server=SERVER, dir=tmp_path)
+    run = lsc.init(project="pytest-e2e", mode="online", server=SERVER, dir=tmp_path)
     for i in range(2000):
         run.log({"loss": 1 / (i + 1), "acc": i / 2000})
     assert run.finish() == "uploaded"
@@ -75,8 +75,8 @@ def test_online_run_is_uploaded(tmp_path):
 
 
 CHILD = """
-import sys, time, losscape
-run = losscape.init(project="pytest-e2e", mode="online", server=sys.argv[1], dir=sys.argv[2])
+import sys, time, lsc
+run = lsc.init(project="pytest-e2e", mode="online", server=sys.argv[1], dir=sys.argv[2])
 print(run.id, flush=True)
 start = time.perf_counter()
 step = 0
@@ -105,7 +105,7 @@ def test_killed_process_loses_at_most_a_moment(tmp_path):
     child.wait()
 
     sync = subprocess.run(
-        [sys.executable, "-m", "losscape.cli", "sync", "--dir", str(tmp_path), "--server", SERVER],
+        [sys.executable, "-m", "lsc.cli", "sync", "--dir", str(tmp_path), "--server", SERVER],
         capture_output=True,
         text=True,
     )
@@ -121,8 +121,8 @@ def test_killed_process_loses_at_most_a_moment(tmp_path):
 
 
 CONSOLE_CHILD = r"""
-import os, subprocess, sys, time, losscape
-run = losscape.init(project="pytest-e2e", mode="online", server=sys.argv[1], dir=sys.argv[2])
+import os, subprocess, sys, time, lsc
+run = lsc.init(project="pytest-e2e", mode="online", server=sys.argv[1], dir=sys.argv[2])
 print("hello from python")
 print("isatty", sys.stdout.isatty())
 for i in range(101):

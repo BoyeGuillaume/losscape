@@ -7,6 +7,7 @@
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
+	import ErrorCard from './ErrorCard.svelte';
 	import KeyValueList from './KeyValueList.svelte';
 
 	/** Lines of the diff shown in the page; the whole file opens as text. */
@@ -91,13 +92,13 @@
 	// The diff loads when its dialog opens.
 	let diffOpen = $state(false);
 	let diff = $state<string[] | null>(null);
-	let diffError = $state<string | null>(null);
+	let diffError = $state<unknown>(null);
 	$effect(() => {
 		if (!diffOpen || diff) return;
 		apiFetch(`/runs/${encodeURIComponent(run)}/files/git.diff`)
 			.then((r) => r.text())
 			.then((text) => (diff = text.split('\n')))
-			.catch((err) => (diffError = String(err)));
+			.catch((err) => (diffError = err));
 	});
 
 	function diffClass(line: string) {
@@ -146,7 +147,7 @@
 						</Dialog.Description>
 					</Dialog.Header>
 					{#if diffError}
-						<p class="text-sm text-destructive">{diffError}</p>
+						<ErrorCard error={diffError} what="diff" />
 					{:else if !diff}
 						<p class="text-sm text-muted-foreground">Loading…</p>
 					{:else}

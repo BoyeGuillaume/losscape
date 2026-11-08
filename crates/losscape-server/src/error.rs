@@ -21,6 +21,11 @@ impl ApiError {
         }
     }
 
+    /// A document was saved based on a version that isn't the latest any more.
+    pub fn stale(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "stale", message)
+    }
+
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid_request", message)
     }

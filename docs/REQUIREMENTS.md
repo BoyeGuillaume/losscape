@@ -39,7 +39,7 @@ losscape/
     losscape-core/       # shared types, local log, compression, downsampling
     losscape-server/     # Axum binary, embeds web/dist
     losscape-py/         # PyO3 extension (maturin)
-  sdk/python/losscape/   # Python API on top of the extension
+  sdk/python/lsc/   # Python API on top of the extension
   web/                    # Vite + React + TS
   deploy/                 # docker-compose, Helm
   docs/
@@ -89,12 +89,12 @@ Targets to aim for, not measurements.
 
 ### API
 - **P0** API that looks like W&B's: `init`, `log`, `config`, `summary`, `finish`, `alert`, `Api().runs(...)`. Works as a context manager and in Jupyter.
-- **P1** W&B-compatible layer for the common calls, so `import losscape as wandb` works.
+- **P1** W&B-compatible layer for the common calls, so `import lsc as wandb` works.
 - **P2** CLI and HTTP clients for other languages.
 
 ### Run names
 - **P0** Every run gets a random readable name by default, e.g. `brave-falcon-42`.
-- **P0** The generator is also a public utility: `losscape.utils.random_name(seed=None)`. Pure Python, built-in word lists. Collisions don't matter (run ID is separate).
+- **P0** The generator is also a public utility: `lsc.utils.random_name(seed=None)`. Pure Python, built-in word lists. Collisions don't matter (run ID is separate).
 
 ### Logging
 - **P0** Scalar `log()` as fast as possible: in-memory queue, never blocks training (see Design 2).
@@ -244,14 +244,15 @@ Per project, editors; stored in Postgres and applied by the UI when reading: log
 
 ## 10. Self-hosting and operations
 
-- **P0** One-command `docker compose up`: `losscape` (API + UI), `postgres`, `clickhouse`.
+- **P0 (done)** One-command `docker compose up`: `losscape` (API + UI), `postgres`, `clickhouse`. See docs/DEPLOYMENT.md.
 - **P0** No outgoing network calls; telemetry is opt-in only.
-- **P0** Configured through environment variables or one TOML file.
-- **P0** Database migrations run automatically on startup.
+- **P0 (done)** Configured through environment variables or one TOML file.
+- **P1 (done)** Your own name, favicon and sign-in background; a public About page with versions and the licenses of the libraries in the build.
+- **P0 (done)** Database migrations run automatically on startup.
 - **P0** SDK–server protocol versioning: older SDKs keep working against newer servers.
-- **P0** `/healthz` and `/readyz` endpoints.
-- **P1** Helm chart and ARM64 images.
-- **P1** Documented backup and restore (Postgres, ClickHouse, file storage).
+- **P0 (done)** `/healthz` and `/readyz` endpoints.
+- **P1** Helm chart and published ARM64 images (the Dockerfile builds on ARM64).
+- **P1 (partly done)** Documented backup and restore: Postgres and ClickHouse; no file storage yet.
 - **P1** Prometheus `/metrics` and structured logs.
 - **P1** Storage usage dashboard and per-project quotas.
 - **P2** Stateless app servers that scale horizontally; high availability.

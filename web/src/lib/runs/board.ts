@@ -11,6 +11,8 @@ import { availableKeys, column, compareRuns, defaultColumns, sortValue } from '.
 
 export type BoardSort = { id: string; desc: boolean };
 export type Board = {
+	/** The version this is, or is based on: saved all at once, so it's checked. */
+	version?: number;
 	query: string;
 	sort: BoardSort;
 	limit: number;

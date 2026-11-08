@@ -27,6 +27,7 @@
 	import { match } from '#lib/metrics/pattern.js';
 	import { isModelMetric, type Renames } from '#lib/metrics/registry.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
+	import { onRestored } from '#lib/connection.svelte.js';
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
 	import FamilyChart from './FamilyChart.svelte';
@@ -99,9 +100,9 @@
 
 	const logExample = $derived(
 		[
-			'import losscape',
+			'import lsc',
 			'',
-			`run = losscape.init(project=${JSON.stringify(project)})`,
+			`run = lsc.init(project=${JSON.stringify(project)})`,
 			'for step in range(100):',
 			'    loss = 1 / (step + 1)',
 			'    run.log({"train/loss": loss}, step=step)',
@@ -136,6 +137,7 @@
 		const timer = setInterval(() => void loadMetrics().catch(() => {}), 15_000);
 		return () => clearInterval(timer);
 	});
+	$effect(() => onRestored(() => void loadMetrics().catch(() => {})));
 
 	// Live points: folded into cached tiles, and extend the step ranges.
 	let live = $state<Map<string, Extent>>(new Map());

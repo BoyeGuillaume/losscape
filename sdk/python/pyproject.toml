@@ -3,7 +3,7 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [project]
-name = "losscape"
+name = "losscape-sdk"
 description = "Python SDK for losscape, a self-hosted ML experiment tracker"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,16 +14,20 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.urls]
+Repository = "https://github.com/BoyeGuillaume/losscape"
+
 [project.scripts]
-losscape = "losscape.cli:main"
+losscape = "lsc.cli:main"
 
 [dependency-groups]
 dev = ["maturin>=1.9,<2", "pytest>=8", "ruff>=0.12"]
 
 [tool.maturin]
 manifest-path = "../../crates/losscape-py/Cargo.toml"
-module-name = "losscape._native"
+module-name = "lsc._native"
 python-source = "src"
+exclude = ["**/__pycache__/**"]
 features = ["extension-module"]
 
 [tool.uv]

@@ -12,7 +12,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 
-	import { apiJson, apiSend } from '#lib/api/client.js';
+	import { ApiError, apiJson, apiSend } from '#lib/api/client.js';
 	import type { ProjectInfo, RunSummary } from '#lib/api/types.js';
 	import {
 		DEFAULT_SETTINGS,
@@ -23,6 +23,7 @@
 	import ColumnsMenu from '#lib/components/app/ColumnsMenu.svelte';
 	import DotChart from '#lib/components/app/DotChart.svelte';
 	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
+	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import FilterHelp from '#lib/components/app/FilterHelp.svelte';
 	import FilterInput from '#lib/components/app/FilterInput.svelte';
 	import RunsTable from '#lib/components/app/RunsTable.svelte';
@@ -40,6 +41,8 @@
 	import { isModelMetric } from '#lib/metrics/registry.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import { errorMessage } from '#lib/notify.js';
+	import { onRestored, whenConnected } from '#lib/connection.svelte.js';
+	import { isConnectionFailure } from '#lib/errors.js';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
 	import {
 		assignSlots,
@@ -71,6 +74,7 @@
 	import { buildCatalog } from '#lib/runs/catalog.js';
 	import { RunList } from '#lib/runs/list.svelte.js';
 	import { selectionOf } from '#lib/runs/selection.svelte.js';
+	import { SaveQueue, typingInField, type SaveStatus } from '#lib/save-queue.js';
 
 	/** Rows before the leaderboard scrolls. */
 	const MAX_ROWS = 15;
@@ -116,7 +120,7 @@
 	/** Pinned for now, not saved with the board. */
 	let pinned = $state<string[]>([]);
 	let loaded = $state(false);
-	let status = $state<'idle' | 'pending' | 'saving' | 'saved'>('idle');
+	let status = $state<SaveStatus>('idle');
 
 	const asText = (b: Board) =>
 		JSON.stringify({
@@ -127,32 +131,109 @@
 			explore: b.explore ?? null,
 			columns: b.columns ?? null
 		});
+	const currentText = () =>
+		asText({
+			query,
+			sort,
+			limit,
+			baseline: baselineId,
+			explore: exploreKey,
+			columns: chosenColumns
+		});
 	let savedText = '';
+	/** Of the project being viewed: others finish on their own when leaving it. */
+	let queue: SaveQueue<string> | null = null;
+
+	function queueFor(path: string, version: number) {
+		return new SaveQueue<string>(
+			async (text, based, closing) => {
+				const body = { ...JSON.parse(text), version: based };
+				const saved = await apiSend<{ version: number }>('PUT', `${path}/board`, body, {
+					closing
+				});
+				if (path === projectPath) savedText = text;
+				return saved.version;
+			},
+			version,
+			{
+				status: (s) => {
+					if (path === projectPath) status = s;
+				},
+				retryAfter: (err) => (isConnectionFailure(err) ? whenConnected() : null),
+				failed: (err) => {
+					const stale = err instanceof ApiError && err.status === 409;
+					toast.error(
+						stale ? 'Someone else changed this board' : "Couldn't save the board",
+						{
+							description: stale
+								? "So your last change wasn't saved, and their version is shown now."
+								: `${errorMessage(err)} Others still see it as it was.`
+						}
+					);
+					if (path === projectPath) {
+						queue = null;
+						void loadBoard(path);
+					}
+				}
+			}
+		);
+	}
+
+	async function loadBoard(path: string) {
+		try {
+			const board = await apiJson<Board>(`${path}/board`);
+			if (path !== projectPath) return;
+			query = board.query;
+			sort = board.sort;
+			limit = board.limit;
+			baselineId = board.baseline ?? null;
+			exploreKey = board.explore ?? null;
+			chosenColumns = board.columns ?? null;
+			pinned = [];
+			savedText = asText(board);
+			queue = queueFor(path, board.version ?? 0);
+		} catch (err) {
+			// Without a connection there's a banner saying so, and this loads when it's back.
+			if (!isConnectionFailure(err)) {
+				toast.error("Couldn't load the board", {
+					description: `${errorMessage(err)} It shows the latest runs until it can.`
+				});
+			}
+		}
+		loaded = true;
+	}
 
 	$effect(() => {
 		const path = projectPath;
 		loaded = false;
 		status = 'idle';
-		apiJson<Board>(`${path}/board`).then(
-			(board) => {
-				if (path !== projectPath) return;
-				query = board.query;
-				sort = board.sort;
-				limit = board.limit;
-				baselineId = board.baseline ?? null;
-				exploreKey = board.explore ?? null;
-				chosenColumns = board.columns ?? null;
-				pinned = [];
-				savedText = asText(board);
-				loaded = true;
-			},
-			(err) => {
-				toast.error("Couldn't load the board", {
-					description: `${errorMessage(err)} It shows the latest runs until it can.`
-				});
-				loaded = true;
-			}
-		);
+		queue = null;
+		void loadBoard(path);
+	});
+
+	// Changes still waiting go when leaving. Coming back, others may have changed the board:
+	// unless there's something here that isn't saved yet.
+	$effect(() => {
+		const leaving = () => queue?.flush(true);
+		const refresh = () => {
+			if (queue && !queue.busy && currentText() === savedText && !typingInField())
+				void loadBoard(projectPath);
+		};
+		const visibility = () => {
+			if (document.visibilityState === 'hidden') leaving();
+			else refresh();
+		};
+		const stopListening = onRestored(() => {
+			if (queue) refresh();
+			else void loadBoard(projectPath);
+		});
+		window.addEventListener('pagehide', leaving);
+		document.addEventListener('visibilitychange', visibility);
+		return () => {
+			stopListening();
+			window.removeEventListener('pagehide', leaving);
+			document.removeEventListener('visibilitychange', visibility);
+		};
 	});
 
 	let lastValid: Node | null = null;
@@ -167,43 +248,14 @@
 		}
 	});
 
-	async function save(path: string, text: string) {
-		status = 'saving';
-		try {
-			await apiSend('PUT', `${path}/board`, JSON.parse(text));
-			savedText = path === projectPath ? text : savedText;
-			if (status === 'saving') status = 'saved';
-		} catch (err) {
-			status = 'idle';
-			toast.error("Couldn't save the board", {
-				description: `${errorMessage(err)} Others still see it as it was.`
-			});
-		}
-	}
-
-	// A save waiting when leaving still happens: it isn't tied to this page.
-	let saveTimer: ReturnType<typeof setTimeout> | undefined;
-	let savePath = '';
 	$effect(() => {
-		const text = asText({
-			query,
-			sort,
-			limit,
-			baseline: baselineId,
-			explore: exploreKey,
-			columns: chosenColumns
-		});
-		const path = projectPath;
-		if (!loaded || !canEdit) return;
-		if (savePath === path) clearTimeout(saveTimer);
+		const text = currentText();
+		if (!loaded || !canEdit || !queue) return;
 		if (text === savedText) {
-			if (untrack(() => status) === 'pending') status = 'idle';
+			if (untrack(() => status) === 'pending') queue.cancel();
 			return;
 		}
-		if (parsed.error) return;
-		savePath = path;
-		status = 'pending';
-		saveTimer = setTimeout(() => void save(path, text), 500);
+		if (!parsed.error) queue.schedule(text);
 	});
 
 	// ---- Its runs ----
@@ -426,7 +478,7 @@
 {/snippet}
 
 {#if list?.error}
-	<p class="text-sm text-destructive">{String(list.error)}</p>
+	<ErrorCard error={list.error} what="run list" />
 {:else if !list?.runs || !loaded}
 	<Skeleton class="h-64 rounded-xl" />
 {:else if all.length === 0}
@@ -504,12 +556,14 @@
 				onchange={setLimit}
 			/>
 		</label>
-		<span class="w-14 text-xs text-muted-foreground" aria-live="polite">
-			{status === 'pending' || status === 'saving'
-				? 'Saving…'
-				: status === 'saved'
-					? 'Saved'
-					: ''}
+		<span class="min-w-14 text-xs whitespace-nowrap text-muted-foreground" aria-live="polite">
+			{status === 'waiting'
+				? 'Will save when back'
+				: status === 'pending' || status === 'saving'
+					? 'Saving…'
+					: status === 'saved'
+						? 'Saved'
+						: ''}
 		</span>
 	</div>
 

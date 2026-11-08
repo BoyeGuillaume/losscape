@@ -469,7 +469,9 @@
 		</div>
 		<div class="grid gap-1.5">
 			<p class="text-sm text-muted-foreground">
-				Then, where you train (<code class="font-mono text-xs">pip install losscape-sdk</code> first):
+				Then, where you train (<code class="font-mono text-xs"
+					>pip install losscape-sdk</code
+				> first):
 			</p>
 			<CodeBlock lang="shellscript" title="Terminal" code={snippet} />
 		</div>

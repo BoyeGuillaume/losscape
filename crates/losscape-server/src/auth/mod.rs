@@ -24,7 +24,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 
-use crate::config::AuthConfig;
+use crate::config::{AuthConfig, IpNet};
 use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
@@ -433,17 +433,50 @@ impl LoginLimiter {
 /// Client address when the server runs with connect info (absent in in-process tests).
 pub struct ClientIp(pub Option<IpAddr>);
 
-impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+impl FromRequestParts<AppState> for ClientIp {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
-        Ok(ClientIp(
-            parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|c| c.0.ip()),
-        ))
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip());
+        let forwarded: Vec<&str> = parts
+            .headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        let trusted = &state.auth_config().trusted_proxies;
+        Ok(ClientIp(peer.map(|peer| {
+            client_address(peer, &forwarded.join(","), trusted)
+        })))
     }
+}
+
+/// Who is really asking. Behind a reverse proxy every request comes from the proxy, which
+/// would make all users share one login rate limit, so a trusted one is believed about who
+/// it forwards. Anyone else's `X-Forwarded-For` is ignored, since clients can write anything
+/// there; and in a list, only the part added by trusted proxies counts, read from the right.
+fn client_address(peer: IpAddr, forwarded: &str, trusted: &[IpNet]) -> IpAddr {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|net| net.contains(ip));
+    let mut client = peer.to_canonical();
+    if !is_trusted(client) {
+        return client;
+    }
+    for hop in forwarded.rsplit(',') {
+        let Ok(ip) = hop.trim().parse::<IpAddr>() else {
+            break;
+        };
+        client = ip.to_canonical();
+        if !is_trusted(client) {
+            break;
+        }
+    }
+    client
 }
 
 #[cfg(test)]
@@ -456,6 +489,33 @@ mod tests {
             h.insert(*k, v.parse().unwrap());
         }
         h
+    }
+
+    #[test]
+    fn believes_only_trusted_proxies_about_clients() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let proxies: Vec<IpNet> = vec!["172.30.42.10".parse().unwrap()];
+        let address = |peer, forwarded| client_address(ip(peer), forwarded, &proxies);
+        // Directly connected: the header is whatever the client wants it to be.
+        assert_eq!(address("8.8.8.8", "1.1.1.1"), ip("8.8.8.8"));
+        assert_eq!(client_address(ip("8.8.8.8"), "1.1.1.1", &[]), ip("8.8.8.8"));
+        // Through the proxy.
+        assert_eq!(address("172.30.42.10", "1.1.1.1"), ip("1.1.1.1"));
+        assert_eq!(address("::ffff:172.30.42.10", " 1.1.1.1 "), ip("1.1.1.1"));
+        // A client's own forged entries come first: the proxy's is the last one.
+        assert_eq!(address("172.30.42.10", "6.6.6.6, 1.1.1.1"), ip("1.1.1.1"));
+        // Further trusted proxies on the way are skipped.
+        assert_eq!(
+            address("172.30.42.10", "1.1.1.1, 172.30.42.10"),
+            ip("1.1.1.1")
+        );
+        // Nothing usable: the proxy itself rather than a guess.
+        assert_eq!(address("172.30.42.10", ""), ip("172.30.42.10"));
+        assert_eq!(address("172.30.42.10", "garbage"), ip("172.30.42.10"));
+        assert_eq!(
+            address("172.30.42.10", "1.1.1.1, garbage"),
+            ip("172.30.42.10")
+        );
     }
 
     #[test]

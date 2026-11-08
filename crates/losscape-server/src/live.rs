@@ -37,14 +37,17 @@ pub enum LiveEvent {
         run_id: Uuid,
         lines: Arc<Vec<ConsoleLine>>,
     },
+    /// The server is stopping: every stream ends, or stopping would wait on them forever.
+    Shutdown,
 }
 
 impl LiveEvent {
-    fn run_id(&self) -> Uuid {
+    fn run_id(&self) -> Option<Uuid> {
         match self {
             Self::Points { run_id, .. }
             | Self::State { run_id, .. }
-            | Self::Console { run_id, .. } => *run_id,
+            | Self::Console { run_id, .. } => Some(*run_id),
+            Self::Shutdown => None,
         }
     }
 }
@@ -73,10 +76,15 @@ impl LiveHub {
     }
 
     pub fn publish(&self, event: LiveEvent) {
-        if self.is_watched(event.run_id()) {
+        if event.run_id().is_some_and(|run| self.is_watched(run)) {
             // No receivers left is fine.
             let _ = self.tx.send(event);
         }
+    }
+
+    /// Ends every live stream.
+    pub fn shutdown(&self) {
+        let _ = self.tx.send(LiveEvent::Shutdown);
     }
 
     fn watch(self: &Arc<Self>, run_id: Uuid) -> WatchGuard {
@@ -170,10 +178,13 @@ pub async fn live(
     let rx = state.live().tx.subscribe();
     let guards: Vec<WatchGuard> = runs.iter().map(|&run| state.live().watch(run)).collect();
 
-    let events = BroadcastStream::new(rx).filter_map(move |item| {
+    let until_shutdown =
+        BroadcastStream::new(rx).take_while(|item| !matches!(item, Ok(LiveEvent::Shutdown)));
+    let events = until_shutdown.filter_map(move |item| {
         let _keep_watching = &guards;
         let event = match item {
-            Ok(event) if !runs.contains(&event.run_id()) => return None,
+            Ok(LiveEvent::Shutdown) => return None,
+            Ok(event) if event.run_id().is_none_or(|run| !runs.contains(&run)) => return None,
             Ok(LiveEvent::Points { run_id, scalars }) => {
                 Event::default().event("points").json_data(PointsEvent {
                     run: run_id,

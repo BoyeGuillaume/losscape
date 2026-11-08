@@ -12,11 +12,11 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::routing::{get, post};
 use base64::Engine;
 use common::{TestServer, error_of, user};
+use http_body_util::BodyExt;
 use losscape_core::ids::RunId;
 use losscape_core::proto::v0::{LogBatch, RunInit, ScalarColumns};
 use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
 use losscape_server::config::{AuthConfig, OAuthKind, OAuthProvider, Signup};
-use http_body_util::BodyExt;
 use prost::Message;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1069,7 +1069,9 @@ async fn project_roles_control_access() {
         StatusCode::NO_CONTENT
     );
     let put_board = || Call {
-        body: Some(json!({"query": "", "sort": {"id": "created", "desc": true}, "limit": 5})),
+        body: Some(
+            json!({"version": 0, "query": "", "sort": {"id": "created", "desc": true}, "limit": 5}),
+        ),
         ..Call::new(Method::PUT, "/api/v0/projects/alice-proj/board")
     };
     assert_eq!(
@@ -1078,7 +1080,7 @@ async fn project_roles_control_access() {
     );
     assert_eq!(
         put_board().bearer(&alice).send(&server).await.status,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     assert_eq!(
         Call::get("/api/v0/projects/alice-proj/board")
@@ -1416,6 +1418,7 @@ fn query(url: &str) -> HashMap<String, String> {
 
 fn auth_config(oidc: &Provider, github: &Provider) -> AuthConfig {
     AuthConfig {
+        trusted_proxies: Vec::new(),
         public_url: Some("http://losscape.test".into()),
         signup: Signup::Open,
         oauth: vec![

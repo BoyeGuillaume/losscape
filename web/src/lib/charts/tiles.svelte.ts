@@ -3,6 +3,7 @@
 // don't depend on the view, so tiles are cached and reused across zooms; buckets carry
 // combinable aggregates, so live points can be folded into cached tiles.
 
+import { onRestored } from '#lib/connection.svelte.js';
 import { apiFetch } from '#lib/api/client.js';
 
 export const TILE_BUCKETS = 1024;
@@ -212,12 +213,19 @@ class TileStore {
 				}
 			}
 			for (const [id, tile] of loaded) this.tiles.set(id, tile);
-		} catch (err) {
-			console.warn('losscape: loading tiles failed', err);
-		} finally {
 			ids.forEach((id) => this.inFlight.delete(id));
 			this.changed();
+		} catch (err) {
+			// Not asking again right away, which is what announcing a change would do: charts
+			// ask for what they're missing. That's for when the connection is back.
+			console.warn('losscape: loading tiles failed', err);
+			ids.forEach((id) => this.inFlight.delete(id));
 		}
+	}
+
+	/** Has charts ask again for what they're missing. */
+	retry() {
+		this.changed();
 	}
 
 	/** Adds a live point to every cached tile that covers it. */
@@ -246,6 +254,7 @@ class TileStore {
 }
 
 export const tileStore = new TileStore();
+onRestored(() => tileStore.retry());
 
 /**
  * Points of one metric for steps `from..=to` drawn `widthPx` wide: bucket means plus the

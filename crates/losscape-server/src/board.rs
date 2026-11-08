@@ -4,7 +4,6 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json as SqlJson;
 
@@ -59,30 +58,46 @@ impl Default for Board {
     }
 }
 
+/// A board, as a version of it: it's saved all at once.
+#[derive(Serialize, Deserialize)]
+pub struct Versioned {
+    version: i64,
+    #[serde(flatten)]
+    board: Board,
+}
+
+#[derive(Serialize)]
+pub struct Saved {
+    version: i64,
+}
+
 /// `GET /api/v0/projects/{project}/board` (members).
 pub async fn get(
     State(state): State<AppState>,
     user: AuthUser,
     Path(project): Path<String>,
-) -> Result<Json<Board>, UiError> {
+) -> Result<Json<Versioned>, UiError> {
     let id = members::project_id(&state, &project).await?;
     auth::require_role(&state, &user, id, Role::Viewer, unknown_project).await?;
-    let board: Option<SqlJson<Board>> =
-        sqlx::query_scalar("SELECT board FROM projects WHERE id = $1")
+    let (board, version): (Option<SqlJson<Board>>, i64) =
+        sqlx::query_as("SELECT board, board_version FROM projects WHERE id = $1")
             .bind(id)
             .fetch_one(state.pg())
             .await?;
-    Ok(Json(board.map(|b| b.0).unwrap_or_default()))
+    Ok(Json(Versioned {
+        version,
+        board: board.map(|b| b.0).unwrap_or_default(),
+    }))
 }
 
-/// `PUT /api/v0/projects/{project}/board` `{"query", "sort": {"id", "desc"}, "limit",
-/// "baseline", "explore", "columns"}` (editors).
+/// `PUT /api/v0/projects/{project}/board` `{"version", "query", "sort": {"id", "desc"}, "limit",
+/// "baseline", "explore", "columns"}` (editors). Refused if `version` isn't the latest.
 pub async fn put(
     State(state): State<AppState>,
     user: AuthUser,
     Path(project): Path<String>,
-    Json(board): Json<Board>,
-) -> Result<StatusCode, UiError> {
+    Json(Versioned { version, board }): Json<Versioned>,
+) -> Result<Json<Saved>, UiError> {
     let id = members::project_id(&state, &project).await?;
     auth::require_role(&state, &user, id, Role::Editor, unknown_project).await?;
     if board.query.len() > MAX_QUERY {
@@ -113,10 +128,18 @@ pub async fn put(
             .into());
         }
     }
-    sqlx::query("UPDATE projects SET board = $1 WHERE id = $2")
-        .bind(SqlJson(&board))
-        .bind(id)
-        .execute(state.pg())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    let saved: Option<i64> = sqlx::query_scalar(
+        "UPDATE projects SET board = $1, board_version = board_version + 1
+         WHERE id = $2 AND board_version = $3
+         RETURNING board_version",
+    )
+    .bind(SqlJson(&board))
+    .bind(id)
+    .bind(version)
+    .fetch_optional(state.pg())
+    .await?;
+    let Some(saved) = saved else {
+        return Err(ApiError::stale("the board was changed since it was read").into());
+    };
+    Ok(Json(Saved { version: saved }))
 }

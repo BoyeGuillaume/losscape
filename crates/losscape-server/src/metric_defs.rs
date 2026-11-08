@@ -40,32 +40,54 @@ fn check_name(what: &str, name: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The definitions of a project, as a version of them: they're saved all at once.
+#[derive(Serialize, Deserialize)]
+pub struct Definitions {
+    version: i64,
+    definitions: Vec<Definition>,
+}
+
+#[derive(Serialize)]
+pub struct Saved {
+    version: i64,
+}
+
 /// `GET /api/v0/projects/{project}/metric-definitions` (members).
 pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,
     Path(project): Path<String>,
-) -> Result<Json<Vec<Definition>>, UiError> {
+) -> Result<Json<Definitions>, UiError> {
     let id = members::project_id(&state, &project).await?;
     auth::require_role(&state, &user, id, Role::Viewer, unknown_project).await?;
-    Ok(Json(
-        sqlx::query_as(
+    let version =
+        sqlx::query_scalar("SELECT metric_definitions_version FROM projects WHERE id = $1")
+            .bind(id)
+            .fetch_one(state.pg())
+            .await?;
+    Ok(Json(Definitions {
+        version,
+        definitions: sqlx::query_as(
             "SELECT name, kind, spec FROM metric_definitions WHERE project_id = $1 ORDER BY position",
         )
         .bind(id)
         .fetch_all(state.pg())
         .await?,
-    ))
+    }))
 }
 
-/// `PUT /api/v0/projects/{project}/metric-definitions` `[...]` (editors): replaces them all,
-/// in order (earlier definitions win when several match).
+/// `PUT /api/v0/projects/{project}/metric-definitions` `{"version", "definitions": [...]}`
+/// (editors): replaces them all, in order (earlier definitions win when several match).
+/// Refused if `version` isn't the latest: someone changed them since this was read.
 pub async fn replace(
     State(state): State<AppState>,
     user: AuthUser,
     Path(project): Path<String>,
-    Json(definitions): Json<Vec<Definition>>,
-) -> Result<StatusCode, UiError> {
+    Json(Definitions {
+        version,
+        definitions,
+    }): Json<Definitions>,
+) -> Result<Json<Saved>, UiError> {
     let id = members::project_id(&state, &project).await?;
     auth::require_role(&state, &user, id, Role::Editor, unknown_project).await?;
     if definitions.len() > MAX_DEFINITIONS {
@@ -85,6 +107,21 @@ pub async fn replace(
         }
     }
     let mut tx = state.pg().begin().await?;
+    // Holds the project's row until the commit: of two saves of one version, only one passes.
+    let saved: Option<i64> = sqlx::query_scalar(
+        "UPDATE projects SET metric_definitions_version = metric_definitions_version + 1
+         WHERE id = $1 AND metric_definitions_version = $2
+         RETURNING metric_definitions_version",
+    )
+    .bind(id)
+    .bind(version)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(saved) = saved else {
+        return Err(
+            ApiError::stale("the metric settings were changed since they were read").into(),
+        );
+    };
     sqlx::query("DELETE FROM metric_definitions WHERE project_id = $1")
         .bind(id)
         .execute(&mut *tx)
@@ -103,7 +140,7 @@ pub async fn replace(
         .await?;
     }
     tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(Saved { version: saved }))
 }
 
 /// `GET /api/v0/projects/{project}/metric-keys` (members): every metric name logged, and
