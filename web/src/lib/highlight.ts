@@ -5,7 +5,7 @@
 
 import type { HighlighterCore } from 'shiki/core';
 
-export type Lang = 'python' | 'shellscript';
+export type Lang = 'python' | 'shellscript' | 'yaml';
 /** One piece of a line, with its color in the light and dark theme. */
 export type Token = { content: string; light?: string; dark?: string };
 
@@ -19,7 +19,11 @@ function load(): Promise<HighlighterCore> {
 		]);
 		return createHighlighterCore({
 			themes: [import('shiki/themes/github-light.mjs'), import('shiki/themes/github-dark.mjs')],
-			langs: [import('shiki/langs/python.mjs'), import('shiki/langs/shellscript.mjs')],
+			langs: [
+				import('shiki/langs/python.mjs'),
+				import('shiki/langs/shellscript.mjs'),
+				import('shiki/langs/yaml.mjs')
+			],
 			engine: createJavaScriptRegexEngine()
 		});
 	})();

@@ -48,7 +48,9 @@
 		{#if lang === 'shellscript'}<SquareTerminal class="size-3.5" />{:else}<FileCode
 				class="size-3.5"
 			/>{/if}
-		<span class="truncate">{title ?? (lang === 'python' ? 'Python' : 'Terminal')}</span>
+		<span class="truncate"
+			>{title ?? { python: 'Python', shellscript: 'Terminal', yaml: 'YAML' }[lang]}</span
+		>
 		<button
 			class="-mr-1 ml-auto rounded-md p-1 hover:bg-background hover:text-foreground"
 			onclick={copy}

@@ -396,6 +396,112 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
 }
 
 #[tokio::test]
+async fn metric_ranges_names_definitions_and_renames() {
+    let server = server!();
+    let run = RunId::new();
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    server.init(run, false).await;
+    let mut b = batch(run, 0, 0, 100);
+    // A NaN must not become the minimum; system metrics have no range.
+    b.scalars.as_mut().unwrap().value[1] = f64::NAN;
+    server.log(b).await;
+    server.log(batch(run, 1, 100, 100)).await;
+
+    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    let r = &runs[0];
+    assert_eq!(r["metric_min"]["loss"], 1.0 / 200.0, "across batches");
+    assert_eq!(r["metric_max"]["loss"], 1.0);
+    assert_eq!(r["metric_max"]["acc"], 1.0 / 2.0, "NaN at step 0 skipped");
+    assert_eq!(r["renames"], serde_json::json!({}));
+
+    // Backfill gives the same ranges for runs logged before they were kept.
+    sqlx::query("UPDATE runs SET metric_min = '{}', metric_max = '{}'")
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM project_metric_keys")
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    assert_eq!(
+        losscape_server::purge::backfill_metric_index(&server.state)
+            .await
+            .unwrap(),
+        1
+    );
+    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    assert_eq!(runs[0]["metric_min"]["loss"], 1.0 / 200.0);
+
+    let (_, keys) = get_json(&server, "/api/v0/projects/test/metric-keys").await;
+    assert_eq!(keys, serde_json::json!(["acc", "loss"]));
+
+    let send = |method: &str, uri: String, body: serde_json::Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let defs = serde_json::json!([
+        {"name": "val/pck@8", "kind": "merge", "spec": {"sources": [{"key": "val/pck-8"}, {"key": "val/pck-8-fine"}]}},
+        {"name": "val/pck-{k}", "kind": "family", "spec": {"direction": "max", "bounds": [0, 1]}}
+    ]);
+    let uri = "/api/v0/projects/test/metric-definitions".to_owned();
+    assert_eq!(
+        server.call(send("PUT", uri.clone(), defs.clone())).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, listed) = get_json(&server, &uri).await;
+    assert_eq!(listed, defs, "kept in order");
+    let twice = serde_json::json!([{"name": "a", "kind": "describe", "spec": {}}, {"name": "a", "kind": "describe", "spec": {}}]);
+    assert_eq!(
+        server.call(send("PUT", uri.clone(), twice)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let bad_kind = serde_json::json!([{"name": "a", "kind": "sql", "spec": {}}]);
+    assert_eq!(
+        server.call(send("PUT", uri.clone(), bad_kind)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Renaming a metric of one run; names may contain slashes.
+    let rename = format!("/api/v0/runs/{id}/metric-renames/val/pck-8");
+    assert_eq!(
+        server
+            .call(send(
+                "PUT",
+                rename.clone(),
+                serde_json::json!({"to": "val/pck-8px"})
+            ))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    assert_eq!(
+        detail["renames"],
+        serde_json::json!({"val/pck-8": "val/pck-8px"})
+    );
+    assert_eq!(
+        server
+            .call(send("DELETE", rename.clone(), serde_json::json!({})))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        server
+            .call(send("DELETE", rename, serde_json::json!({})))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn rejects_bad_requests() {
     let server = server!();
     let run = RunId::new();

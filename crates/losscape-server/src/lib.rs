@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod ingest;
 pub mod live;
+pub mod metric_defs;
 pub mod projects;
 pub mod proto_body;
 pub mod purge;

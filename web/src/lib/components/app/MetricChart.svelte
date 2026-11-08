@@ -25,17 +25,12 @@
 		type ChartSettings,
 		type XAxis
 	} from '#lib/charts/settings.js';
-	import {
-		levelFor,
-		seriesInRange,
-		tileStore,
-		type SeriesPoints
-	} from '#lib/charts/tiles.svelte.js';
-	import { formatCompact, formatValue } from '#lib/format.js';
+	import type { MetricSource } from '#lib/charts/source.js';
+	import { levelFor, tileStore, type SeriesPoints } from '#lib/charts/tiles.svelte.js';
+	import { formatMetric, metricAxis, unitFor, unitTicks } from '#lib/metric-units.js';
 
 	/** BrushContext's event payload (not exported by name). */
 	type BrushEvent = Parameters<NonNullable<ComponentProps<typeof BrushContext>['onBrushEnd']>>[0];
-	type Extent = { min: number; max: number };
 	/**
 	 * One bucket of one series: `y` is smoothed (or the mean), `raw` the unsmoothed value;
 	 * `min`/`max` bound the band (the bucket's range for a run, the spread for a group).
@@ -48,6 +43,8 @@
 		max: number | null;
 		/** Runs behind the point (groups). */
 		n: number;
+		/** Best value up to here (metrics where higher or lower is better). */
+		best: number | null;
 	};
 	type Line = { series: ChartSeries; rows: Row[]; ascending: boolean };
 
@@ -56,19 +53,23 @@
 	let {
 		series,
 		metric,
-		extentOf,
+		source,
 		settings: pageSettings,
 		override = {},
 		onOverride,
 		xOptions = [],
 		view: sharedView = $bindable(null),
-		title = metric
+		title = metric,
+		onRename
 	}: {
 		series: ChartSeries[];
 		metric: string;
 		/** Shown name (defaults to the metric). */
 		title?: string;
-		extentOf: (run: string, key: string) => Extent | undefined;
+		/** Reads metrics as shown (renamed, merged, computed). */
+		source: MetricSource;
+		/** Offers "Rename in this run" (the run page). */
+		onRename?: (key: string) => void;
 		/** The page's settings; `override` changes some of them for this chart. */
 		settings: ChartSettings;
 		override?: ChartOverride;
@@ -80,6 +81,14 @@
 	} = $props();
 
 	const settings = $derived<ChartSettings>({ ...pageSettings, ...override });
+	const meta = $derived(source.registry.describe(metric));
+	const virtual = $derived(source.registry.isVirtual(metric));
+	/** The logged metric shown here, for a single run whose name differs (merges, renames). */
+	const fromKey = $derived(
+		series.length === 1 && series[0].runs.length === 1
+			? source.sourceOf(series[0].runs[0].id, metric)
+			: null
+	);
 	const overridden = $derived(Object.keys(override).length > 0);
 	/** A chart with its own x-axis zooms on its own: the shared range is in other units. */
 	const ownAxis = $derived(override.x !== undefined && override.x !== pageSettings.x);
@@ -114,7 +123,8 @@
 		const key = xMetric(settings.x);
 		if (key) {
 			// Same steps and width, so the same buckets: pair them by position.
-			const other = seriesInRange(run.id, key, from, to, width);
+			const other = source.points(run.id, key, from, to, width);
+			if (!other) return s.x.map(() => null);
 			const byStep = new Map(other.x.map((x, i) => [x, other.mean[i]]));
 			return s.x.map((x) => byStep.get(x) ?? null);
 		}
@@ -132,7 +142,8 @@
 			const to = Math.min(full[1], Math.ceil(hi));
 			return to >= from ? [from, to] : null;
 		}
-		const base = seriesInRange(run.id, metric, full[0], full[1], width);
+		const base = source.points(run.id, metric, full[0], full[1], width);
+		if (!base) return null;
 		const xs = xValues(run, base, full[0], full[1]);
 		let first = Infinity;
 		let last = -Infinity;
@@ -158,12 +169,12 @@
 		const lines: Line[] = [];
 		let complete = true;
 		for (const s of series) {
-			const runs = s.runs.filter((r) => extentOf(r.id, metric));
+			const runs = s.runs.filter((r) => source.extentOf(r.id, metric));
 			if (!runs.length) continue;
 			// One step range for all runs of a group: same buckets, so they line up.
 			let [lo, hi] = [Infinity, -Infinity];
 			for (const r of runs) {
-				const e = extentOf(r.id, metric)!;
+				const e = source.extentOf(r.id, metric)!;
 				[lo, hi] = [Math.min(lo, e.min), Math.max(hi, e.max)];
 			}
 			const window = stepWindow(runs[0], [lo, Math.max(hi, lo + 1)]);
@@ -176,7 +187,8 @@
 				{ x: number[]; y: number[]; raw: number[]; lo: number; hi: number }
 			>();
 			for (const r of runs) {
-				const p = seriesInRange(r.id, metric, window[0], window[1], width);
+				const p = source.points(r.id, metric, window[0], window[1], width);
+				if (!p) continue;
 				complete &&= p.complete;
 				const xs = xValues(r, p, window[0], window[1]);
 				const ys = smooth(p.mean, p.n, settings.smoothing);
@@ -211,7 +223,8 @@
 						raw: positive(b.raw[0]),
 						min: positive(b.lo),
 						max: positive(b.hi),
-						n: 1
+						n: 1,
+						best: null
 					});
 				} else {
 					const { mean, lo: low, hi: high } = aggregate(b.y, settings.spread);
@@ -222,8 +235,24 @@
 						raw: positive(raw),
 						min: positive(low),
 						max: positive(high),
-						n: b.y.length
+						n: b.y.length,
+						best: null
 					});
+				}
+			}
+			// Best so far, from the unsmoothed values, in step order.
+			if (meta.direction) {
+				let best: number | null = null;
+				for (const r of rows) {
+					if (r.raw !== null) {
+						best =
+							best === null
+								? r.raw
+								: meta.direction === 'max'
+									? Math.max(best, r.raw)
+									: Math.min(best, r.raw);
+					}
+					r.best = best;
 				}
 			}
 			if (rows.length) lines.push({ series: s, rows, ascending });
@@ -240,7 +269,7 @@
 		if (settings.x === 'step') {
 			for (const s of series) {
 				for (const r of s.runs) {
-					const e = extentOf(r.id, metric);
+					const e = source.extentOf(r.id, metric);
 					if (e) [lo, hi] = [Math.min(lo, e.min), Math.max(hi, e.max)];
 				}
 			}
@@ -274,6 +303,10 @@
 			}
 		}
 		if (!Number.isFinite(lo)) return undefined;
+		// Bounded metrics (0-1, 0-100%) keep their full range, unless on a log scale.
+		if (meta.bounds && !settings.logY) {
+			[lo, hi] = [meta.bounds[0] ?? lo, meta.bounds[1] ?? hi];
+		}
 		if (lo === hi) {
 			return settings.logY
 				? [lo / 2, hi * 2]
@@ -355,12 +388,24 @@
 			? durationTicks(xDomain[0], xDomain[1], settings.x === 'time' ? 1000 : 1)
 			: 5
 	);
+	const unit = $derived(unitFor(metric));
+	const formatY = $derived(metricAxis(metric));
 	const yTicks = $derived(
 		settings.logY
 			? (scale: { domain: () => number[] }) =>
 					logTicks(...(scale.domain() as [number, number]))
-			: 4
+			: unit
+				? (scale: { domain: () => number[] }) =>
+						unitTicks(unit, ...(scale.domain() as [number, number]))
+				: 4
 	);
+	/** Room for the longest y label (units make them long: "28.5 MiB"). */
+	const padLeft = $derived.by(() => {
+		if (!yDomain) return 40;
+		const [lo, hi] = yDomain;
+		const longest = Math.max(...[lo, hi, (lo + hi) / 2].map((v) => formatY(v).length));
+		return Math.min(96, Math.max(32, 10 + longest * 6.5));
+	});
 	const logScale = scaleLog();
 
 	function onBrushEnd(e: BrushEvent) {
@@ -392,13 +437,27 @@
 	aria-label={`${metric} chart`}
 >
 	<header class="flex min-h-7 items-center gap-2">
-		<h3 class="truncate text-sm font-medium" title={metric}>{title}</h3>
+		<h3
+			class="flex min-w-0 items-center gap-1 truncate text-sm font-medium"
+			title={[metric, meta.description].filter(Boolean).join(' — ')}
+		>
+			{#if virtual}<span
+					class="shrink-0 font-serif text-xs text-primary italic"
+					title="Virtual metric (project settings > Metrics)">ƒ</span
+				>{/if}
+			<span class="truncate">{meta.label ?? title}</span>
+		</h3>
+		{#if fromKey}
+			<span class="shrink-0 truncate text-xs text-muted-foreground" title="Read from">
+				← {fromKey}
+			</span>
+		{/if}
 		{#if drawn && !drawn.complete}
 			<span class="size-1.5 animate-pulse rounded-full bg-muted-foreground" title="Loading"
 			></span>
 		{/if}
 		<span class="ml-auto font-mono text-xs text-muted-foreground tabular-nums">
-			{#if latest}{formatValue(latest.y)}{/if}
+			{#if latest}{formatMetric(metric, latest.y)}{/if}
 		</span>
 		{#if view}
 			<Button
@@ -488,6 +547,12 @@
 					<DropdownMenu.Item disabled={!overridden} onSelect={() => onOverride?.(null)}>
 						Use the page's settings
 					</DropdownMenu.Item>
+					{#if onRename && !virtual}
+						<DropdownMenu.Separator />
+						<DropdownMenu.Item onSelect={() => onRename(metric)}>
+							Rename in this run…
+						</DropdownMenu.Item>
+					{/if}
 				</DropdownMenu.Content>
 			</DropdownMenu.Root>
 		{/if}
@@ -509,7 +574,7 @@
 				yScale={settings.logY ? logScale : undefined}
 				yNice
 				clip
-				padding={{ top: 6, right: 6, bottom: 20, left: 40 }}
+				padding={{ top: 6, right: 6, bottom: 20, left: padLeft }}
 				axis
 				grid={{ x: false, y: true, stroke: grid, yTicks }}
 				highlight={{ points: false, lines: true }}
@@ -517,7 +582,11 @@
 				brush={{ axis: 'x', onBrushEnd }}
 				props={{
 					xAxis: { format: formatX, ticks: xTicks, tickLabelProps: { fill: label } },
-					yAxis: { format: formatCompact, ticks: yTicks, tickLabelProps: { fill: label } }
+					yAxis: {
+						format: formatY,
+						ticks: yTicks,
+						tickLabelProps: { fill: label }
+					}
 				}}
 			>
 				{#snippet belowMarks()}
@@ -555,6 +624,21 @@
 					{/if}
 				{/snippet}
 				{#snippet marks()}
+					{#if settings.best && meta.direction}
+						{#each lines as line (line.series.id)}
+							<Spline
+								data={line.rows}
+								x="x"
+								y="best"
+								defined={(d: Row) => d.best !== null}
+								stroke={colors[line.series.id]}
+								strokeWidth={1.25}
+								class="[stroke-dasharray:4_3]"
+								opacity={0.8}
+								fill="none"
+							/>
+						{/each}
+					{/if}
 					{#each lines as line (line.series.id)}
 						<Spline
 							data={line.rows}
@@ -583,8 +667,8 @@
 												? v.series.runs.length > 1
 													? `${v.series.name} (mean of ${v.n})`
 													: v.series.name
-												: metric}
-											value={formatValue(v.value)}
+												: title}
+											value={formatMetric(metric, v.value)}
 											color={v.color}
 											classes={{ label: 'truncate' }}
 										/>

@@ -4,8 +4,15 @@
 	let {
 		rows,
 		empty = 'Nothing here yet.',
-		mono = true
-	}: { rows: [string, unknown][]; empty?: string; mono?: boolean } = $props();
+		mono = true,
+		format = (_key, value) => formatValue(value)
+	}: {
+		rows: [string, unknown][];
+		empty?: string;
+		mono?: boolean;
+		/** How values show (metrics in their unit); the default keeps 4 significant digits. */
+		format?: (key: string, value: unknown) => string;
+	} = $props();
 
 	const shown = $derived(rows.filter(([, v]) => v !== null && v !== undefined && v !== ''));
 </script>
@@ -18,7 +25,7 @@
 			<div class="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-3 py-1.5">
 				<dt class="truncate text-muted-foreground" title={key}>{key}</dt>
 				<dd class={['break-words', mono && 'font-mono text-xs leading-5 tabular-nums']}>
-					{formatValue(value)}
+					{format(key, value)}
 				</dd>
 			</div>
 		{/each}

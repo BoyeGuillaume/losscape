@@ -48,7 +48,8 @@ export function readChartSettings(): ChartSettings {
 		smoothing: Number.isFinite(smoothing) ? Math.min(Math.max(smoothing, 0), 0.99) : 0,
 		logY: param('log') === '1',
 		band: param('band') !== '0',
-		spread: param('spread') === 'range' ? 'range' : 'std'
+		spread: param('spread') === 'range' ? 'range' : 'std',
+		best: param('best') === '1'
 	};
 }
 
@@ -58,7 +59,8 @@ export function chartSettingsParams(s: ChartSettings): Record<string, string | n
 		smooth: s.smoothing > 0 ? String(s.smoothing) : null,
 		log: s.logY ? '1' : null,
 		band: s.band ? null : '0',
-		spread: s.spread === 'range' ? 'range' : null
+		spread: s.spread === 'range' ? 'range' : null,
+		best: s.best ? '1' : null
 	};
 }
 

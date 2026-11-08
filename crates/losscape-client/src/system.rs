@@ -162,8 +162,9 @@ impl Probe {
                 sent += data.transmitted();
             }
         }
-        put("network/recv_mbps", recv as f64 / MB / seconds);
-        put("network/sent_mbps", sent as f64 / MB / seconds);
+        // Bits per second, like network speeds are quoted.
+        put("network/recv", recv as f64 * 8.0 / seconds);
+        put("network/sent", sent as f64 * 8.0 / seconds);
 
         if let Some(nvml) = nvml() {
             for i in 0..nvml.device_count().unwrap_or(0) {
@@ -217,7 +218,7 @@ mod tests {
             "system/cpu/util_pct",
             "system/memory/used_pct",
             "system/memory/process_gb",
-            "system/network/recv_mbps",
+            "system/network/recv",
         ] {
             assert!(keys.contains(&key), "{key} missing from {keys:?}");
         }

@@ -4,6 +4,7 @@
 import type { RunSummary } from '#lib/api/types.js';
 import { fieldValue, flatRun } from '#lib/filter.js';
 import { formatValue } from '#lib/format.js';
+import { currentRegistry } from '#lib/metrics/store.svelte.js';
 
 export type ColumnKind = 'state' | 'created' | 'runtime' | 'steps' | 'group' | 'tags' | 'value';
 export type Column = {
@@ -114,22 +115,16 @@ export function availableKeys(runs: RunSummary[]) {
 }
 
 /**
- * Default columns: run fields, the config keys that differ between runs (what was being
- * compared), and the most common numeric summary values.
+ * Default columns: run fields and the most common numeric summary values. Config keys
+ * (there can be many) are added by hand, from the column picker or the config explorer.
  */
 export function defaultColumns(runs: RunSummary[]): string[] {
 	const sample = runs.slice(0, SCAN);
-	const { config, summary } = availableKeys(sample);
-	const varying = config.filter((key) => {
-		const seen = new Set<string>();
-		for (const run of sample) {
-			seen.add(JSON.stringify(flatRun(run).config.get(key) ?? null));
-			if (seen.size > 1) return true;
-		}
-		return false;
-	});
-	const numericSummary = summary.filter((key) =>
-		sample.some((run) => typeof flatRun(run).summary.get(key) === 'number')
+	const { summary } = availableKeys(sample);
+	const hidden = currentRegistry().hidden();
+	const numericSummary = summary.filter(
+		(key) =>
+			!hidden.has(key) && sample.some((run) => typeof flatRun(run).summary.get(key) === 'number')
 	);
 	return [
 		'state',
@@ -137,7 +132,6 @@ export function defaultColumns(runs: RunSummary[]): string[] {
 		'runtime',
 		'steps',
 		'tags',
-		...varying.slice(0, 4).map((k) => `config.${k}`),
 		...numericSummary.slice(0, 6).map((k) => `summary.${k}`)
 	];
 }

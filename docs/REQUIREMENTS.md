@@ -108,7 +108,7 @@ Targets to aim for, not measurements.
 
 ### Captured automatically
 - **P0 (done)** Git commit + diff of uncommitted changes, command line, Python environment (`pip freeze` or `uv.lock`), CUDA version, driver, GPU model, hostname, Slurm job ID, container image. (Packages come from `*.dist-info` names on `sys.path`; the diff is stored as a run file, up to 2 MB; the container image is known for Apptainer, privileged Podman, or `LOSSCAPE_CONTAINER_IMAGE`.)
-- **P0 (done)** System metrics: NVIDIA GPU usage, memory, power, temperature (NVML); CPU, RAM, disk, network. Logged as `system/...` metrics every 5 s (step = unix seconds), kept out of the summary.
+- **P0 (done)** System metrics: NVIDIA GPU usage, memory, power, temperature (NVML); CPU, RAM, disk, network. Logged as `system/...` metrics every 5 s (step = unix seconds), kept out of the summary. Network traffic is `system/network/recv` and `sent`, in bits per second. The UI shows them with units (%, bytes, bps) from built-in metric definitions (`BUILTIN` in `web/src/lib/metrics/registry.ts`), which a project's own definitions override.
 - **P0 (done)** stdout and stderr, processed so `\r` progress bars display correctly (see Design 3). Captured at the file-descriptor level (C extensions, subprocesses), through a pseudo-terminal when the output was one; off on Windows and in Jupyter for now; 100 MB per run.
 - **P0 (done)** Values that look like secrets (`*KEY*`, `*TOKEN*`, `*SECRET*`) are hidden in captured environment variables and configs (whole words in the name, so `max_tokens` is kept; also strings shaped like known tokens).
 - **P1** AMD (ROCm) and Apple Silicon GPU metrics.
@@ -134,8 +134,18 @@ Targets to aim for, not measurements.
 
 ### Runs table
 - **P0 (done)** Any config or summary value as a column; sort, group, pin columns. (Group rows by a run field or config value; group headers show column means.)
-- **P0 (done)** Filter syntax, e.g. `config.lr < 1e-3 and tag:baseline and state:finished and alias:best` (also `or`, `not`, parentheses, `~` regex, bare-word search; `web/src/lib/filter.ts`).
+- **P0 (done)** Config keys aren't default columns (there can be many); add them from the column picker.
+- **P0 (done)** Filter syntax, e.g. `config.lr < 1e-3 and tag:baseline and state:finished and alias:best` (also `or`, `not`, parentheses, `~` regex, bare-word search; `web/src/lib/filter.ts`). The filter bar suggests fields, config keys and their values as you type.
 - **P0 (done)** Virtualized rendering for 100k rows (only visible rows are in the DOM; 20k runs load in < 1 s, filter in ~250 ms).
+
+### Custom metrics (P0, done)
+Set in project settings > Metrics (editors), stored per project in Postgres, applied by the UI when reading: logged data is never rewritten. Code: `web/src/lib/metrics/`, `crates/losscape-server/src/metric_defs.rs`.
+- **Describe** a metric, or every metric a pattern matches (`*` anything, `{k}` one path segment): display name, description, unit (count, %, fraction as %, bytes, bit/s, duration, custom suffix; with a scale for values logged in other units, and decimals), range (fixes the y axis), which way is better, and the summary value (last, or best). The most specific pattern wins; equally specific ones apply in list order.
+- **Merge:** one metric read from the first of several metrics a run has, each with a scale (`val/pck-8` or `val/pck-8-fine` × 0.01 as `val/pck@8`), to compare runs that logged it under different names. Optionally hides its sources from charts and default columns (they stay filterable).
+- **Family:** a pattern with one parameter (`val/pck-{k}`): its members are described alike, and a chart plots each run's summary value against `k` (numeric members only when there are some).
+- **Formula:** a metric computed from others, `[metric]` references with `+ - * / ^`, `min`, `max`, `abs`, `sqrt`, `log`, `log10`, `exp`. Charted bucket by bucket where all inputs exist, and in summaries.
+- **Best values:** ingest keeps each run's min and max per metric (not `system/`), so "best" summaries cost nothing to read. Tables label columns with display names, sort best first and mark the best value; charts can show the best value so far.
+- **Renames per run:** a metric of one run shown under another name (`pck-8` as `pck-8px`), from the chart menu on the run page; listed, editable and removable in the run's Overview. Renamed metrics line up with other runs' metric of that name in charts, tables, filters, merges and formulas.
 
 ### Line charts
 - **P0 (partly done)** Every metric's chart is configurable: x-axis, smoothing (EMA, time-weighted EMA, running average), log scale, range, aggregation (mean, min/max band, last). Done, for the page and per chart: x-axis (step, wall time, relative time, any metric), EMA weighted by points per bucket, log y, min/max band. To do: other smoothers, range, `last` aggregation.
@@ -153,7 +163,7 @@ Targets to aim for, not measurements.
 - **P1** Config diff highlighting only the keys that differ; code diff; environment diff.
 
 ### Other views
-- **P0 (partly done)** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info. Done except files (artifacts).
+- **P0 (partly done)** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info. Done except files (artifacts). The config has its own tab: searchable (keys and values, matching branches only), as a collapsible tree or as highlighted YAML.
 - **P0 (done)** The whole view state lives in the URL, so a link opens exactly the same view (filter, sort, columns, pins, charted runs, chart settings, metric regex, zoom).
 - **P0 (done)** Dark mode.
 - **P1 (done)** Workspace with charts created automatically from logged keys, in sections by prefix (`train/`, `val/`).

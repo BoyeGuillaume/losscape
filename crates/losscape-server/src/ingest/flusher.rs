@@ -71,6 +71,8 @@ async fn run(
     config: IngestConfig,
     mut rx: mpsc::Receiver<Pending>,
 ) {
+    // Metric names already recorded in project_metric_keys.
+    let mut known_keys: HashSet<(i64, String)> = HashSet::new();
     while let Some(first) = rx.recv().await {
         let deadline = Instant::now() + config.flush_interval;
         let mut rows = first.batch.rows();
@@ -88,7 +90,7 @@ async fn run(
                 _ = sleep_until(deadline) => break,
             }
         }
-        flush(&pg, &ch, &live, chunk).await;
+        flush(&pg, &ch, &live, chunk, &mut known_keys).await;
     }
     tracing::info!("ingest queue drained");
 }
@@ -100,7 +102,13 @@ struct Accepted {
     replies: Vec<(Reply, bool)>,
 }
 
-async fn flush(pg: &PgPool, ch: &clickhouse::Client, live: &LiveHub, chunk: Vec<Pending>) {
+async fn flush(
+    pg: &PgPool,
+    ch: &clickhouse::Client,
+    live: &LiveHub,
+    chunk: Vec<Pending>,
+    known_keys: &mut HashSet<(i64, String)>,
+) {
     let started = std::time::Instant::now();
     let run_ids: Vec<Uuid> = chunk
         .iter()
@@ -168,6 +176,7 @@ async fn flush(pg: &PgPool, ch: &clickhouse::Client, live: &LiveHub, chunk: Vec<
         clickhouse_ms = ch_started.elapsed().as_millis() as u64;
         publish(live, &accepted);
         update_runs(pg, &accepted, &windows).await?;
+        record_keys(pg, &accepted, known_keys).await?;
         Ok::<_, ApiError>(())
     }
     .await;
@@ -299,12 +308,58 @@ async fn write_console(
     insert.end().await
 }
 
+/// Adds metric names not seen before to `project_metric_keys`.
+async fn record_keys(
+    pg: &PgPool,
+    accepted: &[Accepted],
+    known: &mut HashSet<(i64, String)>,
+) -> sqlx::Result<()> {
+    let mut new: Vec<(i64, String)> = Vec::new();
+    for Accepted { batch, .. } in accepted {
+        for key in &batch.scalars.keys {
+            let id = (batch.project_id, key.clone());
+            if !known.contains(&id) && !new.contains(&id) {
+                new.push(id);
+            }
+        }
+    }
+    if new.is_empty() {
+        return Ok(());
+    }
+    let (projects, keys): (Vec<i64>, Vec<String>) = new.iter().cloned().unzip();
+    sqlx::query(
+        "INSERT INTO project_metric_keys (project_id, key)
+         SELECT * FROM unnest($1::bigint[], $2::text[]) ON CONFLICT DO NOTHING",
+    )
+    .bind(projects)
+    .bind(keys)
+    .execute(pg)
+    .await?;
+    known.extend(new);
+    Ok(())
+}
+
 /// Summary/config changes for one run, merged across the batches of a flush.
 struct RunUpdate {
     run_id: Uuid,
     summary: Option<Map<String, Value>>,
     config: Option<Map<String, Value>>,
     last_step: Option<u64>,
+    /// Lowest and highest finite value per metric in these batches.
+    extremes: HashMap<String, (f64, f64)>,
+}
+
+/// Folds a batch's finite values (system metrics aside) into per-metric extremes.
+fn add_extremes(extremes: &mut HashMap<String, (f64, f64)>, batch: &Batch) {
+    let s = &batch.scalars;
+    for (i, &value) in s.value.iter().enumerate() {
+        let key = &s.keys[s.key_idx[i] as usize];
+        if !value.is_finite() || key.starts_with("system/") {
+            continue;
+        }
+        let e = extremes.entry(key.clone()).or_insert((value, value));
+        *e = (e.0.min(value), e.1.max(value));
+    }
 }
 
 /// Highest step in a batch, system metrics aside (their step is the time).
@@ -335,12 +390,14 @@ async fn update_runs(
                 summary: None,
                 config: None,
                 last_step: None,
+                extremes: HashMap::new(),
             });
         }
         let update = merged.last_mut().expect("pushed above");
         merge_into(&mut update.summary, batch.summary_json.as_deref());
         merge_into(&mut update.config, batch.config_json.as_deref());
         update.last_step = update.last_step.max(max_step(batch));
+        add_extremes(&mut update.extremes, batch);
     }
 
     // Runs are updated in id order so concurrent transactions can't deadlock.
@@ -357,14 +414,25 @@ async fn update_runs(
         summary,
         config,
         last_step,
+        extremes,
     } in merged
     {
+        let (mins, maxs): (Map<String, Value>, Map<String, Value>) = extremes
+            .into_iter()
+            .map(|(k, (lo, hi))| ((k.clone(), Value::from(lo)), (k, Value::from(hi))))
+            .unzip();
         let (next_seq, pending) = windows[&run_id].to_db();
         sqlx::query(
             "UPDATE runs SET next_seq = $2, pending_seqs = $3, heartbeat_at = now(),
                  summary = summary || COALESCE($4, '{}'::jsonb),
                  config = config || COALESCE($5, '{}'::jsonb),
-                 last_step = GREATEST(last_step, $6)
+                 last_step = GREATEST(last_step, $6),
+                 metric_min = metric_min || COALESCE((
+                     SELECT jsonb_object_agg(n.key, LEAST(n.value::float8, (metric_min ->> n.key)::float8))
+                     FROM jsonb_each($7) n), '{}'),
+                 metric_max = metric_max || COALESCE((
+                     SELECT jsonb_object_agg(n.key, GREATEST(n.value::float8, (metric_max ->> n.key)::float8))
+                     FROM jsonb_each($8) n), '{}')
              WHERE id = $1",
         )
         .bind(run_id)
@@ -373,6 +441,8 @@ async fn update_runs(
         .bind(summary.map(Json))
         .bind(config.map(Json))
         .bind(last_step.map(|s| s as i64))
+        .bind(Json(mins))
+        .bind(Json(maxs))
         .execute(&mut *tx)
         .await?;
     }

@@ -23,6 +23,11 @@ export type RunSummary = {
 	archived_at_ms: number | null;
 	/** Highest step logged (system metrics aside); null before the first point. */
 	last_step: number | null;
+	/** Lowest and highest value of each logged metric (system metrics aside). */
+	metric_min: Record<string, number>;
+	metric_max: Record<string, number>;
+	/** Metrics renamed in this run: logged name -> shown name. */
+	renames: Record<string, string>;
 	heartbeat_at_ms: number;
 	finished_at_ms: number | null;
 	summary: Record<string, unknown>;

@@ -9,6 +9,7 @@
 	import { apiJson, apiSend } from '#lib/api/client.js';
 	import type { Member, ProjectAccess, ProjectInfo, Role } from '#lib/api/types.js';
 	import { auth } from '#lib/auth.svelte.js';
+	import MetricDefinitions from '#lib/components/app/MetricDefinitions.svelte';
 	import UserAvatar from '#lib/components/app/UserAvatar.svelte';
 	import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
@@ -255,6 +256,11 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
+
+		<MetricDefinitions
+			{project}
+			canEdit={access.data.role === 'owner' || access.data.role === 'editor'}
+		/>
 
 		<Card.Root>
 			<Card.Header>

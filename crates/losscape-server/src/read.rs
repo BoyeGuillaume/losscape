@@ -103,6 +103,11 @@ pub struct RunSummary {
     archived_at_ms: Option<i64>,
     /// Highest step logged (system metrics aside); null before the first point.
     last_step: Option<i64>,
+    /// Lowest and highest value of each metric (system metrics aside).
+    metric_min: SqlJson<Value>,
+    metric_max: SqlJson<Value>,
+    /// Metrics renamed in this run: logged name -> shown name.
+    renames: SqlJson<Value>,
     heartbeat_at_ms: i64,
     finished_at_ms: Option<i64>,
     summary: SqlJson<Value>,
@@ -114,7 +119,9 @@ fn run_columns() -> String {
     format!(
         "COALESCE((SELECT array_agg(a.alias ORDER BY a.alias) FROM run_aliases a WHERE a.run_id = r.id), '{{}}') AS aliases,
          {} AS created_at_ms, {} AS start_ms, {} AS heartbeat_at_ms, {} AS finished_at_ms,
-         {} AS archived_at_ms, r.last_step",
+         {} AS archived_at_ms, r.last_step, r.metric_min, r.metric_max,
+         COALESCE((SELECT jsonb_object_agg(n.from_key, n.to_key) FROM run_metric_renames n
+                   WHERE n.run_id = r.id), '{{}}') AS renames",
         ms("r.created_at"),
         ms("COALESCE(r.client_created_at, r.created_at)"),
         ms("r.heartbeat_at"),
@@ -175,6 +182,9 @@ pub struct RunDetail {
     start_ms: i64,
     archived_at_ms: Option<i64>,
     last_step: Option<i64>,
+    metric_min: SqlJson<Value>,
+    metric_max: SqlJson<Value>,
+    renames: SqlJson<Value>,
     heartbeat_at_ms: i64,
     finished_at_ms: Option<i64>,
     summary: SqlJson<Value>,

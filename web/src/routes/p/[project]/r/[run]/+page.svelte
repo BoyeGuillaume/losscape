@@ -20,15 +20,20 @@
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
 	import ConsoleLog from '#lib/components/app/ConsoleLog.svelte';
 	import ConsoleTail from '#lib/components/app/ConsoleTail.svelte';
+	import RunConfig from '#lib/components/app/RunConfig.svelte';
 	import RunEnvironmentCards from '#lib/components/app/RunEnvironmentCards.svelte';
 	import KeyValueList from '#lib/components/app/KeyValueList.svelte';
 	import StateBadge from '#lib/components/app/StateBadge.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import * as Tabs from '#lib/components/ui/tabs/index.js';
 	import { dateTime, duration, flatten, timeAgo } from '#lib/format.js';
+	import { formatMetric, formatSteps } from '#lib/metric-units.js';
+	import { effectiveSummary } from '#lib/metrics/apply.js';
+	import { currentRegistry, useProjectMetrics } from '#lib/metrics/store.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
 	import { notifyError, withToast } from '#lib/notify.js';
 	import { projectsChanged } from '#lib/projects.svelte.js';
@@ -61,6 +66,10 @@
 		(): number | false => (run.data?.state === 'running' ? 5_000 : false)
 	);
 	const running = $derived(run.data?.state === 'running');
+
+	useProjectMetrics(() => project);
+	const summary = $derived(run.data ? effectiveSummary(run.data, currentRegistry()) : {});
+	const renames = (): Record<string, string> => run.data?.renames ?? {};
 
 	const projectInfo = poll(() =>
 		apiJson<ProjectInfo>(`/projects/${encodeURIComponent(project)}`)
@@ -121,26 +130,21 @@
 	let view = $state(readZoom());
 	let overrides = $state(readOverrides());
 	let systemOverrides = $state({});
-	const TABS = ['charts', 'system', 'logs', 'overview'];
+	const TABS = ['charts', 'system', 'logs', 'config', 'overview'];
 	let tab = $state(TABS.includes(param('tab') ?? '') ? param('tab')! : 'charts');
 	// System metrics: against time by default, settings of their own.
 	let systemSettings = $state<ChartSettings>({ ...DEFAULT_SETTINGS, x: 'relative' });
 	let systemFilter = $state('');
 	let systemView = $state<[number, number] | null>(null);
+	let configView = $state<'tree' | 'yaml'>(param('cfg') === 'yaml' ? 'yaml' : 'tree');
 	syncUrl(() => ({
 		...chartSettingsParams(settings),
 		metrics: metricFilter.trim() || null,
 		zoom: zoomParam(view),
 		charts: overridesParam(overrides),
-		tab: tab === 'charts' ? null : tab
+		tab: tab === 'charts' ? null : tab,
+		cfg: configView === 'yaml' ? 'yaml' : null
 	}));
-
-	let configQuery = $state('');
-	const configRows = $derived(
-		flatten(run.data?.config ?? {}).filter(([k]) =>
-			k.toLowerCase().includes(configQuery.trim().toLowerCase())
-		)
-	);
 
 	// Ticks once a second while running, for the live duration.
 	let now = $state(Date.now());
@@ -188,6 +192,51 @@
 		});
 		run.refresh();
 	}
+
+	// ---- Metric renames (this run only) ----
+	/** The logged name being renamed, and the new name. */
+	let renaming = $state<{ from: string; to: string } | null>(null);
+	const renamePath = (from: string) =>
+		`/runs/${encodeURIComponent(run.data?.id ?? '')}/metric-renames/${from
+			.split('/')
+			.map(encodeURIComponent)
+			.join('/')}`;
+
+	function startRename(shown: string) {
+		const from = Object.entries(renames()).find(([, to]) => to === shown)?.[0] ?? shown;
+		renaming = { from, to: shown };
+	}
+
+	async function saveRename(event: SubmitEvent) {
+		event.preventDefault();
+		if (!renaming) return;
+		const { from } = renaming;
+		const to = renaming.to.trim();
+		if (to === from) {
+			if (renames()[from]) await removeRename(from);
+			renaming = null;
+			return;
+		}
+		const ok = await withToast(
+			() => apiSend('PUT', renamePath(from), { to }).then(() => true),
+			{
+				done: `${from} renamed to ${to}`,
+				detail: 'Only in this run: charts, tables and filters show it as the new name. Logged data is unchanged.',
+				failed: `Couldn't rename ${from}`
+			}
+		);
+		run.refresh();
+		if (ok) renaming = null;
+	}
+
+	async function removeRename(from: string) {
+		await withToast(() => apiSend('DELETE', renamePath(from)), {
+			done: `${from} has its logged name again`,
+			detail: `It was shown as ${renames()[from] ?? 'another name'} in this run.`,
+			failed: `Couldn't undo the rename of ${from}`
+		});
+		run.refresh();
+	}
 </script>
 
 {#if run.error}
@@ -221,7 +270,7 @@
 					<span
 						class="tabular-nums"
 						title={`Last step ${r.last_step.toLocaleString('en')}`}
-						>{(r.last_step + 1).toLocaleString('en')} steps</span
+						>{formatSteps(r.last_step + 1)} steps</span
 					>
 				{/if}
 				{#if r.group_name}<span>Group {r.group_name}</span>{/if}
@@ -329,6 +378,7 @@
 				<Tabs.Trigger value="charts">Charts</Tabs.Trigger>
 				<Tabs.Trigger value="system">System</Tabs.Trigger>
 				<Tabs.Trigger value="logs">Logs</Tabs.Trigger>
+				<Tabs.Trigger value="config">Config</Tabs.Trigger>
 				<Tabs.Trigger value="overview">Overview</Tabs.Trigger>
 			</Tabs.List>
 		</div>
@@ -342,6 +392,9 @@
 				bind:metricFilter
 				bind:view
 				bind:overrides
+				{renames}
+				summaryOf={() => summary}
+				onRename={canEdit ? startRename : undefined}
 				onRunState={() => run.refresh()}
 			/>
 		</Tabs.Content>
@@ -358,12 +411,19 @@
 					bind:metricFilter={systemFilter}
 					bind:view={systemView}
 					bind:overrides={systemOverrides}
+					{renames}
+					summaryOf={() => summary}
+					onRename={canEdit ? startRename : undefined}
 					empty="No system metrics yet: they are sampled every 5 seconds while the run is going."
 				/>{/if}
 		</Tabs.Content>
 
 		<Tabs.Content value="logs">
 			{#if tab === 'logs'}<ConsoleLog {project} run={r.id} {running} />{/if}
+		</Tabs.Content>
+
+		<Tabs.Content value="config">
+			{#if tab === 'config'}<RunConfig config={r.config} bind:view={configView} />{/if}
 		</Tabs.Content>
 
 		<Tabs.Content value="overview">
@@ -380,27 +440,61 @@
 						</Card.Root>
 					{/if}
 					<Card.Root>
-						<Card.Header class="flex-row items-center justify-between gap-2">
-							<Card.Title>Config</Card.Title>
-							<Input
-								class="h-8 max-w-48"
-								placeholder="Filter"
-								bind:value={configQuery}
-							/>
-						</Card.Header>
-						<Card.Content
-							><KeyValueList rows={configRows} empty="No config." /></Card.Content
-						>
-					</Card.Root>
-					<Card.Root>
 						<Card.Header><Card.Title>Summary</Card.Title></Card.Header>
 						<Card.Content
 							><KeyValueList
-								rows={flatten(r.summary)}
+								rows={flatten(summary)}
+								format={formatMetric}
 								empty="No summary yet."
 							/></Card.Content
 						>
 					</Card.Root>
+					{#if Object.keys(r.renames).length}
+						<Card.Root>
+							<Card.Header>
+								<Card.Title>Renamed metrics</Card.Title>
+								<Card.Description>
+									Shown under a new name in this run only; the logged data keeps
+									its name.
+								</Card.Description>
+							</Card.Header>
+							<Card.Content>
+								<ul class="grid gap-1 font-mono text-sm">
+									{#each Object.entries(r.renames) as [from, to] (from)}
+										<li class="flex items-center gap-2">
+											<span class="truncate text-muted-foreground"
+												>{from}</span
+											>
+											<span aria-hidden="true" class="text-muted-foreground"
+												>→</span
+											>
+											<span class="truncate">{to}</span>
+											{#if canEdit}
+												<span class="ml-auto flex shrink-0 gap-1">
+													<Button
+														variant="ghost"
+														size="sm"
+														class="h-7"
+														onclick={() => startRename(to)}>Edit</Button
+													>
+													<Button
+														variant="ghost"
+														size="icon"
+														class="size-7 text-muted-foreground"
+														onclick={() => removeRename(from)}
+														title={`Show ${from} under its logged name again`}
+														aria-label={`Undo rename of ${from}`}
+													>
+														<X />
+													</Button>
+												</span>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							</Card.Content>
+						</Card.Root>
+					{/if}
 					<Card.Root>
 						<Card.Header><Card.Title>Run</Card.Title></Card.Header>
 						<Card.Content>
@@ -425,4 +519,33 @@
 				</div>{/if}
 		</Tabs.Content>
 	</Tabs.Root>
+{/if}
+
+{#if renaming}
+	<Dialog.Root open onOpenChange={(open) => !open && (renaming = null)}>
+		<Dialog.Content class="sm:max-w-md">
+			<form class="grid gap-4" onsubmit={saveRename}>
+				<Dialog.Header>
+					<Dialog.Title>Rename a metric in this run</Dialog.Title>
+					<Dialog.Description>
+						<span class="font-mono">{renaming.from}</span> is shown under the new name in
+						this run: on charts, beside other runs' metric of that name, and in tables and
+						filters. The logged data keeps its name.
+					</Dialog.Description>
+				</Dialog.Header>
+				<Input
+					class="font-mono"
+					aria-label="New name"
+					autocomplete="off"
+					bind:value={renaming.to}
+				/>
+				<Dialog.Footer>
+					<Button variant="outline" type="button" onclick={() => (renaming = null)}
+						>Cancel</Button
+					>
+					<Button type="submit" disabled={!renaming.to.trim()}>Rename</Button>
+				</Dialog.Footer>
+			</form>
+		</Dialog.Content>
+	</Dialog.Root>
 {/if}

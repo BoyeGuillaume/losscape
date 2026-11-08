@@ -14,7 +14,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{account, avatar, members, oauth};
 use crate::state::AppState;
-use crate::{auth, ingest, live, projects, read, runs};
+use crate::{auth, ingest, live, metric_defs, projects, read, runs};
 
 pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) -> Router {
     // Signed-in users: session cookie (web UI) or API key (SDK).
@@ -33,6 +33,15 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
                 .delete(projects::delete_project),
         )
         .route("/projects/{project}/transfer", post(members::transfer))
+        .route(
+            "/projects/{project}/metric-definitions",
+            get(metric_defs::list).put(metric_defs::replace),
+        )
+        .route("/projects/{project}/metric-keys", get(metric_defs::keys))
+        .route(
+            "/runs/{run}/metric-renames/{*from}",
+            put(metric_defs::rename).delete(metric_defs::unrename),
+        )
         .route(
             "/projects/{project}/runs/archive",
             post(projects::archive_runs),

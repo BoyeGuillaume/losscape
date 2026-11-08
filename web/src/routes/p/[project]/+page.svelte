@@ -4,7 +4,6 @@
 	import ChartLine from '@lucide/svelte/icons/chart-line';
 	import CircleQuestionMark from '@lucide/svelte/icons/circle-question-mark';
 	import Columns3 from '@lucide/svelte/icons/columns-3';
-	import Funnel from '@lucide/svelte/icons/funnel';
 	import Group from '@lucide/svelte/icons/group';
 	import Settings from '@lucide/svelte/icons/settings';
 	import X from '@lucide/svelte/icons/x';
@@ -18,6 +17,7 @@
 	import type { ChartSeries, ChartSettings } from '#lib/charts/settings.js';
 	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
+	import FilterInput from '#lib/components/app/FilterInput.svelte';
 	import RunsTable from '#lib/components/app/RunsTable.svelte';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
@@ -27,6 +27,9 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { FilterError, matches, parseFilter, type Node } from '#lib/filter.js';
+	import { buildCatalog } from '#lib/runs/catalog.js';
+	import { withMetrics } from '#lib/metrics/apply.js';
+	import { currentRegistry, useProjectMetrics } from '#lib/metrics/store.svelte.js';
 	import { errorMessage } from '#lib/notify.js';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
 	import { projectsChanged } from '#lib/projects.svelte.js';
@@ -100,7 +103,10 @@
 		() => apiJson<RunSummary[]>(`${projectPath}/runs${archived ? '?archived=true' : ''}`),
 		() => ((runs.data?.length ?? 0) > 5_000 ? 60_000 : 10_000)
 	);
-	const all = $derived(runs.data ?? []);
+	useProjectMetrics(() => project);
+	/** Runs with the project's custom metrics applied to their summaries. */
+	const all = $derived((runs.data ?? []).map((r) => withMetrics(r, currentRegistry())));
+	const runById = $derived(new Map(all.map((r) => [r.id, r])));
 
 	// Selection for bulk actions; cleared when the list changes meaning.
 	const selected = new SvelteSet<string>();
@@ -127,6 +133,8 @@
 	const sorted = $derived([...filtered].sort(compareRuns(sort.id, sort.desc)));
 	const running = $derived(all.filter((r) => r.state === 'running').length);
 	const groups = $derived(groupBy ? groupRuns(sorted, groupBy) : null);
+	/** Keys and values of all runs, for filter suggestions (built when first needed). */
+	const catalog = $derived(buildCatalog(all));
 
 	// ---- Columns ----
 	const columns = $derived(chosenColumns ?? defaultColumns(all));
@@ -326,20 +334,12 @@
 		</Card.Root>
 	{:else}
 		<div class="mb-2 flex flex-wrap items-center gap-2">
-			<div class="relative min-w-64 flex-1">
-				<Funnel
-					class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-				/>
-				<Input
-					class="pl-8 font-mono text-xs"
-					placeholder="config.lr < 1e-3 and tag:baseline and not state:crashed"
-					aria-label="Filter runs"
-					aria-invalid={!!parsed.error}
-					aria-describedby="filter-help"
-					spellcheck={false}
-					bind:value={filterText}
-				/>
-			</div>
+			<FilterInput
+				bind:value={filterText}
+				catalog={() => catalog}
+				invalid={!!parsed.error}
+				describedby="filter-help"
+			/>
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger
 					class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
@@ -554,6 +554,8 @@
 			bind:metricFilter
 			bind:view
 			bind:overrides
+			renames={(id) => runById.get(id)?.renames ?? {}}
+			summaryOf={(id) => runById.get(id)?.summary}
 			onRunState={() => runs.refresh()}
 		/>
 	{/if}

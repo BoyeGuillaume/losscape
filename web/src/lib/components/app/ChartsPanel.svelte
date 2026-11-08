@@ -20,6 +20,10 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import { Toggle } from '#lib/components/ui/toggle/index.js';
+	import { MetricSource } from '#lib/charts/source.js';
+	import { match } from '#lib/metrics/pattern.js';
+	import { currentRegistry } from '#lib/metrics/store.svelte.js';
+	import FamilyChart from './FamilyChart.svelte';
 	import MetricChart from './MetricChart.svelte';
 
 	type Extent = { min: number; max: number };
@@ -36,7 +40,10 @@
 		overrides = $bindable({}),
 		onRunState,
 		prefix,
-		empty = 'No metrics logged yet.'
+		empty = 'No metrics logged yet.',
+		renames,
+		summaryOf,
+		onRename
 	}: {
 		project: string;
 		/** Lines to draw (runs, or groups of runs), in legend order. */
@@ -56,6 +63,12 @@
 		prefix?: string;
 		/** Shown when the runs have no metrics. */
 		empty?: string;
+		/** A run's renamed metrics (logged name -> shown name). */
+		renames?: (run: string) => Record<string, string>;
+		/** A run's summary as shown, for family charts (none without it). */
+		summaryOf?: (run: string) => Record<string, unknown> | undefined;
+		/** Offers renaming a metric (the run page). */
+		onRename?: (key: string) => void;
 	} = $props();
 
 	const sep = '\u0000';
@@ -134,11 +147,42 @@
 		return { min: Math.min(a.min, b.min), max: Math.max(a.max, b.max) };
 	}
 
+	/** Metrics as shown: renamed, merged, computed (project settings > Metrics). */
+	const registry = $derived(currentRegistry());
+	const source = $derived.by(() => {
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- built once per change
+		const rawByRun = new Map<string, Set<string>>();
+		for (const id of [...stored.keys(), ...live.keys()]) {
+			const at = id.indexOf(sep);
+			const [run, key] = [id.slice(0, at), id.slice(at + 1)];
+			if (!rawByRun.has(run)) rawByRun.set(run, new Set());
+			rawByRun.get(run)!.add(key);
+		}
+		const runs = new Map(
+			[...rawByRun].map(([run, raw]) => [run, registry.forRun(raw, renames?.(run) ?? {})])
+		);
+		return new MetricSource(registry, runs, extentOf);
+	});
+
 	const keys = $derived(
-		[...new Set([...stored.keys(), ...live.keys()].map((id) => id.slice(id.indexOf(sep) + 1)))]
+		source
+			.keys()
 			.filter((key) => (prefix ? key.startsWith(prefix) : !key.startsWith(SYSTEM_PREFIX)))
-			.sort()
 	);
+
+	/** Families (`val/pck-{k}`) with at least two members here: charted against `k`. */
+	const families = $derived(
+		prefix || !summaryOf
+			? []
+			: registry.families
+					.map((def) => ({
+						def,
+						// Hidden sources of a merge are still members of their family.
+						members: source.keys(true).filter((k) => match(def.name, k))
+					}))
+					.filter((f) => f.members.length >= 2)
+	);
+	const ranked = $derived(keys.some((k) => registry.describe(k).direction));
 
 	/** The filter as a case-insensitive regular expression, or plain text if it isn't one. */
 	const metricMatch = $derived.by(() => {
@@ -242,6 +286,17 @@
 	>
 		Range band
 	</Toggle>
+	{#if ranked}
+		<Toggle
+			size="sm"
+			variant="outline"
+			pressed={settings.best}
+			onPressedChange={(best) => (settings = { ...settings, best })}
+			title="Best value so far, for metrics where higher or lower is better"
+		>
+			Best so far
+		</Toggle>
+	{/if}
 	{#if grouped}
 		<Select.Root
 			type="single"
@@ -277,6 +332,27 @@
 <!-- Hovering one chart marks the same x on all of them; zoom is shared through `view`. -->
 <ChartGroup brush={false} domain={false}>
 	<div class="grid gap-6">
+		{#if families.length && summaryOf}
+			{@const open = !collapsed['\u0000families']}
+			<section>
+				<button
+					class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+					onclick={() => (collapsed['\u0000families'] = open)}
+					aria-expanded={open}
+				>
+					<ChevronRight class={['size-4 transition-transform', open && 'rotate-90']} />
+					Families
+					<span class="text-xs tabular-nums">{families.length}</span>
+				</button>
+				{#if open}
+					<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+						{#each families as f (f.def.name)}
+							<FamilyChart def={f.def} members={f.members} {series} {summaryOf} />
+						{/each}
+					</div>
+				{/if}
+			</section>
+		{/if}
 		{#each sections as [section, sectionKeys] (section)}
 			{@const open = !collapsed[section]}
 			<section>
@@ -296,7 +372,8 @@
 								{series}
 								metric={key}
 								title={prefix ? key.slice(prefix.length) : key}
-								{extentOf}
+								{source}
+								{onRename}
 								{settings}
 								override={overrides[key]}
 								onOverride={(o) => setOverride(key, o)}

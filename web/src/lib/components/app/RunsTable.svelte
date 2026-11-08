@@ -13,6 +13,8 @@
 	import type { RunSummary } from '#lib/api/types.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import { duration, formatValue, timeAgo } from '#lib/format.js';
+	import { formatMetric, formatSteps } from '#lib/metric-units.js';
+	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import {
 		column,
 		groupRuns,
@@ -84,8 +86,32 @@
 		const pins = columns.filter((id) => pinned.includes(id));
 		return [...pins, ...columns.filter((id) => !pinned.includes(id))].map((id) => {
 			const c = column(id);
-			return c.kind === 'value' ? { ...c, numeric: isNumeric(runs, id) } : c;
+			if (c.kind !== 'value') return c;
+			const meta = c.prefix === 'summary' ? currentRegistry().describe(c.label) : null;
+			return {
+				...c,
+				numeric: isNumeric(runs, id),
+				label: meta?.label || c.label,
+				title: [`${c.prefix}.${c.label}`, meta?.description].filter(Boolean).join('\n'),
+				direction: meta?.direction ?? null
+			};
 		});
+	});
+	/** The best value of each column whose metric has a direction (highlighted). */
+	const best = $derived.by(() => {
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- filled, then returned
+		const out = new Map<string, number>();
+		for (const c of ordered) {
+			if (!('direction' in c) || !c.direction) continue;
+			let b: number | undefined;
+			for (const r of runs) {
+				const v = sortValue(r, c.id);
+				if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+				if (b === undefined || (c.direction === 'max' ? v > b : v < b)) b = v;
+			}
+			if (b !== undefined && runs.length > 1) out.set(c.id, b);
+		}
+		return out;
 	});
 	const template = $derived(
 		[SELECT_WIDTH, NAME_WIDTH, ...ordered.map((c) => c.width)].map((w) => `${w}px`).join(' ')
@@ -134,11 +160,19 @@
 	});
 
 	function sortBy(id: string, desc?: boolean) {
+		// First click: best first for metrics with a direction, else largest (text: A-Z).
+		const direction = id.startsWith('summary.')
+			? currentRegistry().describe(id.slice('summary.'.length)).direction
+			: null;
 		sort = {
 			id,
 			desc:
 				desc ??
-				(sort.id === id ? !sort.desc : !['name', 'group', 'tags', 'state'].includes(id))
+				(sort.id === id
+					? !sort.desc
+					: direction
+						? direction === 'max'
+						: !['name', 'group', 'tags', 'state'].includes(id))
 		};
 	}
 
@@ -167,6 +201,13 @@
 			}
 		}
 		return n ? sum / n : undefined;
+	}
+
+	/** A cell value: steps and summary metrics in their unit (the exact value is the title). */
+	function formatCell(id: string, value: unknown): string {
+		if (id === 'steps' && typeof value === 'number') return formatSteps(value);
+		if (id.startsWith('summary.')) return formatMetric(id.slice('summary.'.length), value);
+		return formatValue(value);
 	}
 
 	function deletedIn(run: RunSummary): string | null {
@@ -278,7 +319,7 @@
 							c.numeric && 'flex-row-reverse text-right'
 						]}
 						onclick={() => sortBy(c.id)}
-						title={c.prefix ? `${c.prefix}.${c.label}` : c.label}
+						title={'title' in c ? c.title : c.label}
 					>
 						<span class="grid min-w-0 leading-tight">
 							{#if c.prefix}<span class="truncate text-[10px] font-normal opacity-70"
@@ -385,7 +426,7 @@
 							>
 								{#if (c.kind === 'value' && c.numeric) || c.kind === 'steps'}
 									{@const mean = groupMean(group, c.id)}
-									{mean === undefined ? '' : `⌀ ${formatValue(mean)}`}
+									{mean === undefined ? '' : `⌀ ${formatCell(c.id, mean)}`}
 								{/if}
 							</div>
 						{/each}
@@ -473,9 +514,7 @@
 										title={run.last_step === null
 											? 'No steps logged yet'
 											: `Last step ${run.last_step.toLocaleString('en')}`}
-										>{steps === undefined
-											? ''
-											: steps.toLocaleString('en')}</span
+										>{steps === undefined ? '' : formatSteps(steps)}</span
 									>
 								{:else if c.kind === 'group'}
 									<span class="truncate">{run.group_name ?? ''}</span>
@@ -489,10 +528,17 @@
 									</span>
 								{:else}
 									{@const value = sortValue(run, c.id)}
+									{@const isBest =
+										value !== undefined && best.get(c.id) === value}
 									<span
-										class="truncate"
-										title={value === undefined ? '' : formatValue(value)}
-										>{value === undefined ? '' : formatValue(value)}</span
+										class={[
+											'truncate',
+											isBest && 'font-semibold text-foreground'
+										]}
+										title={value === undefined
+											? ''
+											: `${formatValue(value)}${isBest ? ' (best)' : ''}`}
+										>{value === undefined ? '' : formatCell(c.id, value)}</span
 									>
 								{/if}
 							</div>

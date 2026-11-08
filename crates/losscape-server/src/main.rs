@@ -22,6 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Ok(n) => tracing::info!(runs = n, "filled in step counts of older runs"),
             Err(err) => tracing::warn!(%err.message, "filling in step counts failed"),
         }
+        match losscape_server::purge::backfill_metric_index(&backfill).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(runs = n, "filled in metric ranges of older runs"),
+            Err(err) => tracing::warn!(%err.message, "filling in metric ranges failed"),
+        }
     });
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;

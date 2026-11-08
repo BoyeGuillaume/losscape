@@ -1,6 +1,6 @@
 // Chart settings shared by every chart of a page, and the x-axis transforms.
 
-import { formatCompact } from '#lib/format.js';
+import { formatMetric, formatSteps, metricAxis } from '#lib/metric-units.js';
 
 /** `metric:<key>` plots against another metric logged at the same steps. */
 export type XAxis = 'step' | 'time' | 'relative' | `metric:${string}`;
@@ -14,6 +14,8 @@ export type ChartSettings = {
 	band: boolean;
 	/** A group's band: mean ± standard deviation, or min-max across its runs. */
 	spread: 'std' | 'range';
+	/** Best value so far, for metrics where higher or lower is better. */
+	best: boolean;
 };
 
 export const DEFAULT_SETTINGS: ChartSettings = {
@@ -21,11 +23,14 @@ export const DEFAULT_SETTINGS: ChartSettings = {
 	smoothing: 0,
 	logY: false,
 	band: true,
-	spread: 'std'
+	spread: 'std',
+	best: false
 };
 
 /** What one chart changes from the page's settings. */
-export type ChartOverride = Partial<Pick<ChartSettings, 'x' | 'smoothing' | 'logY' | 'band'>>;
+export type ChartOverride = Partial<
+	Pick<ChartSettings, 'x' | 'smoothing' | 'logY' | 'band' | 'best'>
+>;
 
 /** A run: hyphenated id, and its start on the client's clock (for relative time). */
 export type ChartRun = { id: string; startMs: number };
@@ -61,7 +66,8 @@ export function xFormatter(x: XAxis, lo: number, hi: number): (value: number) =>
 		return (v) => (multiDay ? day.format(v) : clock.format(v));
 	}
 	if (x === 'relative') return shortDuration;
-	return formatCompact;
+	const key = xMetric(x);
+	return key ? metricAxis(key) : formatSteps;
 }
 
 /** Tooltip header for the hovered x. */
@@ -69,7 +75,8 @@ export function xTitle(x: XAxis, value: number): string {
 	if (x === 'step') return `step ${Math.round(value).toLocaleString('en')}`;
 	if (x === 'time') return new Date(value).toLocaleString();
 	if (x === 'relative') return shortDuration(value);
-	return `${xMetric(x)} ${formatCompact(value)}`;
+	const key = xMetric(x)!;
+	return `${key} ${formatMetric(key, value)}`;
 }
 
 /**
