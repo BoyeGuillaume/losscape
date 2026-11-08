@@ -186,10 +186,10 @@ in progress lose nothing while it's down, whether it's restarting or being upgra
 
 ### Using a published image
 
-Instead of building, you can run the image from Docker Hub. In `.env`, with the version you want:
+Instead of building, you can run the [image from Docker Hub](https://hub.docker.com/r/madproton/losscape). In `.env`, with the version you want:
 
 ```sh
-LOSSCAPE_IMAGE=<namespace>/losscape:0.1.1
+LOSSCAPE_IMAGE=madproton/losscape:0.1.1
 ```
 
 ```sh
@@ -213,7 +213,7 @@ It needs setting up once:
    access.
 2. In the GitHub repository's Settings → Secrets and variables → Actions, add the secrets
    `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and the variable `DOCKERHUB_REPOSITORY`, such as
-   `<namespace>/losscape`.
+   `madproton/losscape`.
 
 ```sh
 git tag server-v0.1.1
