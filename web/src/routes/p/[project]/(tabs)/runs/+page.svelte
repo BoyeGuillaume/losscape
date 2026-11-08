@@ -1,7 +1,6 @@
 <script lang="ts">
 	import Archive from '@lucide/svelte/icons/archive';
 	import ArchiveRestore from '@lucide/svelte/icons/archive-arrow-up';
-	import Columns3 from '@lucide/svelte/icons/columns-3';
 	import FlaskConical from '@lucide/svelte/icons/flask-conical';
 	import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
 	import Group from '@lucide/svelte/icons/group';
@@ -18,13 +17,12 @@
 	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
 	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
+	import ColumnsMenu from '#lib/components/app/ColumnsMenu.svelte';
 	import FilterHelp from '#lib/components/app/FilterHelp.svelte';
 	import FilterInput from '#lib/components/app/FilterInput.svelte';
 	import RunsTable from '#lib/components/app/RunsTable.svelte';
 	import TagsMenu from '#lib/components/app/TagsMenu.svelte';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
-	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
-	import { Input } from '#lib/components/ui/input/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
@@ -41,7 +39,6 @@
 	import { projectsChanged } from '#lib/projects.svelte.js';
 	import {
 		availableKeys,
-		BASE_COLUMNS,
 		column,
 		compareRuns,
 		defaultColumns,
@@ -146,22 +143,7 @@
 
 	// ---- Columns ----
 	const columns = $derived(chosenColumns ?? defaultColumns(all));
-	let columnQuery = $state('');
 	const keys = $derived(availableKeys(all));
-	const columnChoices = $derived.by(() => {
-		const q = columnQuery.trim().toLowerCase();
-		const choices: [string, string[]][] = [
-			['Run', BASE_COLUMNS],
-			['Config', keys.config.map((k) => `config.${k}`)],
-			['Summary', keys.summary.map((k) => `summary.${k}`)]
-		];
-		return choices
-			.map(([label, ids]): [string, string[]] => [
-				label,
-				ids.filter((id) => !q || id.toLowerCase().includes(q)).slice(0, 100)
-			])
-			.filter(([, ids]) => ids.length);
-	});
 	/** Columns runs can be grouped by: run fields and config values. */
 	const groupChoices = $derived([
 		'group',
@@ -360,44 +342,13 @@
 					{/each}
 				</Select.Content>
 			</Select.Root>
-			<DropdownMenu.Root onOpenChange={(open) => !open && (columnQuery = '')}>
-				<DropdownMenu.Trigger class={buttonVariants({ variant: 'outline', size: 'sm' })}>
-					<Columns3 /> Columns
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end" class="max-h-96 w-72">
-					<div class="p-1">
-						<Input
-							class="h-8"
-							placeholder="Find a column"
-							aria-label="Find a column"
-							bind:value={columnQuery}
-							onkeydown={(e) => e.stopPropagation()}
-						/>
-					</div>
-					{#each columnChoices as [label, ids] (label)}
-						<DropdownMenu.Group>
-							<DropdownMenu.GroupHeading>{label}</DropdownMenu.GroupHeading>
-							{#each ids as id (id)}
-								<DropdownMenu.CheckboxItem
-									checked={columns.includes(id)}
-									closeOnSelect={false}
-									onCheckedChange={(on) => setColumn(id, on)}
-								>
-									<span class="truncate">{column(id).label}</span>
-								</DropdownMenu.CheckboxItem>
-							{/each}
-						</DropdownMenu.Group>
-					{:else}
-						<p class="px-2 py-1.5 text-sm text-muted-foreground">No column matches.</p>
-					{/each}
-					{#if chosenColumns}
-						<DropdownMenu.Separator />
-						<DropdownMenu.Item onSelect={() => ((chosenColumns = null), (pinned = []))}>
-							Reset to defaults
-						</DropdownMenu.Item>
-					{/if}
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
+			<ColumnsMenu
+				runs={all}
+				{columns}
+				customized={!!chosenColumns}
+				onSet={setColumn}
+				onReset={() => ((chosenColumns = null), (pinned = []))}
+			/>
 		</div>
 
 		<div

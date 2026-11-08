@@ -465,12 +465,22 @@ async fn metric_ranges_names_definitions_and_renames() {
     let (_, board) = get_json(&server, &board_uri).await;
     assert_eq!(
         board,
-        serde_json::json!({"query": "", "sort": {"id": "created", "desc": true}, "limit": 10})
+        serde_json::json!({
+            "query": "",
+            "sort": {"id": "created", "desc": true},
+            "limit": 10,
+            "baseline": null,
+            "explore": null,
+            "columns": null
+        })
     );
     let board = serde_json::json!({
         "query": "tag:promising",
         "sort": {"id": "summary.val/acc", "desc": true},
-        "limit": 20
+        "limit": 20,
+        "baseline": "0190f2c1-0000-7000-8000-000000000000",
+        "explore": "optimizer.lr",
+        "columns": ["state", "summary.val/acc"]
     });
     assert_eq!(
         server

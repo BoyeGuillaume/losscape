@@ -132,7 +132,16 @@ Targets to aim for, not measurements.
 - **P1 (partly done)** Bulk actions: tag, alias, move, archive, delete with a trash bin. Done: tag, archive (the trash bin: hidden, restorable, deleted for good after a per-project number of days, 30 by default). To do: alias, move.
 
 ### Overview page (P0 done, main feature)
-- **One board per project**, its opening page: a query, a sort and a limit (at most 40 runs) choose the runs, edited on the board itself by editors and saved with the project (`/projects/{project}/board`). A leaderboard shows their important metrics; charts of those metrics follow, for the first 8 runs or the ones ticked, each run keeping its color as rows move. Picked runs go to Compare. Code: `web/src/routes/p/[project]/(tabs)/overview/`, `web/src/lib/runs/board.ts`, `crates/losscape-server/src/board.rs`.
+- **One board per project**, its opening page: a query, a sort and a limit (at most 40 runs) choose the runs, edited on the board itself by editors and saved with the project (`/projects/{project}/board`). From the top:
+  - **Figures:** the best run of each important metric, ahead of the baseline or the runner-up by how much.
+  - **Leaderboard:** the important metrics and the config values that tell these runs apart; run fields that read the same on every row are left out. The Columns menu replaces that choice by hand, saved with the board. Picked runs go to Compare.
+  - **Baseline:** a run picked from the leaderboard stays first and is saved with the board. Others show their change against it (points for percentages, otherwise relative; better follows the metric's direction), and charts show it as a dashed line.
+  - **Progress over time:** every matching run (not just the limit) as a dot by when it started, with a line of the best so far. Values default to each metric's summary (best or last, as set on its page); a toggle shows last or best instead, without being saved. At most about 2,000 dots are drawn, always with the record runs and those charted.
+  - **Explore:** the same runs against a config value (a scatter for numbers, with a log scale over two orders of magnitude; one column of dots per value for text) or another metric, with the same toggle. **Trajectory** instead draws each charted run's path through two metrics as it trains, from its start to its latest point; metrics logged at different rates are paired by their latest value at each step of the sparser one.
+  - **Training curves:** of the first 8 runs or the ones ticked, each keeping its color as rows move.
+  - Hovering a run picks it out in the table and every chart; clicking a dot opens it.
+  - Code: `web/src/routes/p/[project]/(tabs)/overview/`, `web/src/lib/runs/board.ts`, `web/src/lib/components/app/DotChart.svelte`, `crates/losscape-server/src/board.rs`.
+- Known limit: a computed metric's summary is calculated from last values, so "best" on one isn't its true best.
 - Run pages show their important metrics as figures above the charts and the overview.
 
 Later, if one board proves too little:

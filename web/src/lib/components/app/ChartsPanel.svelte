@@ -51,7 +51,8 @@
 		summaryOf,
 		onRename,
 		only,
-		importantOnly = false
+		importantOnly = false,
+		highlight = null
 	}: {
 		project: string;
 		/** Lines to draw (runs, or groups of runs), in legend order. */
@@ -81,6 +82,8 @@
 		only?: string;
 		/** Only metrics marked important. */
 		importantOnly?: boolean;
+		/** The series to pick out in the charts, fading the others. */
+		highlight?: string | null;
 	} = $props();
 
 	const sep = '\u0000';
@@ -270,6 +273,7 @@
 	{#if keys.length}
 		<ChartGroup brush={false} domain={false}>
 			<MetricChart
+				{highlight}
 				{series}
 				metric={only}
 				title={only}
@@ -421,6 +425,7 @@
 				<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 					{#each sectionKeys as key (key)}
 						<MetricChart
+							{highlight}
 							{series}
 							metric={key}
 							title={prefix ? key.slice(prefix.length) : key}

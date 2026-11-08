@@ -10,8 +10,15 @@ type RunMetricsData = Pick<
 	'summary' | 'metric_min' | 'metric_max' | 'renames' | 'rename_scales'
 >;
 
+/** Which value of a metric: what its settings say, or the last or best one regardless. */
+export type ValueMode = 'default' | 'last' | 'best';
+
 /** The summary of a run with its project's custom metrics applied. */
-export function effectiveSummary(run: RunMetricsData, registry: Registry): Record<string, unknown> {
+export function effectiveSummary(
+	run: RunMetricsData,
+	registry: Registry,
+	mode: ValueMode = 'default'
+): Record<string, unknown> {
 	const extremes = (raw: string, direction: 'max' | 'min') =>
 		(direction === 'max' ? run.metric_max : run.metric_min)?.[raw];
 	const rawKeys = new Set([...Object.keys(run.summary), ...Object.keys(run.metric_min ?? {})]);
@@ -25,8 +32,10 @@ export function effectiveSummary(run: RunMetricsData, registry: Registry): Recor
 	}
 	for (const [shown, { raw, scale }] of metrics.shown) {
 		const meta = registry.describe(shown);
-		const best =
-			meta.summary === 'best' && meta.direction ? extremes(raw, meta.direction) : undefined;
+		const wantsBest = mode === 'best' || (mode === 'default' && meta.summary === 'best');
+		if (!wantsBest || !meta.direction) continue;
+		// A negative scale turns the highest logged value into the lowest shown.
+		const best = extremes(raw, (meta.direction === 'max') === scale >= 0 ? 'max' : 'min');
 		if (typeof best === 'number') out[shown] = best * scale;
 	}
 	for (const name of registry.computedNames) {
@@ -42,13 +51,22 @@ export function effectiveSummary(run: RunMetricsData, registry: Registry): Recor
 	return out;
 }
 
-const applied = new WeakMap<RunSummary, { registry: Registry; run: RunSummary }>();
+type Applied = WeakMap<RunSummary, { registry: Registry; run: RunSummary }>;
+const applied: Record<ValueMode, Applied> = {
+	default: new WeakMap(),
+	last: new WeakMap(),
+	best: new WeakMap()
+};
 
-/** `run` with its effective summary (cached per run and registry). */
-export function withMetrics<T extends RunSummary>(run: T, registry: Registry): T {
-	const hit = applied.get(run);
+/** `run` with its effective summary (cached per run, registry and mode). */
+export function withMetrics<T extends RunSummary>(
+	run: T,
+	registry: Registry,
+	mode: ValueMode = 'default'
+): T {
+	const hit = applied[mode].get(run);
 	if (hit?.registry === registry) return hit.run as T;
-	const out = { ...run, summary: effectiveSummary(run, registry) };
-	applied.set(run, { registry, run: out });
+	const out = { ...run, summary: effectiveSummary(run, registry, mode) };
+	applied[mode].set(run, { registry, run: out });
 	return out;
 }

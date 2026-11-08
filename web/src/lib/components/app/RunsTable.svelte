@@ -5,6 +5,7 @@
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
 	import EyeOff from '@lucide/svelte/icons/eye-off';
+	import Flag from '@lucide/svelte/icons/flag';
 	import Minus from '@lucide/svelte/icons/minus';
 	import Pin from '@lucide/svelte/icons/pin';
 	import PinOff from '@lucide/svelte/icons/pin-off';
@@ -14,6 +15,7 @@
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import { duration, formatValue, timeAgo } from '#lib/format.js';
 	import { formatMetric, formatSteps } from '#lib/metric-units.js';
+	import type { Change } from '#lib/runs/board.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import {
 		column,
@@ -30,6 +32,7 @@
 	const ROW_HEIGHT = 36;
 	const HEADER_HEIGHT = 44;
 	const SELECT_WIDTH = 40;
+	const NOTE_WIDTH = 72;
 	const NAME_WIDTH = 280;
 	/** Rows rendered beyond the visible ones, above and below. */
 	const OVERSCAN = 8;
@@ -54,7 +57,12 @@
 		onTag,
 		onToggleGroup,
 		onPin,
-		onHide
+		onHide,
+		highlight = null,
+		onHover,
+		baselineId = null,
+		onBaseline,
+		cellNote
 	}: {
 		project: string;
 		/** Filtered and sorted. */
@@ -82,6 +90,15 @@
 		/** Without these two, columns are fixed. */
 		onPin?: (id: string, pin: boolean) => void;
 		onHide?: (id: string) => void;
+		/** The run to pick out. */
+		highlight?: string | null;
+		/** The pointer is over this run's row (null: none). */
+		onHover?: (run: string | null) => void;
+		baselineId?: string | null;
+		/** Makes this run the baseline, or stops it being one. */
+		onBaseline?: (run: RunSummary) => void;
+		/** Shown beside a metric's value, e.g. its change against the baseline. */
+		cellNote?: (run: RunSummary, columnId: string) => Change | null;
 	} = $props();
 
 	/** Pinned columns first; they stay visible when scrolling sideways. */
@@ -93,6 +110,7 @@
 			const meta = c.prefix === 'summary' ? currentRegistry().describe(c.label) : null;
 			return {
 				...c,
+				width: c.width + (cellNote && c.prefix === 'summary' ? NOTE_WIDTH : 0),
 				numeric: isNumeric(runs, id),
 				label: meta?.label || c.label,
 				title: [`${c.prefix}.${c.label}`, meta?.description].filter(Boolean).join('\n'),
@@ -432,21 +450,28 @@
 					{@const color = colors.get(run.id)}
 					{@const isSelected = selection.has(run.id)}
 					{@const deleted = deletedIn(run)}
+					<!-- svelte-ignore a11y_interactive_supports_focus (hover only highlights the run) -->
 					<div
 						role="row"
 						aria-rowindex={index + 2}
 						aria-selected={isSelected}
 						class={[
 							'group absolute inset-x-0 grid border-b hover:bg-muted/50',
-							isSelected && 'bg-primary/5'
+							isSelected && 'bg-primary/5',
+							highlight === run.id && 'bg-muted/50'
 						]}
+						onpointerenter={() => onHover?.(run.id)}
+						onpointerleave={() => onHover?.(null)}
 						style:top={`${index * ROW_HEIGHT}px`}
 						style:height={`${ROW_HEIGHT}px`}
 						style:grid-template-columns={template}
 					>
 						<div
 							role="gridcell"
-							class="sticky left-0 z-[2] flex items-center justify-center bg-card group-hover:bg-muted"
+							class={[
+								'sticky left-0 z-[2] flex items-center justify-center bg-card group-hover:bg-muted',
+								highlight === run.id && 'bg-muted!'
+							]}
 						>
 							{@render checkbox(isSelected, `Select ${run.name}`, () =>
 								onSelect([run], !isSelected)
@@ -456,7 +481,8 @@
 							role="gridcell"
 							class={[
 								'sticky z-[2] flex min-w-0 items-center gap-1.5 bg-card px-2 group-hover:bg-muted',
-								item.nested && 'pl-6'
+								item.nested && 'pl-6',
+								highlight === run.id && 'bg-muted!'
 							]}
 							style:left={`${SELECT_WIDTH}px`}
 						>
@@ -475,6 +501,34 @@
 							{#if deleted}
 								<span class="shrink-0 text-xs text-muted-foreground">{deleted}</span
 								>
+							{/if}
+							{#if baselineId === run.id}
+								<span class="shrink-0 rounded bg-secondary px-1 text-[11px]"
+									>baseline</span
+								>
+							{/if}
+							{#if onBaseline}
+								<button
+									class={[
+										'ml-auto flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground focus-visible:opacity-100',
+										baselineId !== run.id && 'opacity-0 group-hover:opacity-100'
+									]}
+									aria-pressed={baselineId === run.id}
+									aria-label={baselineId === run.id
+										? `Stop using ${run.name} as the baseline`
+										: `Use ${run.name} as the baseline`}
+									title={baselineId === run.id
+										? 'The baseline: click to stop using it'
+										: 'Use as the baseline: others are measured against it'}
+									onclick={() => onBaseline(run)}
+								>
+									<Flag
+										class={[
+											'size-3.5',
+											baselineId === run.id && 'fill-current'
+										]}
+									/>
+								</button>
 							{/if}
 						</div>
 						{#each ordered as c (c.id)}
@@ -532,6 +586,26 @@
 											: `${formatValue(value)}${isBest ? ' (best)' : ''}`}
 										>{value === undefined ? '' : formatCell(c.id, value)}</span
 									>
+									{#if c.prefix === 'summary' && cellNote}
+										{@const note = cellNote(run, c.id)}
+										{#if note}
+											<span
+												class={[
+													'ml-2 shrink-0 font-sans text-[11px]',
+													note.better === true &&
+														'text-emerald-700 dark:text-emerald-400',
+													note.better === false && 'text-destructive',
+													note.better === null && 'text-muted-foreground'
+												]}
+												title={note.better === null
+													? 'Against the baseline'
+													: note.better
+														? 'Better than the baseline'
+														: 'Worse than the baseline'}
+												>{note.text}</span
+											>
+										{/if}
+									{/if}
 								{/if}
 							</div>
 						{/each}

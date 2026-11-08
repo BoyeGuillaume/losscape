@@ -163,3 +163,35 @@ describe('custom units', () => {
 		expect(formatUnit(1.5, scaled), 'logged in thousands').toBe('1.5k tok');
 	});
 });
+
+describe('value modes', () => {
+	const registry = new Registry([
+		{ name: 'acc', kind: 'describe', spec: { direction: 'max', summary: 'best' } },
+		{ name: 'loss', kind: 'describe', spec: { direction: 'min' } },
+		{ name: 'plain', kind: 'describe', spec: {} },
+		{ name: 'flipped', kind: 'describe', spec: { direction: 'max' } }
+	]);
+	const run = {
+		summary: { acc: 0.8, loss: 0.5, plain: 3, raw: 2 },
+		metric_min: { acc: 0.1, loss: 0.2, plain: 1, raw: 1 },
+		metric_max: { acc: 0.9, loss: 2, plain: 5, raw: 4 },
+		renames: { raw: 'flipped' },
+		rename_scales: { raw: -1 }
+	};
+	const of = (mode?: 'default' | 'last' | 'best') => effectiveSummary(run, registry, mode);
+
+	it('follows each metric by default', () => {
+		expect(of()).toMatchObject({ acc: 0.9, loss: 0.5, plain: 3 });
+		expect(of('default')).toEqual(of());
+	});
+	it('can take the last value of all', () => {
+		expect(of('last')).toMatchObject({ acc: 0.8, loss: 0.5, plain: 3 });
+	});
+	it('can take the best of all that have a direction', () => {
+		expect(of('best')).toMatchObject({ acc: 0.9, loss: 0.2, plain: 3 });
+	});
+	it('reads the right end through a negative scale', () => {
+		expect(of('best').flipped).toBe(-1);
+		expect(of('last').flipped).toBe(-2);
+	});
+});

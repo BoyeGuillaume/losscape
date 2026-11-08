@@ -53,6 +53,7 @@
 	const MAX_TOOLTIP_ROWS = 12;
 
 	let {
+		highlight = null,
 		series,
 		metric,
 		source,
@@ -65,6 +66,8 @@
 		href,
 		onRename
 	}: {
+		/** The series to pick out, fading the others. */
+		highlight?: string | null;
 		series: ChartSeries[];
 		metric: string;
 		/** Shown name (defaults to the metric). */
@@ -675,7 +678,12 @@
 							y="y"
 							defined={definedY}
 							stroke={colors[line.series.id]}
-							strokeWidth={line.series.runs.length > 1 ? 2 : 1.5}
+							strokeWidth={highlight === line.series.id
+								? 2.5
+								: line.series.runs.length > 1
+									? 2
+									: 1.5}
+							opacity={highlight && highlight !== line.series.id ? 0.15 : 1}
 							fill="none"
 						/>
 					{/each}

@@ -15,6 +15,7 @@ use crate::state::AppState;
 
 const MAX_QUERY: usize = 2_000;
 const MAX_SORT: usize = 300;
+const MAX_COLUMNS: usize = 100;
 /// As many as a chart or a comparison can take.
 const MAX_LIMIT: u32 = 40;
 
@@ -31,6 +32,15 @@ pub struct Board {
     query: String,
     sort: Sort,
     limit: u32,
+    /// The run others are measured against.
+    #[serde(default)]
+    baseline: Option<String>,
+    /// The config key metrics are plotted against.
+    #[serde(default)]
+    explore: Option<String>,
+    /// The leaderboard's columns, if chosen by hand.
+    #[serde(default)]
+    columns: Option<Vec<String>>,
 }
 
 impl Default for Board {
@@ -42,6 +52,9 @@ impl Default for Board {
                 desc: true,
             },
             limit: 10,
+            baseline: None,
+            explore: None,
+            columns: None,
         }
     }
 }
@@ -62,7 +75,8 @@ pub async fn get(
     Ok(Json(board.map(|b| b.0).unwrap_or_default()))
 }
 
-/// `PUT /api/v0/projects/{project}/board` `{"query", "sort": {"id", "desc"}, "limit"}` (editors).
+/// `PUT /api/v0/projects/{project}/board` `{"query", "sort": {"id", "desc"}, "limit",
+/// "baseline", "explore", "columns"}` (editors).
 pub async fn put(
     State(state): State<AppState>,
     user: AuthUser,
@@ -82,6 +96,22 @@ pub async fn put(
     }
     if !(1..=MAX_LIMIT).contains(&board.limit) {
         return Err(ApiError::invalid(format!("limit: 1-{MAX_LIMIT}")).into());
+    }
+    let columns = board.columns.as_deref().unwrap_or_default();
+    if columns.len() > MAX_COLUMNS {
+        return Err(ApiError::invalid(format!("columns: at most {MAX_COLUMNS}")).into());
+    }
+    for field in [&board.baseline, &board.explore]
+        .into_iter()
+        .flatten()
+        .chain(columns)
+    {
+        if field.len() > MAX_SORT || field.chars().any(char::is_control) {
+            return Err(ApiError::invalid(format!(
+                "baseline, explore, columns: at most {MAX_SORT} bytes"
+            ))
+            .into());
+        }
     }
     sqlx::query("UPDATE projects SET board = $1 WHERE id = $2")
         .bind(SqlJson(&board))
