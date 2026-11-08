@@ -94,7 +94,7 @@
 			<AppSidebar />
 			<Sidebar.Inset class="min-w-0">
 				<header
-					class="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur"
+					class="sticky top-0 z-40 flex h-12 shrink-0 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur"
 				>
 					<Sidebar.Trigger class="-ml-1" />
 					<Separator
