@@ -195,7 +195,7 @@ docker compose down                      # stop, and keep the data
 ```
 
 To update, run `git pull` and `docker compose pull losscape`, then start it again. For real use, pin a
-version such as `madproton/losscape:0.1.2` in `.env` rather than `latest`, so that you choose when it
+version such as `madproton/losscape:0.1.3` in `.env` rather than `latest`, so that you choose when it
 changes. If you build from source, use `--build` in place of `--no-build`, with `LOSSCAPE_IMAGE` unset.
 
 This runs the server and web interface, Postgres (accounts, projects, runs) and ClickHouse (metrics and
