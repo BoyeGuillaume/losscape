@@ -109,7 +109,7 @@ Targets to aim for, not measurements.
 ### Captured automatically
 - **P0 (done)** Git commit + diff of uncommitted changes, command line, Python environment (`pip freeze` or `uv.lock`), CUDA version, driver, GPU model, hostname, Slurm job ID, container image. (Packages come from `*.dist-info` names on `sys.path`; the diff is stored as a run file, up to 2 MB; the container image is known for Apptainer, privileged Podman, or `LOSSCAPE_CONTAINER_IMAGE`.)
 - **P0 (done)** System metrics: NVIDIA GPU usage, memory, power, temperature (NVML); CPU, RAM, disk, network. Logged as `system/...` metrics every 5 s (step = unix seconds), kept out of the summary. Network traffic is `system/network/recv` and `sent`, in bits per second. The UI shows them with units (%, bytes, bps) from built-in metric definitions (`BUILTIN` in `web/src/lib/metrics/registry.ts`), which a project's own definitions override.
-- **P0 (done)** stdout and stderr, processed so `\r` progress bars display correctly (see Design 3). Captured at the file-descriptor level (C extensions, subprocesses), through a pseudo-terminal when the output was one; off on Windows and in Jupyter for now; 100 MB per run.
+- **P0 (done)** stdout and stderr, processed so `\r` progress bars display correctly (see Design 3). Captured at the file-descriptor level (C extensions, subprocesses), through a pseudo-terminal when the output was one; off on Windows and in Jupyter for now; 100 MB per run. The run's environment records whether capture ran and why not (`console=False`, `LOSSCAPE_CONSOLE`, Windows, notebook, or a start error), so the Logs tab tells "nothing printed" from "not recorded" and shows how to turn it on.
 - **P0 (done)** Values that look like secrets (`*KEY*`, `*TOKEN*`, `*SECRET*`) are hidden in captured environment variables and configs (whole words in the name, so `max_tokens` is kept; also strings shaped like known tokens).
 - **P1** AMD (ROCm) and Apple Silicon GPU metrics.
 
@@ -124,7 +124,7 @@ Targets to aim for, not measurements.
 - **P0** Projects, runs, groups (e.g. seeds of the same config), notes.
 - **P0** **Tags**: many per run.
 - **P0 (partly done)** **Aliases**: a name unique within a project that points to exactly one run (e.g. `baseline`, `best`). Setting it on another run moves it. Usable everywhere: `api.run("proj/@baseline")`, URLs, chart filters. Done: set and remove on the run page, `/p/<project>/r/@best`, `alias:best` in filters. To do: `api.run`.
-- **P0** Run states (running, finished, crashed, killed) with crash detection through heartbeats. Crashed runs show exit code and last log lines.
+- **P0** Run states (running, finished, crashed, killed) with crash detection through heartbeats. Crashed runs show their exit code; their output is on the Logs tab (the Overview doesn't repeat it).
 - **P1 (partly done)** Bulk actions: tag, alias, move, archive, delete with a trash bin. Done: archive (the trash bin: hidden, restorable, deleted for good after a per-project number of days, 30 by default) and chart selected. To do: tag, alias, move.
 
 ### Overview page, configurable from the UI (P0, main feature)
@@ -163,7 +163,7 @@ Set in project settings > Metrics (editors), stored per project in Postgres, app
 - **P1** Config diff highlighting only the keys that differ; code diff; environment diff.
 
 ### Other views
-- **P0 (partly done)** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info. Done except files (artifacts). The config has its own tab: searchable (keys and values, matching branches only), as a collapsible tree or as highlighted YAML.
+- **P0 (partly done)** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info. Done except files (artifacts). The config has its own tab: searchable (keys, values, or dotted paths such as `data.ba` for `data.batch_size`; matching branches only, matches highlighted), as a collapsible tree or as highlighted YAML.
 - **P0 (done)** The whole view state lives in the URL, so a link opens exactly the same view (filter, sort, columns, pins, charted runs, chart settings, metric regex, zoom).
 - **P0 (done)** Dark mode.
 - **P1 (done)** Workspace with charts created automatically from logged keys, in sections by prefix (`train/`, `val/`).

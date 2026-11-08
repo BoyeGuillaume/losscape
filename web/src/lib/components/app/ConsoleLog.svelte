@@ -8,7 +8,9 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { dateTime } from '#lib/format.js';
+	import type { RunEnvironment } from '#lib/api/types.js';
 	import AnsiText from './AnsiText.svelte';
+	import ConsoleEmpty from './ConsoleEmpty.svelte';
 
 	type Logs = { count: number; lines: LogLine[] };
 
@@ -23,12 +25,15 @@
 	let {
 		project,
 		run,
-		running
+		running,
+		capture
 	}: {
 		project: string;
 		/** Hyphenated run id. */
 		run: string;
 		running: boolean;
+		/** Whether the console was captured (from the run's environment). */
+		capture: RunEnvironment['console'];
 	} = $props();
 
 	let count = $state(0);
@@ -189,37 +194,39 @@
 	});
 </script>
 
-<div class="mb-3 flex flex-wrap items-center gap-2">
-	<div class="relative w-full sm:w-72">
-		<Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-		<Input
-			class="pl-8"
-			placeholder="Search output"
-			aria-label="Search output"
-			bind:value={query}
-		/>
-	</div>
-	<span class="text-sm text-muted-foreground tabular-nums">
-		{#if matches}
-			{matches.length}{matches.length === MAX_MATCHES ? '+' : ''} matching lines
-		{:else if searching}
-			Searching…
-		{:else}
-			{count.toLocaleString('en')} lines
+{#if !(loaded && count === 0)}<div class="mb-3 flex flex-wrap items-center gap-2">
+		<div class="relative w-full sm:w-72">
+			<Search
+				class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+			/>
+			<Input
+				class="pl-8"
+				placeholder="Search output"
+				aria-label="Search output"
+				bind:value={query}
+			/>
+		</div>
+		<span class="text-sm text-muted-foreground tabular-nums">
+			{#if matches}
+				{matches.length}{matches.length === MAX_MATCHES ? '+' : ''} matching lines
+			{:else if searching}
+				Searching…
+			{:else}
+				{count.toLocaleString('en')} lines
+			{/if}
+		</span>
+		{#if !matches && !follow && count > 0}
+			<Button
+				variant="outline"
+				size="sm"
+				class="ml-auto"
+				onclick={() => ((follow = true), toEnd())}
+			>
+				<ArrowDownToLine />
+				{running ? 'Follow' : 'Go to end'}
+			</Button>
 		{/if}
-	</span>
-	{#if !matches && !follow && count > 0}
-		<Button
-			variant="outline"
-			size="sm"
-			class="ml-auto"
-			onclick={() => ((follow = true), toEnd())}
-		>
-			<ArrowDownToLine />
-			{running ? 'Follow' : 'Go to end'}
-		</Button>
-	{/if}
-</div>
+	</div>{/if}
 
 {#if error}
 	<p class="text-sm text-destructive">{error}</p>
@@ -241,10 +248,7 @@
 		{/each}
 	</div>
 {:else if loaded && count === 0}
-	<p class="text-sm text-muted-foreground">
-		No output captured. stdout and stderr are recorded unless <code>console=False</code> (or on Windows
-		and in notebooks).
-	</p>
+	<ConsoleEmpty {project} {capture} {running} />
 {:else}
 	<div
 		bind:this={viewport}

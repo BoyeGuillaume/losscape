@@ -19,7 +19,6 @@
 	} from '#lib/charts/settings.js';
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
 	import ConsoleLog from '#lib/components/app/ConsoleLog.svelte';
-	import ConsoleTail from '#lib/components/app/ConsoleTail.svelte';
 	import RunConfig from '#lib/components/app/RunConfig.svelte';
 	import RunEnvironmentCards from '#lib/components/app/RunEnvironmentCards.svelte';
 	import KeyValueList from '#lib/components/app/KeyValueList.svelte';
@@ -419,26 +418,24 @@
 		</Tabs.Content>
 
 		<Tabs.Content value="logs">
-			{#if tab === 'logs'}<ConsoleLog {project} run={r.id} {running} />{/if}
+			{#if tab === 'logs'}<ConsoleLog
+					{project}
+					run={r.id}
+					{running}
+					capture={r.environment.console}
+				/>{/if}
 		</Tabs.Content>
 
 		<Tabs.Content value="config">
-			{#if tab === 'config'}<RunConfig config={r.config} bind:view={configView} />{/if}
+			{#if tab === 'config'}<RunConfig
+					{project}
+					config={r.config}
+					bind:view={configView}
+				/>{/if}
 		</Tabs.Content>
 
 		<Tabs.Content value="overview">
 			{#if tab === 'overview'}<div class="grid gap-4 lg:grid-cols-2">
-					{#if r.state === 'crashed' || r.state === 'failed' || r.state === 'killed'}
-						<Card.Root class="lg:col-span-2">
-							<Card.Header class="flex-row items-center justify-between gap-2">
-								<Card.Title>Last output</Card.Title>
-								<Button variant="outline" size="sm" onclick={() => (tab = 'logs')}>
-									All logs
-								</Button>
-							</Card.Header>
-							<Card.Content><ConsoleTail run={r.id} /></Card.Content>
-						</Card.Root>
-					{/if}
 					<Card.Root>
 						<Card.Header><Card.Title>Summary</Card.Title></Card.Header>
 						<Card.Content

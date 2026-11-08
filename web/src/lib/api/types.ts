@@ -126,4 +126,7 @@ export type RunEnvironment = {
 	container?: { runtime?: string; image?: string | null };
 	env?: Record<string, string>;
 	packages?: string[];
+	/** Console capture: whether it ran, and why not (`off`: console=False, LOSSCAPE_CONSOLE,
+	 * windows, notebook; `error`: it failed to start). */
+	console?: { captured?: boolean; off?: string; error?: string };
 };

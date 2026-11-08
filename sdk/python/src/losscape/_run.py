@@ -284,10 +284,23 @@ def _flag(value: bool | None, env: str, default: bool) -> bool:
     return default
 
 
-def _console_default() -> bool:
-    """Capture the console unless it can't work well: Windows (no file-descriptor capture
-    yet) and Jupyter (the kernel captures the descriptors itself)."""
-    return os.name != "nt" and "ipykernel" not in sys.modules
+def _console_setting(console: bool | None) -> tuple[bool, str | None]:
+    """Whether to capture the console, and why not. Off by default where it can't work
+    well: Windows (no file-descriptor capture yet) and Jupyter (the kernel captures the
+    descriptors itself)."""
+    default_off = None
+    if os.name == "nt":
+        default_off = "windows"
+    elif "ipykernel" in sys.modules:
+        default_off = "notebook"
+    on = _flag(console, "LOSSCAPE_CONSOLE", default_off is None)
+    if on:
+        return True, None
+    if console is False:
+        return False, "console=False"
+    if not _flag(None, "LOSSCAPE_CONSOLE", True):
+        return False, "LOSSCAPE_CONSOLE"
+    return False, default_off
 
 
 def _python_details() -> dict[str, Any]:
@@ -365,6 +378,11 @@ def init(
         }
 
     interval = float(os.environ.get("LOSSCAPE_SYSTEM_INTERVAL") or 5)
+    capture_console, console_off = _console_setting(console)
+    details = _python_details()
+    if console_off:
+        # Shown on the run's Logs tab; the core adds whether capture started.
+        details["console"] = {"off": console_off}
     native = _native.start_run(
         project=project,
         root=Path(dir or os.environ.get("LOSSCAPE_DIR") or ".losscape"),
@@ -377,12 +395,12 @@ def init(
         config_json=_to_json(config) if config else "",
         python_version=platform.python_version(),
         sdk_version=_native.__version__,
-        console=_flag(console, "LOSSCAPE_CONSOLE", _console_default()),
+        console=capture_console,
         system_interval=interval
         if _flag(system_metrics, "LOSSCAPE_SYSTEM_METRICS", True)
         else None,
         python_path=[p for p in sys.path if p],
-        details_json=json.dumps(_jsonable(_python_details())),
+        details_json=json.dumps(_jsonable(details)),
         **server_args,
     )
     start_step = native.next_step or 0

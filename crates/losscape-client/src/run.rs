@@ -237,6 +237,34 @@ impl Run {
                 .update_config(opts.config.clone());
         }
 
+        // The console is captured before the environment is sent: it says whether capture
+        // is on, and why not (the SDK may have put a reason in `console.off`).
+        let mut env = opts.env;
+        let mut console_state = match env.details.remove("console") {
+            Some(Value::Object(state)) => state,
+            _ => Map::new(),
+        };
+        #[cfg(unix)]
+        let capture = if opts.console {
+            match crate::console::Capture::start(shared.console.clone()) {
+                Ok(capture) => Some(capture),
+                Err(err) => {
+                    eprintln!("losscape: console capture is off: {err}");
+                    console_state.insert("error".into(), Value::String(err.to_string()));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(unix)]
+        let captured = capture.is_some();
+        #[cfg(not(unix))]
+        let captured = false;
+        console_state.insert("captured".into(), Value::Bool(captured));
+        env.details
+            .insert("console".into(), Value::Object(console_state));
+
         let background = Background {
             shared: shared.clone(),
             dir: dir.clone(),
@@ -247,12 +275,21 @@ impl Run {
             interval: opts.batch_interval,
             python_version: opts.python_version,
             sdk_version: opts.sdk_version,
-            env: opts.env,
+            env,
         };
-        let thread = std::thread::Builder::new()
+        let thread = match std::thread::Builder::new()
             .name("losscape-run".into())
             .spawn(move || background.run())
-            .map_err(local)?;
+        {
+            Ok(thread) => thread,
+            Err(err) => {
+                #[cfg(unix)]
+                if let Some(capture) = capture {
+                    capture.stop(Duration::ZERO);
+                }
+                return Err(local(err));
+            }
+        };
 
         let sampler = opts.system_interval.and_then(|interval| {
             let shared = shared.clone();
@@ -266,16 +303,6 @@ impl Run {
                 .inspect_err(|err| eprintln!("losscape: system metrics are off: {err}"))
                 .ok()
         });
-        #[cfg(unix)]
-        let capture = opts
-            .console
-            .then(|| {
-                crate::console::Capture::start(shared.console.clone())
-                    .inspect_err(|err| eprintln!("losscape: console capture is off: {err}"))
-                    .ok()
-            })
-            .flatten();
-
         Ok(Self {
             shared,
             thread: Mutex::new(Some(thread)),

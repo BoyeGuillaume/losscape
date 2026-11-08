@@ -147,3 +147,19 @@ def test_sync_cli_with_nothing_to_sync(tmp_path):
     from losscape.cli import main
 
     assert main(["sync", "--dir", str(tmp_path), "--api-key", "x"]) == 0
+
+
+def test_console_setting_says_why_capture_is_off(monkeypatch):
+    from losscape._run import _console_setting
+
+    monkeypatch.delenv("LOSSCAPE_CONSOLE", raising=False)
+    monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
+    assert _console_setting(None) == (os.name != "nt", "windows" if os.name == "nt" else None)
+    assert _console_setting(False) == (False, "console=False")
+    monkeypatch.setenv("LOSSCAPE_CONSOLE", "0")
+    assert _console_setting(None) == (False, "LOSSCAPE_CONSOLE")
+    assert _console_setting(True) == (True, None)
+    monkeypatch.delenv("LOSSCAPE_CONSOLE")
+    monkeypatch.setitem(sys.modules, "ipykernel", object())
+    if os.name != "nt":
+        assert _console_setting(None) == (False, "notebook")
