@@ -6,7 +6,6 @@
 	import Star from '@lucide/svelte/icons/star';
 	import { ChartGroup } from 'layerchart';
 	import { untrack, type Component } from 'svelte';
-	import { resolve } from '$app/paths';
 
 	import { apiJson } from '#lib/api/client.js';
 	import { subscribeLive } from '#lib/api/live.js';
@@ -28,6 +27,8 @@
 	import { isModelMetric, type Renames } from '#lib/metrics/registry.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import { onRestored } from '#lib/connection.svelte.js';
+	import { groupBy } from '#lib/group.js';
+	import { metricHref } from '#lib/metrics/href.js';
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
 	import FamilyChart from './FamilyChart.svelte';
@@ -241,16 +242,12 @@
 	const important = $derived(shownKeys.filter((key) => registry.describe(key).important));
 	/** The other charts, grouped by the metric name's prefix: `train/loss` goes to "train". */
 	const sections = $derived.by(() => {
-		const groups: Record<string, string[]> = {};
-		for (const key of shownKeys) {
-			if (registry.describe(key).important) continue;
+		const groups = groupBy(shownKeys, (key) => {
+			if (registry.describe(key).important) return null;
 			const name = prefix ? key.slice(prefix.length) : key;
-			const section = name.includes('/') ? name.slice(0, name.indexOf('/')) : '';
-			(groups[section] ??= []).push(key);
-		}
-		return Object.entries(groups).sort(([a], [b]) =>
-			a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)
-		);
+			return name.includes('/') ? name.slice(0, name.indexOf('/')) : '';
+		});
+		return groups.sort(([a], [b]) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
 	});
 
 	const xOptions = $derived<XAxis[]>([
@@ -413,11 +410,11 @@
 	{/if}
 
 	{#snippet chartSection(id: string, label: string, sectionKeys: string[])}
-		{@const open = !collapsed[id]}
+		{@const open = !collapsed[`section:${id}`]}
 		<section>
 			<button
 				class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-				onclick={() => (collapsed[id] = open)}
+				onclick={() => (collapsed[`section:${id}`] = open)}
 				aria-expanded={open}
 			>
 				<ChevronRight class={['size-4 transition-transform', open && 'rotate-90']} />
@@ -433,10 +430,7 @@
 							{series}
 							metric={key}
 							title={prefix ? key.slice(prefix.length) : key}
-							href={resolve('/p/[project]/(tabs)/metrics/[...name]', {
-								project,
-								name: key
-							})}
+							href={metricHref(project, key)}
 							{source}
 							{onRename}
 							{settings}

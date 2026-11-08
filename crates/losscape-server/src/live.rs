@@ -6,20 +6,22 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use losscape_core::proto::v0::{ConsoleLine, ScalarColumns};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use uuid::Uuid;
 
 use crate::auth::{self, AuthUser, Role, members};
 use crate::read::{UiError, parse_run_ids, unknown_project};
-use crate::state::AppState;
+use crate::state::{AppState, WeakAppState};
 
 const CHANNEL_CAPACITY: usize = 1024;
 
@@ -149,12 +151,42 @@ pub struct LiveParams {
     runs: String,
 }
 
+/// A stream can last for days: says when whoever opened it may no longer see the project.
+/// Being unable to tell, with the database away, isn't a reason to cut anyone off.
+async fn watch_access(
+    state: WeakAppState,
+    every: Duration,
+    headers: HeaderMap,
+    project_id: i64,
+    ended: tokio::sync::mpsc::Sender<()>,
+) {
+    loop {
+        tokio::select! {
+            () = ended.closed() => return,
+            () = tokio::time::sleep(every) => {}
+        }
+        let Some(state) = state.upgrade() else { return };
+        let allowed = match auth::authenticate(&state, &headers).await {
+            Ok(Some(user)) => auth::project_role(&state, &user, project_id)
+                .await
+                .map_or(true, |role| role.is_some()),
+            Ok(None) => false,
+            Err(err) => err.status != StatusCode::UNAUTHORIZED,
+        };
+        if !allowed {
+            let _ = ended.send(()).await;
+            return;
+        }
+    }
+}
+
 /// `GET /api/v0/projects/{project}/live?runs=<id>,<id>`: events `points`, `console` and
 /// `state` (JSON, each with its `run`), and `reset` (some events were missed; reload). Runs of
 /// other projects are ignored.
 pub async fn live(
     State(state): State<AppState>,
     user: AuthUser,
+    headers: HeaderMap,
     Path(project): Path<String>,
     Query(params): Query<LiveParams>,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, UiError> {
@@ -178,8 +210,19 @@ pub async fn live(
     let rx = state.live().tx.subscribe();
     let guards: Vec<WatchGuard> = runs.iter().map(|&run| state.live().watch(run)).collect();
 
-    let until_shutdown =
-        BroadcastStream::new(rx).take_while(|item| !matches!(item, Ok(LiveEvent::Shutdown)));
+    let (access_ended, ended) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(watch_access(
+        state.downgrade(),
+        state.live_recheck(),
+        headers,
+        project_id,
+        access_ended,
+    ));
+    let ended = ReceiverStream::new(ended).map(|()| Ok(LiveEvent::Shutdown));
+
+    let until_shutdown = BroadcastStream::new(rx)
+        .merge(ended)
+        .take_while(|item| !matches!(item, Ok(LiveEvent::Shutdown)));
     let events = until_shutdown.filter_map(move |item| {
         let _keep_watching = &guards;
         let event = match item {

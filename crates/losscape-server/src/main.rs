@@ -142,12 +142,11 @@ async fn serve(file: Option<PathBuf>) -> Result<(), Error> {
         None => tracing::info!("web UI not built (cd web && npm run build); API only"),
     }
     let app = app::router(state, config.max_body_bytes, config.web_dir.as_deref());
-    // Connect info gives the login rate limiter the client address.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
+    let limits = losscape_server::serve::Limits {
+        trusted_proxies: config.auth.trusted_proxies.clone(),
+        ..Default::default()
+    };
+    losscape_server::serve::serve(listener, app, limits, async move {
         shutdown_signal().await;
         // Live streams never end by themselves, and connections are waited for.
         live.shutdown();
@@ -157,7 +156,7 @@ async fn serve(file: Option<PathBuf>) -> Result<(), Error> {
             std::process::exit(1);
         });
     })
-    .await?;
+    .await;
 
     // The flusher ends once nothing can queue any more: these two hold the state as well.
     purger.abort();

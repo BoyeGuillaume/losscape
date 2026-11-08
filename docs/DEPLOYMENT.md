@@ -9,7 +9,13 @@ git clone https://github.com/BoyeGuillaume/losscape && cd losscape
 docker compose up -d --build --wait
 ```
 
-Open <http://localhost:8080> and create an account: **the first one becomes administrator**.
+Open <http://localhost:8080> and create an account: **the first one becomes administrator**. It
+needs the setup token the server printed when it started:
+
+```sh
+docker compose logs losscape | grep -A2 "setup token"
+```
+
 Then create a project, and an API key under Settings, and log a run:
 
 ```sh
@@ -31,10 +37,11 @@ from outside them. A small team fits on 4 vCPU and 8 GB of memory.
 
 ## Before opening it to others
 
-By default it listens on this machine only, because **anyone who reaches a new server first
-can create its administrator account**. Before changing that:
+By default it listens on this machine only. Before changing that:
 
-1. **Create your account first.**
+1. **Create your account first.** The setup token keeps others from doing it before you, but
+   there's no reason to leave it open. To choose the token instead of reading it from the log, for
+   an automated deployment, set `LOSSCAPE_SETUP_TOKEN`.
 2. **Set database passwords, before the very first start.** They're fixed when the databases
    are created. Copy `deploy/env.example` to `.env`, then `openssl rand -hex 32` for each of
    `LOSSCAPE_POSTGRES_PASSWORD` and `LOSSCAPE_CLICKHOUSE_PASSWORD`. The defaults are only
@@ -153,6 +160,7 @@ so a typo can't quietly leave a setting at its default.
 | `LOSSCAPE_LISTEN` | `listen` | `0.0.0.0:8080` | |
 | `LOSSCAPE_PUBLIC_URL` | `public_url` | none | Required for OAuth; `https://` makes cookies `Secure` |
 | `LOSSCAPE_SIGNUP` | `signup` | `open` | `open` or `closed` |
+| `LOSSCAPE_SETUP_TOKEN` | `setup_token` | printed at startup | What creating the first account takes |
 | `LOSSCAPE_TRUSTED_PROXIES` | `trusted_proxies` | none | Addresses or networks, comma-separated |
 | `LOSSCAPE_OAUTH` | one `[oauth.<id>]` section each | none | Provider ids, comma-separated |
 | `LOSSCAPE_OAUTH_<ID>_*` | `oauth.<id>.*` | | `TYPE`, `ISSUER`, `URL`, `API_URL`, `CLIENT_ID`, `CLIENT_SECRET`, `NAME` |
@@ -189,7 +197,7 @@ in progress lose nothing while it's down, whether it's restarting or being upgra
 Instead of building, you can run the [image from Docker Hub](https://hub.docker.com/r/madproton/losscape). In `.env`, with the version you want:
 
 ```sh
-LOSSCAPE_IMAGE=madproton/losscape:0.1.1
+LOSSCAPE_IMAGE=madproton/losscape:0.1.2
 ```
 
 ```sh
@@ -216,8 +224,8 @@ It needs setting up once:
    `madproton/losscape`.
 
 ```sh
-git tag server-v0.1.1
-git push origin server-v0.1.1
+git tag server-v0.1.2
+git push origin server-v0.1.2
 ```
 
 ### Upgrading
@@ -310,8 +318,8 @@ Also create the `pypi` environment under the repository's Settings → Environme
 reviewer there means every release waits for your approval.
 
 ```sh
-git tag sdk-v0.1.1
-git push origin sdk-v0.1.1
+git tag sdk-v0.1.2
+git push origin sdk-v0.1.2
 ```
 
 ## Troubleshooting
@@ -323,6 +331,8 @@ git push origin sdk-v0.1.1
 - **`password authentication failed` after changing a database password:** it was fixed when the
   database was created. Change it in the database too, or start again with `docker compose down -v`,
   which deletes everything.
+- **The setup token isn't accepted, or got lost:** a new one is printed at each start, while there
+  are no accounts. Restart, and use the latest.
 - **Everyone gets "too many attempts" behind a proxy:** see `LOSSCAPE_TRUSTED_PROXIES` above.
 - **Charts stop updating live behind a proxy:** it's buffering. See the nginx example above.
 - **Sign-in with a provider says "redirect URI mismatch":** it must match

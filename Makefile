@@ -50,6 +50,7 @@ up: ## Build and start the whole thing in Docker, on http://localhost:8080
 down: ## Stop it (keeps data)
 	docker compose down
 
+deploy-test: export LOSSCAPE_SETUP_TOKEN = deploy-test-token
 deploy-test: ## Fresh deployment in Docker, restart, check nothing is lost (deletes its data)
 	docker compose -p losscape-test up -d --build --wait
 	cd sdk/python && uv run python ../../scripts/deploy_smoke.py --state ../../target/deploy-smoke.json

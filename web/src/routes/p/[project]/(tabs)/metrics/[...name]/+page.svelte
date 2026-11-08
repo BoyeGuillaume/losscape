@@ -28,6 +28,8 @@
 	import { withToast } from '#lib/notify.js';
 	import { poll } from '#lib/poll.svelte.js';
 	import { RunList } from '#lib/runs/list.svelte.js';
+	import { metricHref as metricHrefIn } from '#lib/metrics/href.js';
+	import { own as ownValue } from '#lib/group.js';
 
 	/** Runs charted in the preview. */
 	const PREVIEW_RUNS = 5;
@@ -65,11 +67,11 @@
 	const shownIn = $derived(
 		runs
 			.map((r) => withMetrics(r, registry))
-			.filter((r) => isSystem || r.summary[name] !== undefined)
+			.filter((r) => isSystem || ownValue(r.summary, name) !== undefined)
 			.sort((a, b) => b.created_at_ms - a.created_at_ms)
 	);
 	/** Runs that logged it but show it under another name. */
-	const renamedAway = $derived(runs.filter((r) => r.renames[name] !== undefined));
+	const renamedAway = $derived(runs.filter((r) => ownValue(r.renames, name) !== undefined));
 	/** Runs that show another logged metric as this one. */
 	const renamedHere = $derived(
 		runs.flatMap((r) =>
@@ -108,8 +110,9 @@
 	let renaming = $state(false);
 	const runHref = (r: RunSummary) =>
 		resolve('/p/[project]/r/[run]', { project, run: r.id.replaceAll('-', '') });
-	const metricHref = (metric: string) =>
-		resolve('/p/[project]/(tabs)/metrics/[...name]', { project, name: metric });
+	const metricHref = (metric: string) => metricHrefIn(project, metric);
+	// eslint-disable-next-line svelte/no-navigation-without-resolve -- metricHrefIn resolves it
+	const showRenamed = (to: string) => goto(metricHref(to), { replaceState: true });
 
 	function toggle(field: 'important' | 'hidden') {
 		const on = meta[field];
@@ -220,12 +223,7 @@
 				{/if}
 			</Card.Header>
 			<Card.Content>
-				<ComputedDefinition
-					{name}
-					{canEdit}
-					{keys}
-					onRename={(to) => goto(metricHref(to), { replaceState: true })}
-				/>
+				<ComputedDefinition {name} {canEdit} {keys} onRename={showRenamed} />
 			</Card.Content>
 		</Card.Root>
 	{/if}
@@ -298,9 +296,11 @@
 				<ul class="grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
 					{#each members as member (member)}
 						<li>
+							<!-- eslint-disable svelte/no-navigation-without-resolve -- metricHref resolves it -->
 							<a class="font-mono text-sm hover:underline" href={metricHref(member)}
 								>{member}</a
 							>
+							<!-- eslint-enable svelte/no-navigation-without-resolve -->
 						</li>
 					{:else}
 						<li class="text-sm text-muted-foreground">None logged yet.</li>
@@ -373,7 +373,7 @@
 										>
 										<span
 											class="truncate font-mono text-xs text-muted-foreground"
-											>as {run.renames[name]}</span
+											>as {ownValue(run.renames, name)}</span
 										>
 										{#if canEdit}
 											<Button

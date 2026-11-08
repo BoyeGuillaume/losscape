@@ -14,6 +14,7 @@ pub mod proto_body;
 pub mod purge;
 pub mod read;
 pub mod runs;
+pub mod serve;
 pub mod state;
 pub mod tags;
 #[cfg(feature = "testing")]

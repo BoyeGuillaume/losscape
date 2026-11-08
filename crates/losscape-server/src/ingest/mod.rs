@@ -14,12 +14,12 @@ pub use flusher::{IngestQueue, spawn_flusher};
 use crate::auth::{self, AuthUser, Role};
 use crate::error::ApiError;
 use crate::live::LiveEvent;
-use crate::proto_body::Proto;
+use crate::proto_body::{
+    MAX_CONSOLE_LINES_PER_BATCH, MAX_KEYS_PER_BATCH, MAX_ROWS_PER_BATCH, Proto,
+};
 use crate::state::AppState;
 
 const MAX_KEY_LEN: usize = 256;
-const MAX_KEYS_PER_BATCH: usize = 10_000;
-const MAX_CONSOLE_LINES_PER_BATCH: usize = 100_000;
 /// Longer console lines are cut (the client already cuts at 16 KB).
 const MAX_CONSOLE_LINE_BYTES: usize = 64 * 1024;
 
@@ -50,7 +50,8 @@ pub async fn ingest(
     Proto(batch): Proto<LogBatch>,
 ) -> Result<Proto<Ack>, ApiError> {
     let run_id = parse_run_id(&batch.run_id)?;
-    let scalars = batch.scalars.unwrap_or_default();
+    let mut scalars = batch.scalars.unwrap_or_default();
+    strip_nul_from_keys(&mut scalars);
     validate_scalars(&scalars)?;
     let summary_json = json_object_or_none(batch.summary_json, "summary_json")?;
     let config_json = json_object_or_none(batch.config_json, "config_json")?;
@@ -98,6 +99,11 @@ pub fn parse_run_id(bytes: &[u8]) -> Result<Uuid, ApiError> {
 
 fn validate_scalars(s: &ScalarColumns) -> Result<(), ApiError> {
     let rows = s.value.len();
+    if rows > MAX_ROWS_PER_BATCH {
+        return Err(ApiError::invalid(format!(
+            "scalars: at most {MAX_ROWS_PER_BATCH} points per batch"
+        )));
+    }
     if s.key_idx.len() != rows || s.step.len() != rows || s.time_ms.len() != rows {
         return Err(ApiError::invalid(
             "scalars: key_idx, step, time_ms and value must have the same length",
@@ -148,12 +154,52 @@ fn validate_console(mut lines: Vec<ConsoleLine>) -> Result<Vec<ConsoleLine>, Api
     Ok(lines)
 }
 
+/// NUL is valid in protobuf strings and in JSON, but Postgres refuses it, in text and in jsonb.
+/// It goes: nothing is lost that a person would miss, and a batch containing one would never
+/// be stored, whichever batches share a transaction with it.
+pub(crate) fn strip_nul(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\0') {
+        text.replace('\0', "").into()
+    } else {
+        text.into()
+    }
+}
+
+fn strip_nul_from_keys(s: &mut ScalarColumns) {
+    for key in &mut s.keys {
+        if key.contains('\0') {
+            key.retain(|c| c != '\0');
+        }
+    }
+}
+
+fn strip_nul_from_json(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::String(s) if s.contains('\0') => s.retain(|c| c != '\0'),
+        Value::Array(items) => items.iter_mut().for_each(strip_nul_from_json),
+        Value::Object(map) => {
+            let old = std::mem::take(map);
+            for (key, mut item) in old {
+                strip_nul_from_json(&mut item);
+                map.insert(strip_nul(&key).into_owned(), item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Empty string means "nothing to merge"; anything else must be a JSON object.
 pub fn json_object_or_none(raw: String, field: &str) -> Result<Option<String>, ApiError> {
     if raw.is_empty() {
         return Ok(None);
     }
     match serde_json::from_str::<serde_json::Value>(&raw) {
+        // It can only be there written as an escape: a raw one is invalid JSON.
+        Ok(mut value @ serde_json::Value::Object(_)) if raw.contains("\\u0000") => {
+            strip_nul_from_json(&mut value);
+            Ok(Some(value.to_string()))
+        }
         Ok(serde_json::Value::Object(_)) => Ok(Some(raw)),
         Ok(_) => Err(ApiError::invalid(format!("{field} must be a JSON object"))),
         Err(e) => Err(ApiError::invalid(format!("{field}: {e}"))),
@@ -222,5 +268,24 @@ mod tests {
         );
         assert!(json_object_or_none("[1]".into(), "f").is_err());
         assert!(json_object_or_none("{".into(), "f").is_err());
+    }
+
+    #[test]
+    fn nul_never_reaches_the_database() {
+        let clean = json_object_or_none(
+            r#"{"a\u0000b":"c\u0000d","n":{"e":["\u0000f"]},"ok":"\\u0000 literally"}"#.into(),
+            "summary_json",
+        )
+        .unwrap()
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&clean).unwrap();
+        assert_eq!(value["ab"], "cd");
+        assert_eq!(value["n"]["e"][0], "f");
+        assert_eq!(value["ok"], "\\u0000 literally");
+
+        let mut columns = columns(1);
+        columns.keys = vec!["lo\0ss".into()];
+        strip_nul_from_keys(&mut columns);
+        assert_eq!(columns.keys, ["loss"]);
     }
 }

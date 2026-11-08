@@ -7,21 +7,40 @@ const cache = new Map<string, Pattern>();
 
 export const isPattern = (name: string) => /[*{]/.test(name);
 
+/**
+ * Matching takes time that grows with the power of the number of `*` and `{name}`, on names
+ * anyone logging to the project can choose. Patterns over this limit, or with two of them
+ * side by side, match nothing. The server refuses them too (metric_defs.rs).
+ */
+const MAX_WILDCARDS = 3;
+const NOTHING = /(?!)/;
+
+/** Whether a pattern is within those limits. */
+export const isAccepted = (source: string) => compile(source).regex !== NOTHING;
+
 export function compile(source: string): Pattern {
 	let pattern = cache.get(source);
 	if (pattern) return pattern;
 	const params: string[] = [];
 	let literal = 0;
-	const body = source.replace(/\{([A-Za-z_]\w*)\}|\*|[^{*]+/g, (part, param) => {
-		if (param) {
+	let wildcards = 0;
+	let adjacent = false;
+	let afterWildcard = false;
+	const body = source.replace(/\{([A-Za-z_]\w*)\}|\*|[^{*]+|\{/g, (part, param) => {
+		if (param || part === '*') {
+			wildcards++;
+			adjacent ||= afterWildcard;
+			afterWildcard = true;
+			if (part === '*') return '.*';
 			params.push(param);
 			return '([^/]+?)';
 		}
-		if (part === '*') return '.*';
+		afterWildcard = false;
 		literal += part.length;
-		return part.replace(/[.+?^$()|[\]\\]/g, '\\$&');
+		return part.replace(/[.+?^$()|[\]\\{}]/g, '\\$&');
 	});
-	pattern = { source, regex: new RegExp(`^${body}$`), params, literal };
+	const safe = wildcards <= MAX_WILDCARDS && !adjacent;
+	pattern = { source, regex: safe ? new RegExp(`^${body}$`) : NOTHING, params, literal };
 	cache.set(source, pattern);
 	return pattern;
 }

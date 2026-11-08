@@ -29,6 +29,7 @@ struct Call<'a> {
     body: Option<Value>,
     cookie: Option<&'a str>,
     bearer: Option<&'a str>,
+    via_session: bool,
     site: Option<&'a str>,
     origin: Option<&'a str>,
 }
@@ -41,6 +42,7 @@ impl<'a> Call<'a> {
             body: None,
             cookie: None,
             bearer: None,
+            via_session: false,
             site: Some("same-origin"),
             origin: None,
         }
@@ -72,6 +74,13 @@ impl<'a> Call<'a> {
             ..self
         }
     }
+    /// As the owner of the key, signed in: what managing projects takes.
+    fn via_session(self) -> Self {
+        Self {
+            via_session: true,
+            ..self
+        }
+    }
     fn site(self, site: Option<&'a str>) -> Self {
         Self { site, ..self }
     }
@@ -81,8 +90,27 @@ impl<'a> Call<'a> {
         if let Some(cookie) = self.cookie {
             req = req.header(header::COOKIE, cookie);
         }
-        if let Some(key) = self.bearer {
-            req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
+        match (self.bearer, self.via_session) {
+            (Some(key), true) => {
+                let user: i64 =
+                    sqlx::query_scalar("SELECT user_id FROM api_keys WHERE key_hash = $1")
+                        .bind(losscape_server::auth::secrets::sha256(key))
+                        .fetch_one(server.state.pg())
+                        .await
+                        .unwrap();
+                let cookie =
+                    losscape_server::auth::start_session(&server.state, user, &HeaderMap::new())
+                        .await
+                        .unwrap();
+                req = req.header(
+                    header::COOKIE,
+                    format!("{}={}", cookie.name(), cookie.value()),
+                );
+            }
+            (Some(key), false) => {
+                req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
+            }
+            (None, _) => {}
         }
         if let Some(site) = self.site {
             req = req.header("sec-fetch-site", site);
@@ -493,6 +521,7 @@ async fn cross_site_requests_and_injection_are_rejected() {
         )
     }
     .bearer(&server.api_key)
+    .via_session()
     .send(&server)
     .await;
     assert_eq!(res.code(), "unknown_user");
@@ -654,6 +683,7 @@ fn transfer_call<'a>(key: &'a str, to: &str, then: &str) -> Call<'a> {
         json!({ "username": to, "then": then }),
     )
     .bearer(key)
+    .via_session()
 }
 
 fn role_call<'a>(key: &'a str, who: &str, role: &str) -> Call<'a> {
@@ -662,6 +692,7 @@ fn role_call<'a>(key: &'a str, who: &str, role: &str) -> Call<'a> {
         ..Call::new(Method::PUT, format!("/api/v0/projects/p/members/{who}"))
     }
     .bearer(key)
+    .via_session()
 }
 
 async fn role_in_p(server: &TestServer, key: &str) -> Value {
@@ -778,6 +809,7 @@ fn patch<'a>(key: &'a str, days: i64) -> Call<'a> {
         ..Call::new(Method::PATCH, "/api/v0/projects/p")
     }
     .bearer(key)
+    .via_session()
 }
 
 #[tokio::test]
@@ -933,7 +965,11 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
     );
 
     // Deleting the project: owners only; runs and memberships go with it.
-    let delete = |key| Call::new(Method::DELETE, "/api/v0/projects/p").bearer(key);
+    let delete = |key| {
+        Call::new(Method::DELETE, "/api/v0/projects/p")
+            .bearer(key)
+            .via_session()
+    };
     assert_eq!(
         delete(bob).send(&server).await.status,
         StatusCode::FORBIDDEN
@@ -1053,12 +1089,15 @@ async fn project_roles_control_access() {
     );
 
     // Viewer: reads, can't log, can't manage members or change the board.
-    let set = |who: &str, role: &str| Call {
-        body: Some(json!({ "role": role })),
-        ..Call::new(
-            Method::PUT,
-            format!("/api/v0/projects/alice-proj/members/{who}"),
-        )
+    let set = |who: &str, role: &str| {
+        Call {
+            body: Some(json!({ "role": role })),
+            ..Call::new(
+                Method::PUT,
+                format!("/api/v0/projects/alice-proj/members/{who}"),
+            )
+        }
+        .via_session()
     };
     assert_eq!(
         set("bob", "viewer")
@@ -1153,6 +1192,7 @@ async fn project_roles_control_access() {
             Method::DELETE,
             format!("/api/v0/projects/alice-proj/members/{who}"),
         )
+        .via_session()
     };
     assert_eq!(
         leave("alice").bearer(&alice).send(&server).await.code(),
@@ -1418,6 +1458,7 @@ fn query(url: &str) -> HashMap<String, String> {
 
 fn auth_config(oidc: &Provider, github: &Provider) -> AuthConfig {
     AuthConfig {
+        setup_token: Default::default(),
         trusted_proxies: Vec::new(),
         public_url: Some("http://losscape.test".into()),
         signup: Signup::Open,
@@ -1817,5 +1858,165 @@ async fn profiles_have_display_names_and_pictures() {
         Call::get(url).cookie(&cookie).send(&server).await.status,
         StatusCode::NOT_FOUND
     );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_keys_cant_manage_accounts_or_projects() {
+    let server = server_with!(TestServer::start());
+    let (_, alice) = user(&server.state, "alice").await;
+    let (_, bob) = user(&server.state, "bob").await;
+    create_project(&server, &alice, "p").await;
+    role_call(&alice, "bob", "viewer").send(&server).await;
+
+    let by_key = [
+        Call::post("/api/v0/me/api-keys", json!({"name": "another"})),
+        Call::get("/api/v0/me/api-keys"),
+        Call::new(Method::DELETE, "/api/v0/me/api-keys/1"),
+        Call::new(Method::DELETE, "/api/v0/projects/p"),
+        Call {
+            body: Some(json!({"archive_days": 5})),
+            ..Call::new(Method::PATCH, "/api/v0/projects/p")
+        },
+        Call {
+            body: Some(json!({"role": "editor"})),
+            ..Call::new(Method::PUT, "/api/v0/projects/p/members/bob")
+        },
+        Call::new(Method::DELETE, "/api/v0/projects/p/members/bob"),
+        Call::post(
+            "/api/v0/projects/p/transfer",
+            json!({"username": "bob", "then": "editor"}),
+        ),
+    ];
+    for call in by_key {
+        let uri = call.uri.clone();
+        let res = call.bearer(&alice).send(&server).await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN, "{uri}");
+    }
+    // What training code needs still works.
+    let (status, run, _) = init_run(&server, &alice, "p").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(log_point(&server, &alice, run, 0).await.0, StatusCode::OK);
+    assert_eq!(
+        Call::get("/api/v0/projects/p")
+            .bearer(&bob)
+            .send(&server)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn changing_the_password_revokes_api_keys() {
+    let server = server_with!(TestServer::start());
+    let res = register(&server, "alice", "first password").await;
+    let cookie = res.cookie("losscape_session");
+    let key = Call::post("/api/v0/me/api-keys", json!({"name": "k"}))
+        .cookie(&cookie)
+        .send(&server)
+        .await
+        .json()["secret"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let projects = || Call::get("/api/v0/projects").bearer(&key);
+    assert_eq!(projects().send(&server).await.status, StatusCode::OK);
+    let changed = Call::post(
+        "/api/v0/me/password",
+        json!({"current": "first password", "new": "second password"}),
+    )
+    .cookie(&cookie)
+    .send(&server)
+    .await;
+    assert_eq!(changed.status, StatusCode::NO_CONTENT);
+    // At once: not when the cache of keys expires.
+    assert_eq!(
+        projects().send(&server).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn the_first_account_takes_the_setup_token() {
+    let server = server_with!(TestServer::start_bare(AuthConfig {
+        setup_token: losscape_server::config::SetupToken::Fixed("the-token".into()),
+        ..Default::default()
+    }));
+    let settings = Call::get("/api/v0/auth/settings")
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(settings["first_user"], true);
+    assert_eq!(settings["setup_token_required"], true);
+
+    let attempt = |token: Value| {
+        Call::post(
+            "/api/v0/auth/register",
+            json!({"username": "alice", "password": "a password", "setup_token": token}),
+        )
+    };
+    for wrong in [Value::Null, json!(""), json!("wrong"), json!("the-token-")] {
+        let res = attempt(wrong).send(&server).await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN);
+        assert_eq!(res.code(), "setup_token_required");
+    }
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(server.state.pg())
+        .await
+        .unwrap();
+    assert_eq!(users, 0);
+
+    let res = attempt(json!(" the-token ")).send(&server).await;
+    assert_eq!(res.status, StatusCode::CREATED);
+    assert_eq!(res.json()["is_admin"], true);
+
+    // Only for the first.
+    let settings = Call::get("/api/v0/auth/settings")
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(settings["setup_token_required"], false);
+    assert_eq!(
+        register(&server, "bob", "a password").await.status,
+        StatusCode::CREATED
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn refused_registrations_dont_cost_a_hash() {
+    let server = server_with!(TestServer::start_with(AuthConfig {
+        signup: Signup::Closed,
+        ..Default::default()
+    }));
+    // A hash takes tens of milliseconds, by design: these don't add up to one each.
+    let started = std::time::Instant::now();
+    for i in 0..20 {
+        let res = register(&server, &format!("user{i}"), "a password").await;
+        assert_eq!(res.code(), "signup_closed");
+    }
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn sign_in_forms_take_no_large_bodies_or_impossible_names() {
+    let server = server_with!(TestServer::start());
+    let long = "u".repeat(32 * 1024);
+    let res = login(&server, &long, "x").await;
+    assert_eq!(res.status, StatusCode::PAYLOAD_TOO_LARGE);
+    let res = register(&server, &long, "x").await;
+    assert_eq!(res.status, StatusCode::PAYLOAD_TOO_LARGE);
+    // Same answer as for a wrong password, and nothing remembered about it: these could
+    // otherwise be used up by anyone to lock out everyone sharing an address.
+    for name in ["u".repeat(4 * 1024), "nul\0name".to_owned(), "x".to_owned()] {
+        for _ in 0..60 {
+            let res = login(&server, &name, "x").await;
+            assert_eq!(res.code(), "invalid_credentials");
+        }
+    }
     server.stop().await;
 }

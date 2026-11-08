@@ -1915,7 +1915,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "prost",
  "prost-build",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-loadgen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "clap",
@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-py"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "losscape-client",
  "losscape-core",
@@ -1971,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "axum",
@@ -1982,6 +1982,8 @@ dependencies = [
  "dotenvy",
  "getrandom 0.4.3",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "image",
  "jsonwebtoken",
  "losscape-core",

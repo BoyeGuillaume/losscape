@@ -18,6 +18,8 @@ use crate::state::AppState;
 /// Buckets per tile (see docs/REQUIREMENTS.md, Design 1).
 pub const TILE_BUCKETS: u64 = 1024;
 const MAX_RANGES: usize = 512;
+/// A tile is at most 64 KB of response. The UI splits its requests to stay under this.
+const MAX_TILES_PER_REQUEST: u64 = 2048;
 const MAX_TILES_PER_RANGE: u64 = 64;
 const MAX_LEVEL: u32 = 63;
 
@@ -304,7 +306,7 @@ pub async fn run_detail(
         .ok_or_else(ApiError::unknown_run)?;
     let project_id = state.project_of(run_id).await?;
     detail.metrics = state
-        .ch()
+        .ch_read()
         .query(
             "SELECT key, count() AS points, min(step) AS min_step, max(step) AS max_step
              FROM metrics WHERE project_id = ? AND run_id = toUUID(?)
@@ -372,7 +374,7 @@ pub async fn project_metrics(
          FROM metrics WHERE project_id = ? AND run_id IN ({placeholders})
          GROUP BY run_id, key ORDER BY run_id, key"
     );
-    let mut query = state.ch().query(&sql).bind(project_id as u64);
+    let mut query = state.ch_read().query(&sql).bind(project_id as u64);
     for run in runs {
         query = query.bind(run.to_string());
     }
@@ -414,6 +416,15 @@ pub async fn series(
 ) -> Result<Response, UiError> {
     if req.ranges.is_empty() || req.ranges.len() > MAX_RANGES {
         return Err(ApiError::invalid(format!("1-{MAX_RANGES} ranges per request")).into());
+    }
+    let tiles = req.ranges.iter().fold(0u64, |n, r| {
+        n.saturating_add(r.to_tile.saturating_sub(r.from_tile))
+    });
+    if tiles > MAX_TILES_PER_REQUEST {
+        return Err(ApiError::invalid(format!(
+            "at most {MAX_TILES_PER_REQUEST} tiles per request"
+        ))
+        .into());
     }
     let mut parts = Vec::with_capacity(req.ranges.len());
     let mut binds: Vec<(u64, String, String, u64, u64)> = Vec::with_capacity(req.ranges.len());
@@ -458,7 +469,7 @@ pub async fn series(
         "SELECT * FROM ({}) ORDER BY req, bucket",
         parts.join(" UNION ALL ")
     );
-    let mut query = state.ch().query(&sql);
+    let mut query = state.ch_read().query(&sql);
     for (project_id, run_id, key, lo, hi) in binds {
         query = query
             .bind(project_id)
@@ -478,13 +489,32 @@ pub async fn series(
             .into());
         }
     };
-    let body = query
-        .fetch_bytes(format)
-        .map_err(ApiError::from)?
-        .collect()
-        .await
-        .map_err(ApiError::from)?;
-    Ok(([(header::CONTENT_TYPE, content_type)], body).into_response())
+    let mut cursor = query.fetch_bytes(format).map_err(ApiError::from)?;
+    // Passed on as it comes rather than held here. Waiting for the start of it, so that
+    // a query that fails right away still gets a proper answer.
+    let first = cursor.next().await.map_err(ApiError::from)?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    tokio::spawn(async move {
+        let mut next = first;
+        while let Some(chunk) = next {
+            if tx.send(Ok(chunk)).await.is_err() {
+                return; // nobody's listening any more
+            }
+            next = match cursor.next().await {
+                Ok(next) => next,
+                Err(err) => {
+                    tracing::warn!(%err, "series query stopped");
+                    let _ = tx.send(Err(std::io::Error::other("query failed"))).await;
+                    return;
+                }
+            };
+        }
+    });
+    Ok((
+        [(header::CONTENT_TYPE, content_type)],
+        axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+        .into_response())
 }
 
 /// A console line as the UI gets it (logs endpoint and live `console` events).
@@ -557,7 +587,7 @@ pub async fn run_logs(
     let run_id = parse_run_id(&run)?;
     let project_id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
     let count: u64 = state
-        .ch()
+        .ch_read()
         .query(
             "SELECT if(count() = 0, 0, max(line) + 1) FROM console_lines
              WHERE project_id = ? AND run_id = toUUID(?)",
@@ -567,13 +597,12 @@ pub async fn run_logs(
         .fetch_one()
         .await
         .map_err(ApiError::from)?;
-
     let base = "SELECT line, toUnixTimestamp64Milli(ts) AS ts, toInt8(stream) AS stream, text
                 FROM console_lines FINAL WHERE project_id = ? AND run_id = toUUID(?)";
     let query = if let Some(q) = params.q.filter(|q| !q.is_empty()) {
         let limit = params.limit.unwrap_or(500).min(MAX_LOG_LINES);
         state
-            .ch()
+            .ch_read()
             .query(&format!(
                 "{base} AND positionCaseInsensitiveUTF8(replaceRegexpAll(text, ?, ''), ?) > 0
                  ORDER BY line LIMIT {limit}"
@@ -594,7 +623,7 @@ pub async fn run_logs(
             }
         };
         state
-            .ch()
+            .ch_read()
             .query(&format!("{base} AND line >= ? AND line < ? ORDER BY line"))
             .bind(project_id as u64)
             .bind(run_id.to_string())
@@ -673,18 +702,6 @@ pub async fn run_logs_file(
         file = "run".into();
     }
 
-    let count: u64 = state
-        .ch()
-        .query(
-            "SELECT if(count() = 0, 0, max(line) + 1) FROM console_lines
-             WHERE project_id = ? AND run_id = toUUID(?)",
-        )
-        .bind(project_id as u64)
-        .bind(run_id.to_string())
-        .fetch_one()
-        .await
-        .map_err(ApiError::from)?;
-
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
     tokio::spawn(async move {
         let text = if params.ansi {
@@ -692,12 +709,14 @@ pub async fn run_logs_file(
         } else {
             "replaceRegexpAll(text, ?, '')"
         };
-        for from in (0..count).step_by(DOWNLOAD_PAGE as usize) {
-            let mut query = state.ch().query(&format!(
+        // From one line to the next that exists: numbers can have gaps, of any size.
+        let mut from = 0u64;
+        loop {
+            let mut query = state.ch_read().query(&format!(
                 "SELECT line, toUnixTimestamp64Milli(ts) AS ts, toInt8(stream) AS stream, {text} AS text
                  FROM console_lines FINAL
-                 WHERE project_id = ? AND run_id = toUUID(?) AND line >= ? AND line < ?
-                 ORDER BY line"
+                 WHERE project_id = ? AND run_id = toUUID(?) AND line >= ?
+                 ORDER BY line LIMIT {DOWNLOAD_PAGE}"
             ));
             if !params.ansi {
                 query = query.bind(ANSI_PATTERN);
@@ -706,7 +725,6 @@ pub async fn run_logs_file(
                 .bind(project_id as u64)
                 .bind(run_id.to_string())
                 .bind(from)
-                .bind(from + DOWNLOAD_PAGE)
                 .fetch_all()
                 .await
             {
@@ -719,6 +737,9 @@ pub async fn run_logs_file(
                     return;
                 }
             };
+            let Some(last) = rows.last().map(|row| row.line) else {
+                return;
+            };
             let mut chunk = String::new();
             for row in rows {
                 chunk.push_str(&row.text);
@@ -727,6 +748,10 @@ pub async fn run_logs_file(
             if tx.send(Ok(chunk.into())).await.is_err() {
                 return; // the download was cancelled
             }
+            let Some(next) = last.checked_add(1) else {
+                return;
+            };
+            from = next;
         }
     });
     Ok((

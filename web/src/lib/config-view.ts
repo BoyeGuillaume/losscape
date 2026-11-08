@@ -36,7 +36,14 @@ export function filterConfig(value: Json, query: string): Json | undefined {
 			const out: Record<string, Json> = {};
 			for (const [key, c] of Object.entries(v)) {
 				const kept = child(key, c);
-				if (kept !== undefined) out[key] = kept;
+				if (kept === undefined) continue;
+				// Not plain assignment: for `__proto__` that would set the prototype.
+				Object.defineProperty(out, key, {
+					value: kept,
+					enumerable: true,
+					writable: true,
+					configurable: true
+				});
 			}
 			return Object.keys(out).length ? out : undefined;
 		}

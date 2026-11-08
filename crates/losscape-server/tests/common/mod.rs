@@ -80,6 +80,7 @@ impl TestServer {
             max_body_bytes: 8 * 1024 * 1024,
             web_dir: None,
             branding: Default::default(),
+            live_recheck: Duration::from_millis(200),
         };
         let (state, flusher) = AppState::start(&config).await.expect("server starts");
         let router = app::router(state.clone(), config.max_body_bytes, None);
@@ -178,7 +179,7 @@ macro_rules! server {
 
 /// Creates a user with an API key (the first one created is admin).
 pub async fn user(state: &AppState, username: &str) -> (i64, String) {
-    let id = account::create_user(state, username, None, None, None)
+    let id = account::create_user(state, username, None, None, None, None)
         .await
         .unwrap();
     (

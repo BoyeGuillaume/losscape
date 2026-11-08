@@ -169,13 +169,14 @@ async fn flush(
 
     let rows: usize = accepted.iter().map(|a| a.batch.rows()).sum();
     let mut clickhouse_ms = 0;
+    let mut refused: HashSet<Uuid> = HashSet::new();
     let result = async {
         let ch_started = std::time::Instant::now();
         write_metrics(ch, &accepted).await?;
         write_console(ch, &accepted).await?;
         clickhouse_ms = ch_started.elapsed().as_millis() as u64;
         publish(live, &accepted);
-        update_runs(pg, &accepted, &windows).await?;
+        refused = update_runs(pg, &accepted, &windows).await?;
         record_keys(pg, &accepted, known_keys).await?;
         Ok::<_, ApiError>(())
     }
@@ -191,8 +192,13 @@ async fn flush(
         "flushed"
     );
     for a in accepted {
+        let outcome = if refused.contains(&a.batch.run_id) {
+            Err(ApiError::invalid("this batch can't be stored"))
+        } else {
+            result.clone()
+        };
         for (reply, duplicate) in a.replies {
-            let _ = reply.send(result.clone().map(|()| duplicate));
+            let _ = reply.send(outcome.clone().map(|()| duplicate));
         }
     }
 }
@@ -369,11 +375,13 @@ fn max_step(batch: &Batch) -> Option<u64> {
         .max()
 }
 
+/// Returns the runs whose update the database refused: the others are stored, whatever a
+/// batch from someone else contains.
 async fn update_runs(
     pg: &PgPool,
     accepted: &[Accepted],
     windows: &HashMap<Uuid, SeqWindow>,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<HashSet<Uuid>> {
     // Merge summary/config updates per run in seq order, so the latest batch wins.
     let mut ordered: Vec<&Batch> = accepted.iter().map(|a| &a.batch).collect();
     ordered.sort_by_key(|b| (b.run_id, b.seq));
@@ -397,6 +405,33 @@ async fn update_runs(
         add_extremes(&mut update.extremes, batch);
     }
 
+    // All in one transaction, normally. If the database refuses that, one by one, so that a
+    // batch that can't be stored holds up only its own run.
+    let refused_together = match store_updates(pg, &merged, windows).await {
+        Ok(()) => return Ok(HashSet::new()),
+        Err(sqlx::Error::Database(err)) => err,
+        Err(err) => return Err(err),
+    };
+    tracing::warn!(error = %refused_together, "storing run updates: trying them one by one");
+    let mut refused = HashSet::new();
+    for update in &merged {
+        match store_updates(pg, std::slice::from_ref(update), windows).await {
+            Ok(()) => {}
+            Err(sqlx::Error::Database(err)) => {
+                tracing::error!(run = %update.run_id, error = %err, "run update refused");
+                refused.insert(update.run_id);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(refused)
+}
+
+async fn store_updates(
+    pg: &PgPool,
+    updates: &[RunUpdate],
+    windows: &HashMap<Uuid, SeqWindow>,
+) -> sqlx::Result<()> {
     // Runs are updated in id order so concurrent transactions can't deadlock.
     let mut tx = pg.begin().await?;
     // Don't wait for the WAL fsync: under heavy disk writes (ClickHouse merges on the same
@@ -413,13 +448,13 @@ async fn update_runs(
         models,
         last_step,
         extremes,
-    } in merged
+    } in updates
     {
         let (mins, maxs): (Map<String, Value>, Map<String, Value>) = extremes
-            .into_iter()
-            .map(|(k, (lo, hi))| ((k.clone(), Value::from(lo)), (k, Value::from(hi))))
+            .iter()
+            .map(|(k, &(lo, hi))| ((k.clone(), Value::from(lo)), (k.clone(), Value::from(hi))))
             .unzip();
-        let (next_seq, pending) = windows[&run_id].to_db();
+        let (next_seq, pending) = windows[run_id].to_db();
         sqlx::query(
             "UPDATE runs SET next_seq = $2, pending_seqs = $3, heartbeat_at = now(),
                  summary = summary || COALESCE($4, '{}'::jsonb),
@@ -437,12 +472,12 @@ async fn update_runs(
         .bind(run_id)
         .bind(next_seq)
         .bind(pending)
-        .bind(summary.map(Json))
-        .bind(config.map(Json))
+        .bind(summary.as_ref().map(Json))
+        .bind(config.as_ref().map(Json))
         .bind(last_step.map(|s| s as i64))
         .bind(Json(mins))
         .bind(Json(maxs))
-        .bind(models.map(Json))
+        .bind(models.as_ref().map(Json))
         .execute(&mut *tx)
         .await?;
     }

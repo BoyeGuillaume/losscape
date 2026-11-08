@@ -13,6 +13,7 @@
 	import { withToast } from '#lib/notify.js';
 	import { RunList } from '#lib/runs/list.svelte.js';
 	import { selectionOf } from '#lib/runs/selection.svelte.js';
+	import { own } from '#lib/group.js';
 
 	let {
 		project,
@@ -49,7 +50,7 @@
 	/** Runs that logged `from`. */
 	const logged = $derived(
 		(list?.runs ?? []).filter(
-			(r) => r.metric_min?.[from] !== undefined || r.summary[from] !== undefined
+			(r) => own(r.metric_min, from) !== undefined || own(r.summary, from) !== undefined
 		)
 	);
 	const filter = $derived.by(() => {
@@ -69,7 +70,7 @@
 		}
 		return logged;
 	});
-	const renamed = $derived(targets.filter((r) => r.renames[from] !== undefined));
+	const renamed = $derived(targets.filter((r) => own(r.renames, from) !== undefined));
 
 	const factor = $derived(scale.trim() === '' ? 1 : Number(scale));
 	const badScale = $derived(!(Number.isFinite(factor) && factor > 0));

@@ -167,12 +167,13 @@
 				}).then(() => true),
 			{
 				done: 'Password changed',
-				detail: 'Your other browser sessions were signed out; this one stays signed in.',
+				detail: 'Your other sessions were signed out and your API keys revoked. Running jobs keep their data, and upload it once they have a new key.',
 				failed: "Couldn't change your password"
 			}
 		);
 		if (saved) {
 			current = next = repeat = '';
+			keys.refresh();
 			await loadMe();
 		}
 	}

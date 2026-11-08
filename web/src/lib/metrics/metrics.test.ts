@@ -1,13 +1,62 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { effectiveSummary } from './apply.js';
 import { detectFamilies } from './families.js';
 import { evaluate, parseFormula, references } from './formula.js';
-import { match } from './pattern.js';
+import { isAccepted, match } from './pattern.js';
 import { Registry, problems, unitOf, type MetricDef } from './registry.js';
 import { formatUnit } from '#lib/units.js';
 
+describe('hostile metric names', () => {
+	it('are metrics like any other', () => {
+		const names = ['constructor', 'toString', '__proto__', '__proto__/x', 'hasOwnProperty'];
+		const shown = new Registry([]).forRun(names).shown;
+		expect([...shown.keys()].sort()).toEqual([...names].sort());
+		for (const [name, { raw, scale }] of shown) {
+			expect(raw).toBe(name);
+			expect(scale).toBe(1);
+		}
+	});
+});
+
 describe('patterns', () => {
+	it('agrees with the server on what to accept', () => {
+		const cases = JSON.parse(
+			readFileSync(
+				new URL('../../../../crates/losscape-server/tests/metric-patterns.json', import.meta.url),
+				'utf8'
+			)
+		) as { accepted: string[]; refused: string[] };
+		for (const name of cases.accepted) expect(isAccepted(name), name).toBe(true);
+		for (const name of cases.refused) expect(isAccepted(name), name).toBe(false);
+	});
+
+	it('compiles any name into something safe to run', () => {
+		// Each of these would be slow, or invalid, as it was written.
+		const hostile = ['{x}{30}/never', '{1}', '{', '}{', 'a{2,}', '(a+)+$', '[', '\\', '{a}*', '**'];
+		for (const name of hostile) {
+			const started = performance.now();
+			expect(() => match(name, 'a'.repeat(256))).not.toThrow();
+			expect(performance.now() - started).toBeLessThan(200);
+		}
+		expect(match('{1}', '{1}')).toEqual({});
+		expect(match('a{2}', 'a{2}')).toEqual({});
+		expect(match('a{2}', 'aa')).toBe(null);
+	});
+
+	it('takes at most three wildcards, none side by side', () => {
+		expect(match('{a}/{b}/{c}', 'x/y/z')).toEqual({ a: 'x', b: 'y', c: 'z' });
+		expect(match('*/{b}/*', 'x/y/z')).toEqual({ b: 'y' });
+		expect(match('{a}/{b}/{c}/{d}', 'w/x/y/z')).toBe(null);
+		expect(match('{a}{b}', 'xy')).toBe(null);
+		expect(match('*{a}', 'xy')).toBe(null);
+		const started = performance.now();
+		match('*a*a*a*a*a*a*b', 'a'.repeat(256));
+		expect(performance.now() - started).toBeLessThan(200);
+	});
+
 	it('capture parameters and match wildcards', () => {
 		expect(match('val/pck-{k}', 'val/pck-16')).toEqual({ k: '16' });
 		expect(match('val/pck-{k}', 'val/pck-8/extra')).toBeNull();

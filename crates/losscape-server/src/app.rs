@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, StatusCode, header};
@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::timeout::RequestBodyTimeoutLayer;
 
 use crate::auth::{account, avatar, members, oauth};
 use crate::config::BrandingImage;
@@ -19,6 +20,11 @@ use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
 use crate::{auth, board, ingest, live, metric_defs, projects, read, runs, tags};
+
+/// Between two parts of a request's body. Responses have no such limit: live streams never end.
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// What anyone can post to, signed in or not, has no reason to be large.
+const ACCOUNT_BODY_BYTES: usize = 16 * 1024;
 
 pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) -> Router {
     // Signed-in users: session cookie (web UI) or API key (SDK).
@@ -107,8 +113,14 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/version", get(version))
         .route("/app", get(app_info))
         .route("/auth/settings", get(account::settings))
-        .route("/auth/register", post(account::register))
-        .route("/auth/login", post(account::login))
+        .route(
+            "/auth/register",
+            post(account::register).layer(DefaultBodyLimit::max(ACCOUNT_BODY_BYTES)),
+        )
+        .route(
+            "/auth/login",
+            post(account::login).layer(DefaultBodyLimit::max(ACCOUNT_BODY_BYTES)),
+        )
         .route("/auth/logout", post(account::logout))
         .route("/auth/oauth/{provider}/start", get(oauth::start))
         .route("/auth/oauth/{provider}/callback", get(oauth::callback));
@@ -132,6 +144,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
     }
     let policy = Arc::new(Policy::new(web_dir));
     router
+        .layer(RequestBodyTimeoutLayer::new(BODY_READ_TIMEOUT))
         // A bug in one request gets an answer, rather than looking like a lost connection.
         .layer(CatchPanicLayer::custom(panicked))
         .layer(middleware::map_response(move |response| {

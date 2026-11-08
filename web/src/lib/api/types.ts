@@ -120,6 +120,8 @@ export type Me = {
 export type AuthSettings = {
 	signup: boolean;
 	first_user: boolean;
+	/** Creating the first account takes the token printed in the server's log. */
+	setup_token_required: boolean;
 	providers: { id: string; name: string; icon: ProviderIconName }[];
 };
 

@@ -9,6 +9,7 @@ import { apiFetch } from '#lib/api/client.js';
 export const TILE_BUCKETS = 1024;
 const MAX_TILES_PER_RANGE = 64;
 const MAX_RANGES_PER_REQUEST = 512;
+const MAX_TILES_PER_REQUEST = 2048;
 /** How many levels up to look for a coarser tile to show while a finer one loads. */
 const FALLBACK_LEVELS = 9;
 /** Live points kept per metric, to apply to tiles whose fetch raced with them. */
@@ -48,6 +49,25 @@ const SEP = '\u0000';
 const seriesId = (run: string, key: string) => `${run}${SEP}${key}`;
 const tileId = (series: string, level: number, index: number) =>
 	`${series}${SEP}${level}${SEP}${index}`;
+/** Requests within what the server accepts. */
+export function splitRanges<R extends { from_tile: number; to_tile: number }>(ranges: R[]): R[][] {
+	const requests: R[][] = [];
+	let current: R[] = [];
+	let tiles = 0;
+	for (const range of ranges) {
+		const size = range.to_tile - range.from_tile;
+		if (current.length === MAX_RANGES_PER_REQUEST || tiles + size > MAX_TILES_PER_REQUEST) {
+			requests.push(current);
+			current = [];
+			tiles = 0;
+		}
+		current.push(range);
+		tiles += size;
+	}
+	if (current.length) requests.push(current);
+	return requests;
+}
+
 export const tileSpan = (level: number) => TILE_BUCKETS * 2 ** level;
 
 /** Finest level that still gives at most ~2 buckets per pixel. */
@@ -153,9 +173,7 @@ class TileStore {
 			}
 		}
 		this.queue.clear();
-		for (let i = 0; i < ranges.length; i += MAX_RANGES_PER_REQUEST) {
-			void this.load(ranges.slice(i, i + MAX_RANGES_PER_REQUEST));
-		}
+		for (const request of splitRanges(ranges)) void this.load(request);
 	}
 
 	private async load(

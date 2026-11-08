@@ -4,6 +4,7 @@
 import type { RunSummary } from '#lib/api/types.js';
 import { evaluate } from './formula.js';
 import type { Registry } from './registry.js';
+import { own } from '#lib/group.js';
 
 type RunMetricsData = Pick<
 	RunSummary,
@@ -20,13 +21,13 @@ export function effectiveSummary(
 	mode: ValueMode = 'default'
 ): Record<string, unknown> {
 	const extremes = (raw: string, direction: 'max' | 'min') =>
-		(direction === 'max' ? run.metric_max : run.metric_min)?.[raw];
+		own(direction === 'max' ? run.metric_max : run.metric_min, raw);
 	const rawKeys = new Set([...Object.keys(run.summary), ...Object.keys(run.metric_min ?? {})]);
 	const metrics = registry.forRun(rawKeys, run);
 
 	const out: Record<string, unknown> = {};
 	for (const [shown, { raw, scale }] of metrics.shown) {
-		const last = run.summary[raw];
+		const last = own(run.summary, raw);
 		if (last === undefined) continue;
 		out[shown] = typeof last === 'number' ? last * scale : last;
 	}
@@ -43,7 +44,7 @@ export function effectiveSummary(
 		if (r?.kind !== 'formula') continue;
 		const value = evaluate(r.formula, (ref) => {
 			const source = r.refs.get(ref)!;
-			const v = run.summary[source.raw];
+			const v = own(run.summary, source.raw);
 			return typeof v === 'number' ? v * source.scale : null;
 		});
 		if (value !== null) out[name] = value;

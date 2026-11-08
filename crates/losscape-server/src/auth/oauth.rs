@@ -378,10 +378,12 @@ async fn create_oauth_user(state: &AppState, identity: &Identity) -> Result<i64,
                 .and_then(account::clean_display_name)
                 .as_deref(),
             identity.email.as_deref(),
+            None,
         )
         .await
         {
             Ok(id) => return Ok(id),
+            Err(err) if err.code == "setup_token_required" => return Err("setup_token_required"),
             Err(err) if err.code == "username_taken" => continue,
             Err(err) if err.code == "signup_closed" => return Err("signup_closed"),
             Err(_) => return Err("oauth_failed"),

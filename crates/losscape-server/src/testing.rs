@@ -83,13 +83,14 @@ impl TestServer {
             max_body_bytes: 32 * 1024 * 1024,
             web_dir: None,
             branding: Default::default(),
+            live_recheck: Duration::from_millis(200),
         };
         let (state, flusher) = AppState::start(&config).await.expect("server starts");
         // Before serving: a client may already be waiting on the listener.
         let api_key = match api_key {
             None => test_user(&state, "admin").await.1,
             Some(key) => {
-                let id = account::create_user(&state, "admin", None, None, None)
+                let id = account::create_user(&state, "admin", None, None, None, None)
                     .await
                     .expect("create user");
                 sqlx::query("INSERT INTO api_keys (user_id, name, prefix, key_hash) VALUES ($1, 'test', $2, $3)")
@@ -205,7 +206,7 @@ impl TestServer {
 
 /// Creates a user with an API key; returns (user id, key).
 pub async fn test_user(state: &AppState, username: &str) -> (i64, String) {
-    let id = account::create_user(state, username, None, None, None)
+    let id = account::create_user(state, username, None, None, None, None)
         .await
         .expect("create user");
     let (_, key) = account::issue_api_key(state, id, "test")

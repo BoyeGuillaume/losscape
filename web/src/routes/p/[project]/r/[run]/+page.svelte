@@ -54,6 +54,7 @@
 	import { toast } from 'svelte-sonner';
 	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
+	import { metricHref } from '#lib/metrics/href.js';
 	import {
 		chartSettingsParams,
 		param,
@@ -546,14 +547,13 @@
 				{#each headlines as { key, value } (key)}
 					<div class="min-w-0 rounded-xl border bg-card p-4">
 						<dt class="truncate text-sm text-muted-foreground" title={key}>
+							<!-- eslint-disable svelte/no-navigation-without-resolve -- metricHref resolves it -->
 							<a
 								class="hover:underline"
-								href={resolve('/p/[project]/(tabs)/metrics/[...name]', {
-									project,
-									name: key
-								})}
+								href={metricHref(project, key)}
 								onclick={rememberRun}
 							>
+								<!-- eslint-enable svelte/no-navigation-without-resolve -->
 								{currentRegistry().describe(key).label || key}
 							</a>
 						</dt>

@@ -91,6 +91,7 @@ pub async fn set_role(
     Path((project, username)): Path<(String, String)>,
     Json(body): Json<SetRole>,
 ) -> Result<StatusCode, UiError> {
+    user.require_session()?;
     let id = project_id(&state, &project).await?;
     require_role(&state, &user, id, Role::Owner, unknown_project).await?;
     let role = Role::parse(&body.role)
@@ -141,6 +142,7 @@ pub async fn remove(
     user: AuthUser,
     Path((project, username)): Path<(String, String)>,
 ) -> Result<StatusCode, UiError> {
+    user.require_session()?;
     let id = project_id(&state, &project).await?;
     let leaving = username.eq_ignore_ascii_case(&user.username);
     require_role(
@@ -206,6 +208,7 @@ pub async fn transfer(
     Path(project): Path<String>,
     Json(body): Json<Transfer>,
 ) -> Result<StatusCode, UiError> {
+    user.require_session()?;
     let id = project_id(&state, &project).await?;
     require_role(&state, &user, id, Role::Owner, unknown_project).await?;
     let then = match body.then.as_str() {

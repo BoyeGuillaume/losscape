@@ -1349,3 +1349,245 @@ async fn heartbeat_skips_runs_that_just_logged() {
     );
     server.stop().await;
 }
+
+fn console_line(line: u64, text: &str) -> ConsoleLine {
+    ConsoleLine {
+        line,
+        time_ms: 1,
+        stream: ConsoleStream::Stdout as i32,
+        text: text.into(),
+    }
+}
+
+#[tokio::test]
+async fn nul_in_a_batch_is_dropped_and_harms_nobody() {
+    let server = server!();
+    let run = RunId::new();
+    server.init(run, false).await;
+    let batch = LogBatch {
+        run_id: run.as_bytes().to_vec(),
+        seq: 0,
+        summary_json: r#"{"a\u0000b": "c\u0000d"}"#.into(),
+        config_json: r#"{"e": ["f\u0000"]}"#.into(),
+        scalars: Some(ScalarColumns {
+            keys: vec!["lo\0ss".into()],
+            key_idx: vec![0],
+            step: vec![0],
+            time_ms: vec![0],
+            value: vec![1.0],
+        }),
+        ..Default::default()
+    };
+    let (status, _) = server.send("/api/v0/ingest", batch, false).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = uuid::Uuid::from_bytes(*run.as_bytes());
+    let (summary, config): (serde_json::Value, serde_json::Value) =
+        sqlx::query_as("SELECT summary, config FROM runs WHERE id = $1")
+            .bind(id)
+            .fetch_one(server.state.pg())
+            .await
+            .unwrap();
+    assert_eq!(summary["ab"], "cd");
+    assert_eq!(config["e"][0], "f");
+    let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM project_metric_keys")
+        .fetch_all(server.state.pg())
+        .await
+        .unwrap();
+    assert_eq!(keys, ["loss"]);
+
+    let named = RunId::new();
+    let init = RunInit {
+        run_id: named.as_bytes().to_vec(),
+        project: "test".into(),
+        name: "na\0me".into(),
+        notes: "no\0tes".into(),
+        group: "gr\0oup".into(),
+        tags: vec!["t\0ag".into()],
+        config_json: "{}".into(),
+        ..Default::default()
+    };
+    let (status, _) = server.send("/api/v0/runs/init", init, false).await;
+    assert_eq!(status, StatusCode::OK);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn a_run_the_database_refuses_holds_up_only_itself() {
+    let server = server!();
+    let (poisoned, healthy) = (RunId::new(), RunId::new());
+    server.init(poisoned, false).await;
+    server.init(healthy, false).await;
+    let refuse = format!(
+        "CREATE FUNCTION refuse() RETURNS trigger AS $$ BEGIN
+           IF NEW.id = '{}' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW;
+         END $$ LANGUAGE plpgsql",
+        uuid::Uuid::from_bytes(*poisoned.as_bytes())
+    );
+    sqlx::query(&refuse)
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse BEFORE UPDATE ON runs FOR EACH ROW EXECUTE FUNCTION refuse()",
+    )
+    .execute(server.state.pg())
+    .await
+    .unwrap();
+    let batch = |run: RunId, seq: u64| LogBatch {
+        run_id: run.as_bytes().to_vec(),
+        seq,
+        ..Default::default()
+    };
+    // Sent together, to share a flush, repeatedly in case they didn't.
+    for seq in 0..5 {
+        let (bad, good) = tokio::join!(
+            server.send("/api/v0/ingest", batch(poisoned, seq), false),
+            server.send("/api/v0/ingest", batch(healthy, seq), false),
+        );
+        assert_eq!(bad.0, StatusCode::BAD_REQUEST);
+        assert_eq!(good.0, StatusCode::OK);
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn bodies_that_would_decode_to_too_much_are_refused() {
+    let server = server!();
+    // Well under 1 MB compressed. Decoded, these empty console lines would take gigabytes.
+    let bomb = [0x3au8, 0x00].repeat(32 * 1024 * 1024);
+    let compressed = zstd::encode_all(&bomb[..], 3).unwrap();
+    assert!(compressed.len() < 1024 * 1024);
+    let req = Request::post("/api/v0/ingest")
+        .header(header::AUTHORIZATION, server.bearer())
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(header::CONTENT_ENCODING, "zstd")
+        .header(PROTOCOL_HEADER, "0")
+        .body(Body::from(compressed))
+        .unwrap();
+    let (status, body) = server.call(req).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(error_of(&body).starts_with("payload_too_large"));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn series_requests_are_limited_and_streamed() {
+    let server = server!();
+    let run = RunId::new();
+    server.init(run, false).await;
+    let batch = LogBatch {
+        run_id: run.as_bytes().to_vec(),
+        seq: 0,
+        scalars: Some(ScalarColumns {
+            keys: vec!["m".into()],
+            key_idx: vec![0; 3],
+            step: vec![0, 1, 2],
+            time_ms: vec![0; 3],
+            value: vec![1.0, 2.0, 3.0],
+        }),
+        ..Default::default()
+    };
+    server.send("/api/v0/ingest", batch, false).await;
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    let series = |ranges: usize, to_tile: u64| {
+        let range = serde_json::json!({"run": id, "key": "m", "level": 0, "from_tile": 0, "to_tile": to_tile});
+        Request::post("/api/v0/series?format=json")
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "ranges": vec![range; ranges] }).to_string(),
+            ))
+            .unwrap()
+    };
+    let (status, body) = server.call(series(1, 1)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(String::from_utf8_lossy(&body).lines().count(), 3);
+    // Duplicates add up: each is as much work as the first.
+    assert_eq!(server.call(series(32, 64)).await.0, StatusCode::OK);
+    assert_eq!(server.call(series(33, 64)).await.0, StatusCode::BAD_REQUEST);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn the_log_download_ends_whatever_the_line_numbers() {
+    let server = server!();
+    let run = RunId::new();
+    server.init(run, false).await;
+    let batch = LogBatch {
+        run_id: run.as_bytes().to_vec(),
+        seq: 0,
+        console: vec![
+            console_line(0, "first"),
+            console_line(1 << 63, "far away"),
+            console_line(u64::MAX, "the very end"),
+        ],
+        ..Default::default()
+    };
+    let (status, _) = server.send("/api/v0/ingest", batch, false).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    let req = Request::get(format!("/api/v0/runs/{id}/logs.txt"))
+        .header(header::AUTHORIZATION, server.bearer())
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(10), server.call(req))
+        .await
+        .expect("finished");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        "first\nfar away\nthe very end\n"
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn live_streams_end_when_access_does() {
+    let server = server!();
+    let (_, viewer_key) = common::user(&server.state, "viewer").await;
+    let run = RunId::new();
+    server.init(run, false).await;
+    let project: i64 = sqlx::query_scalar("SELECT id FROM projects WHERE name = 'test'")
+        .fetch_one(server.state.pg())
+        .await
+        .unwrap();
+    let viewer: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username = 'viewer'")
+        .fetch_one(server.state.pg())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'viewer')",
+    )
+    .bind(project)
+    .bind(viewer)
+    .execute(server.state.pg())
+    .await
+    .unwrap();
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
+    let req = Request::get(format!("/api/v0/projects/test/live?runs={id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {viewer_key}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = server.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let mut body = res.into_body();
+
+    // Still a member after several checks: it stays open.
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(700), body.frame()).await;
+    assert!(quiet.is_err(), "the stream ended while still allowed");
+
+    sqlx::query("DELETE FROM project_members WHERE user_id = $1")
+        .bind(viewer)
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    server.state.auth_caches().forget_project(project);
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(frame) = body.frame().await {
+            frame.unwrap();
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the stream outlived the membership");
+    server.stop().await;
+}

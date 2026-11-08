@@ -91,9 +91,20 @@ def first_start(client: Client, state: Path) -> None:
 
     settings = client.json("GET", "/api/v0/auth/settings")
     check("the server is empty", settings["first_user"] is True, settings)
+    check("it asks for the setup token", settings["setup_token_required"] is True)
+    refused, _, _ = client.request(
+        "POST", "/api/v0/auth/register", {"username": "first-comer", "password": "a password"}
+    )
+    check("whoever comes first doesn't become administrator", refused == 403, refused)
     password = secrets.token_urlsafe(24)
     me = client.json(
-        "POST", "/api/v0/auth/register", {"username": "smoke-admin", "password": password}
+        "POST",
+        "/api/v0/auth/register",
+        {
+            "username": "smoke-admin",
+            "password": password,
+            "setup_token": os.environ.get("LOSSCAPE_SETUP_TOKEN"),
+        },
     )
     check("the first account is administrator", me["is_admin"] is True)
     client.json("POST", "/api/v0/projects", {"name": PROJECT})

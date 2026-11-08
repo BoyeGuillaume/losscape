@@ -26,6 +26,8 @@ pub struct AuthSettings {
     signup: bool,
     /// No account exists yet: the next one becomes admin.
     first_user: bool,
+    /// Creating that one takes the setup token from the server's log.
+    setup_token_required: bool,
     providers: Vec<Provider>,
 }
 
@@ -57,6 +59,7 @@ pub async fn settings(State(state): State<AppState>) -> Result<Json<AuthSettings
     Ok(Json(AuthSettings {
         signup: first_user || config.signup == Signup::Open,
         first_user,
+        setup_token_required: first_user && state.setup_token().is_some(),
         providers: config
             .oauth
             .iter()
@@ -80,6 +83,8 @@ pub struct Registration {
     username: String,
     password: String,
     display_name: Option<String>,
+    /// Needed for the first account.
+    setup_token: Option<String>,
 }
 
 /// User-entered display name: trimmed, `None` when empty, at most 64 characters, no
@@ -145,6 +150,7 @@ pub async fn create_user(
     password_hash: Option<&str>,
     display_name: Option<&str>,
     email: Option<&str>,
+    setup_token: Option<&str>,
 ) -> Result<i64, ApiError> {
     let mut tx = state.pg().begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext('losscape.create_user'))")
@@ -153,13 +159,7 @@ pub async fn create_user(
     let first: bool = !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
         .fetch_one(&mut *tx)
         .await?;
-    if !first && state.auth_config().signup == Signup::Closed {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "signup_closed",
-            "sign-up is closed on this server",
-        ));
-    }
+    check_may_sign_up(state, first, setup_token)?;
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO users (username, password_hash, display_name, email, is_admin)
          VALUES ($1, $2, $3, $4, $5)
@@ -196,20 +196,54 @@ pub async fn create_user(
     Ok(id)
 }
 
+fn check_may_sign_up(
+    state: &AppState,
+    first: bool,
+    setup_token: Option<&str>,
+) -> Result<(), ApiError> {
+    if first {
+        return state.check_setup_token(setup_token);
+    }
+    if state.auth_config().signup == Signup::Closed {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "signup_closed",
+            "sign-up is closed on this server",
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /api/v0/auth/register` (public).
 pub async fn register(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     jar: CookieJar,
     Json(body): Json<Registration>,
 ) -> Result<impl IntoResponse, UiError> {
     check_same_origin(&headers, state.auth_config())?;
+    state.auth_caches().login_limiter.registration(ip)?;
     let username = body.username.trim();
     validate_username(username)?;
     let display_name = validate_display_name(body.display_name.as_deref())?;
     validate_password(&body.password)?;
+    // Before the hash, which anyone can make the server compute. `create_user` decides.
+    let first = !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(state.pg())
+        .await
+        .map_err(ApiError::from)?;
+    check_may_sign_up(&state, first, body.setup_token.as_deref())?;
     let hash = secrets::hash_password(body.password).await?;
-    let id = create_user(&state, username, Some(&hash), display_name.as_deref(), None).await?;
+    let id = create_user(
+        &state,
+        username,
+        Some(&hash),
+        display_name.as_deref(),
+        None,
+        body.setup_token.as_deref(),
+    )
+    .await?;
     let cookie = start_session(&state, id, &headers).await?;
     Ok((
         StatusCode::CREATED,
@@ -228,12 +262,23 @@ pub async fn login(
     Json(body): Json<Credentials>,
 ) -> Result<impl IntoResponse, UiError> {
     check_same_origin(&headers, state.auth_config())?;
+    let wrong = || {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_credentials",
+            "wrong username or password",
+        )
+    };
     let limiter = &state.auth_caches().login_limiter;
     let username = body.username.trim();
-    limiter.check(username, ip)?;
+    // No account can have such a name: nothing to check, or to remember.
+    if validate_username(username).is_err() {
+        return Err(wrong().into());
+    }
     if body.password.len() > secrets::MAX_PASSWORD_LEN {
         return Err(ApiError::invalid("password: too long").into());
     }
+    limiter.attempt(username, ip)?;
     let row: Option<(i64, Option<String>)> = sqlx::query_as(
         "SELECT id, password_hash FROM users WHERE lower(username) = lower($1) AND disabled_at IS NULL",
     )
@@ -244,16 +289,13 @@ pub async fn login(
         Some((id, hash)) => (Some(id), hash),
         None => (None, None),
     };
-    if !secrets::verify_password(body.password, hash).await {
-        limiter.failed(username, ip);
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid_credentials",
-            "wrong username or password",
-        )
-        .into());
+    let verified = secrets::verify_password(body.password, hash)
+        .await
+        .inspect_err(|_| limiter.forgive(username, ip))?;
+    if !verified {
+        return Err(wrong().into());
     }
-    limiter.succeeded(username);
+    limiter.succeeded(username, ip);
     let id = id.expect("verified against a stored hash");
     let cookie = start_session(&state, id, &headers).await?;
     Ok((jar.add(cookie), Json(me_for(&state, id).await?)))
@@ -364,7 +406,7 @@ pub async fn change_password(
     if current_hash.is_some() {
         let current = body.current.unwrap_or_default();
         if current.len() > secrets::MAX_PASSWORD_LEN
-            || !secrets::verify_password(current, current_hash).await
+            || !secrets::verify_password(current, current_hash).await?
         {
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
@@ -391,7 +433,13 @@ pub async fn change_password(
         .bind(keep)
         .execute(&mut *tx)
         .await?;
+    // Changing a password is how people end a compromise: that has to include these.
+    sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
+    state.auth_caches().forget_api_keys();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -413,6 +461,7 @@ pub async fn list_api_keys(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<ApiKeyInfo>>, UiError> {
+    user.require_session()?;
     let sql = format!(
         "SELECT {API_KEY_COLUMNS} FROM api_keys WHERE user_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC"
     );
@@ -443,6 +492,8 @@ pub async fn create_api_key(
     user: AuthUser,
     Json(body): Json<NewKeyRequest>,
 ) -> Result<(StatusCode, Json<NewKeyResponse>), UiError> {
+    // One leaked key must not be able to outlive its revocation by making another.
+    user.require_session()?;
     let name = body.name.trim();
     if name.is_empty() || name.chars().count() > 100 {
         return Err(ApiError::invalid("name: 1-100 characters").into());
@@ -489,6 +540,7 @@ pub async fn revoke_api_key(
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, UiError> {
+    user.require_session()?;
     let revoked = sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL")
         .bind(id)
         .bind(user.id)

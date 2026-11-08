@@ -7,7 +7,6 @@
 	import Star from '@lucide/svelte/icons/star';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
 
 	import { apiJson } from '#lib/api/client.js';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -20,6 +19,8 @@
 	import type { Spec } from '#lib/metrics/registry.js';
 	import { projectMetrics, useProjectMetrics } from '#lib/metrics/store.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
+	import { groupBy } from '#lib/group.js';
+	import { metricHref } from '#lib/metrics/href.js';
 
 	let { project, canEdit }: { project: string; canEdit: boolean } = $props();
 
@@ -69,12 +70,10 @@
 	);
 	/** Metrics by the first part of their name (`val/acc` under "val"). */
 	const sections = $derived.by(() => {
-		const groups: Record<string, string[]> = {};
-		for (const name of shown) {
-			const section = name.includes('/') ? name.slice(0, name.indexOf('/')) : '';
-			(groups[section] ??= []).push(name);
-		}
-		return Object.entries(groups).sort(([a], [b]) =>
+		const groups = groupBy(shown, (name) =>
+			name.includes('/') ? name.slice(0, name.indexOf('/')) : ''
+		);
+		return groups.sort(([a], [b]) =>
 			a === ''
 				? -1
 				: b === ''
@@ -88,8 +87,7 @@
 	});
 	let collapsed = $state<Record<string, boolean>>({});
 
-	const href = (name: string) =>
-		resolve('/p/[project]/(tabs)/metrics/[...name]', { project, name });
+	const href = (name: string) => metricHref(project, name);
 
 	function toggle(name: string, field: 'important' | 'hidden') {
 		const on = registry.describe(name)[field];
@@ -142,6 +140,7 @@
 			for (let i = 2; names.includes(name); i++) name = `new-metric-${i}`;
 			projectMetrics.replace(null, { name, kind: 'formula', spec: { expression: '' } });
 		}
+		// eslint-disable-next-line svelte/no-navigation-without-resolve -- metricHref resolves it
 		void goto(href(name));
 	}
 </script>
@@ -205,7 +204,7 @@
 
 			<div class="overflow-hidden rounded-lg border" role="list" aria-label="Metrics">
 				{#each sections as [section, sectionNames] (section)}
-					{@const open = !collapsed[section] || !!query.trim()}
+					{@const open = !collapsed[`section:${section}`] || !!query.trim()}
 					{#if section}
 						<div
 							class="flex items-center gap-2 border-b bg-muted/40 px-3 py-2"
@@ -213,7 +212,7 @@
 						>
 							<button
 								class="rounded-sm text-muted-foreground hover:text-foreground"
-								onclick={() => (collapsed[section] = open)}
+								onclick={() => (collapsed[`section:${section}`] = open)}
 								aria-expanded={open}
 								aria-label={`${open ? 'Collapse' : 'Expand'} ${section}/`}
 							>
@@ -221,11 +220,13 @@
 									class={['size-4 transition-transform', open && 'rotate-90']}
 								/>
 							</button>
+							<!-- eslint-disable svelte/no-navigation-without-resolve -- metricHref resolves it -->
 							<a
 								class="font-mono text-sm font-medium hover:underline"
 								href={href(`${section}/*`)}
 								title={`Settings for every metric under ${section}/`}>{section}/</a
 							>
+							<!-- eslint-enable svelte/no-navigation-without-resolve -->
 							<span class="text-xs text-muted-foreground tabular-nums"
 								>{sectionNames.length}</span
 							>
@@ -259,10 +260,12 @@
 								>
 									<Star class={['size-4', meta.important && 'fill-current']} />
 								</button>
+								<!-- eslint-disable svelte/no-navigation-without-resolve -- metricHref resolves it -->
 								<a
 									class="flex min-w-0 items-baseline gap-1.5 font-mono text-sm after:absolute after:inset-0"
 									href={href(name)}
 								>
+									<!-- eslint-enable svelte/no-navigation-without-resolve -->
 									{#if isComputed(name)}<span
 											class="font-serif text-xs text-primary italic"
 											title="Computed">ƒ</span

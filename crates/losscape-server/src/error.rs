@@ -46,6 +46,15 @@ impl ApiError {
         )
     }
 
+    /// Too much going on right now: worth retrying soon.
+    pub fn busy() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "busy",
+            "the server is busy; try again shortly",
+        )
+    }
+
     pub fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,

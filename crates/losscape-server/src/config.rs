@@ -21,6 +21,8 @@ pub struct Config {
     /// Built web UI (`web/build`) to serve, if present.
     pub web_dir: Option<std::path::PathBuf>,
     pub branding: Branding,
+    /// How often live streams check that their viewer may still see the project.
+    pub live_recheck: Duration,
 }
 
 /// What this deployment calls itself, and how it looks.
@@ -152,8 +154,21 @@ pub struct AuthConfig {
     pub public_url: Option<String>,
     pub signup: Signup,
     pub oauth: Vec<OAuthProvider>,
+    /// What creating the first account takes.
+    pub setup_token: SetupToken,
     /// Reverse proxies whose `X-Forwarded-For` is believed, to tell clients apart.
     pub trusted_proxies: Vec<IpNet>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum SetupToken {
+    /// Made up at startup, and printed, while there are no accounts.
+    Generated,
+    /// Chosen in the settings: for automated deployments, and several servers.
+    Fixed(String),
+    /// For tests: the servers they start are their own.
+    #[default]
+    NotRequired,
 }
 
 /// An address or a network: `10.0.0.1`, `172.30.0.0/16`, `fd00::/8`.
@@ -263,6 +278,13 @@ impl AuthConfig {
                 ));
             }
         };
+        let setup_token = match settings
+            .get("LOSSCAPE_SETUP_TOKEN")
+            .map(|v| v.trim().to_owned())
+        {
+            Some(token) if !token.is_empty() => SetupToken::Fixed(token),
+            _ => SetupToken::Generated,
+        };
         let mut oauth = Vec::new();
         for id in settings
             .optional("LOSSCAPE_OAUTH", "")
@@ -330,6 +352,7 @@ impl AuthConfig {
         Ok(Self {
             public_url,
             signup,
+            setup_token,
             oauth,
             trusted_proxies,
         })
@@ -342,6 +365,7 @@ impl Default for AuthConfig {
             public_url: None,
             signup: Signup::Open,
             oauth: Vec::new(),
+            setup_token: SetupToken::default(),
             trusted_proxies: Vec::new(),
         }
     }
@@ -395,6 +419,7 @@ impl Config {
             web_dir: Some(s.optional("LOSSCAPE_WEB_DIR", "web/build").into())
                 .filter(|dir: &std::path::PathBuf| dir.join("index.html").exists()),
             branding: Branding::load(s)?,
+            live_recheck: Duration::from_secs(30),
         })
     }
 }
@@ -459,6 +484,7 @@ const TOML_KEYS: &[(&str, &str)] = &[
     ("listen", "LOSSCAPE_LISTEN"),
     ("public_url", "LOSSCAPE_PUBLIC_URL"),
     ("signup", "LOSSCAPE_SIGNUP"),
+    ("setup_token", "LOSSCAPE_SETUP_TOKEN"),
     ("trusted_proxies", "LOSSCAPE_TRUSTED_PROXIES"),
     ("web_dir", "LOSSCAPE_WEB_DIR"),
     ("app_name", "LOSSCAPE_APP_NAME"),

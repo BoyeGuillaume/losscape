@@ -31,6 +31,53 @@ pub struct Definition {
     spec: SqlJson<Value>,
 }
 
+/// Matching a pattern takes time that grows with the power of the number of wildcards, in
+/// every viewer's browser, on names anyone logging to the project can choose: keep to what the
+/// UI matches (web/src/lib/metrics/pattern.ts).
+const MAX_WILDCARDS: usize = 3;
+
+fn check_pattern(name: &str) -> Result<(), ApiError> {
+    let mut wildcards = 0;
+    let mut after_wildcard = false;
+    let mut rest = name;
+    while let Some(c) = rest.chars().next() {
+        let param = rest
+            .strip_prefix('{')
+            .and_then(|r| r.split_once('}'))
+            .filter(|(id, _)| {
+                id.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+        let next = match (c, param) {
+            (_, Some((_, after))) => Some(after),
+            ('*', _) => Some(&rest[1..]),
+            _ => None,
+        };
+        match next {
+            Some(after) => {
+                wildcards += 1;
+                if after_wildcard {
+                    return Err(ApiError::invalid(format!(
+                        "{name:?}: `*` and `{{name}}` need something between them"
+                    )));
+                }
+                after_wildcard = true;
+                rest = after;
+            }
+            None => {
+                after_wildcard = false;
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    if wildcards > MAX_WILDCARDS {
+        return Err(ApiError::invalid(format!(
+            "{name:?}: at most {MAX_WILDCARDS} of `*` and `{{name}}`"
+        )));
+    }
+    Ok(())
+}
+
 fn check_name(what: &str, name: &str) -> Result<(), ApiError> {
     if name.trim().is_empty() || name.len() > MAX_NAME || name.chars().any(char::is_control) {
         return Err(ApiError::invalid(format!(
@@ -96,6 +143,7 @@ pub async fn replace(
     let mut names = std::collections::HashSet::new();
     for d in &definitions {
         check_name("name", &d.name)?;
+        check_pattern(&d.name)?;
         if !names.insert(d.name.as_str()) {
             return Err(ApiError::invalid(format!("{:?} is defined twice", d.name)).into());
         }
@@ -302,4 +350,30 @@ pub async fn unrename(
         return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown_rename", "not renamed").into());
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_pattern;
+
+    #[test]
+    fn patterns_stay_cheap_to_match() {
+        // Shared with the tests of web/src/lib/metrics/pattern.ts.
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/metric-patterns.json")).unwrap();
+        let names = |list: &str| {
+            cases[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        for fine in names("accepted") {
+            assert!(check_pattern(&fine).is_ok(), "{fine}");
+        }
+        for slow in names("refused") {
+            assert!(check_pattern(&slow).is_err(), "{slow}");
+        }
+    }
 }

@@ -75,6 +75,17 @@ pub struct AuthUser {
     pub via: Via,
 }
 
+impl AuthUser {
+    /// For what controls an account or a project: what a leaked API key must not be able to
+    /// do. Training code doesn't need any of it.
+    pub fn require_session(&self) -> Result<(), ApiError> {
+        match self.via {
+            Via::Session => Ok(()),
+            Via::ApiKey => Err(forbidden("API keys can't do this: use the web interface")),
+        }
+    }
+}
+
 impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
     type Rejection = ApiError;
 
@@ -371,62 +382,113 @@ pub async fn require_run(
     Ok(project_id)
 }
 
-/// Slows down password guessing: a username, and an address, get a limited number of
-/// failed attempts per window.
+/// Slows down password guessing: limited attempts per window, counted when they start, so
+/// that sending them all at once gets no further. Per username and address together, so that
+/// guessing someone's password doesn't lock them out; and much higher per username alone,
+/// against guesses from many addresses.
 #[derive(Default)]
 pub struct LoginLimiter {
-    failures: Mutex<HashMap<String, (u32, Instant)>>,
+    attempts: Mutex<HashMap<String, (u32, Instant)>>,
 }
 
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
-const MAX_FAILURES_PER_USER: u32 = 10;
-const MAX_FAILURES_PER_IP: u32 = 50;
+const MAX_ATTEMPTS_PER_USER_AND_IP: u32 = 10;
+const MAX_ATTEMPTS_PER_USER: u32 = 200;
+const MAX_ATTEMPTS_PER_IP: u32 = 50;
+const MAX_REGISTRATIONS_PER_IP: u32 = 30;
+const MAX_ENTRIES: usize = 100_000;
+
+/// IPv6 addresses by network: one machine commonly has a whole /64 to choose from.
+pub fn address_key(ip: Option<IpAddr>) -> String {
+    match ip.map(|ip| ip.to_canonical()) {
+        Some(IpAddr::V6(ip)) => {
+            let bits = u128::from(ip) & (u128::MAX << 64);
+            std::net::Ipv6Addr::from(bits).to_string()
+        }
+        Some(ip) => ip.to_string(),
+        None => String::new(),
+    }
+}
+
+fn too_many_attempts() -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too_many_attempts",
+        "too many failed sign-ins; try again in a few minutes",
+    )
+}
 
 impl LoginLimiter {
-    fn keys(username: &str, ip: Option<IpAddr>) -> [(String, u32); 2] {
+    fn keys(username: &str, ip: Option<IpAddr>) -> [(String, u32); 3] {
+        let user = username.to_lowercase();
+        let address = address_key(ip);
         [
             (
-                format!("user:{}", username.to_lowercase()),
-                MAX_FAILURES_PER_USER,
+                format!("both:{address}:{user}"),
+                MAX_ATTEMPTS_PER_USER_AND_IP,
             ),
-            (
-                format!("ip:{}", ip.map(|ip| ip.to_string()).unwrap_or_default()),
-                MAX_FAILURES_PER_IP,
-            ),
+            (format!("user:{user}"), MAX_ATTEMPTS_PER_USER),
+            (format!("ip:{address}"), MAX_ATTEMPTS_PER_IP),
         ]
     }
 
-    pub fn check(&self, username: &str, ip: Option<IpAddr>) -> Result<(), ApiError> {
-        let failures = self.failures.lock().expect("not poisoned");
-        for (key, max) in Self::keys(username, ip) {
-            if let Some((count, since)) = failures.get(&key)
-                && since.elapsed() < LOGIN_WINDOW
-                && *count >= max
-            {
-                return Err(ApiError::new(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "too_many_attempts",
-                    "too many failed sign-ins; try again in a few minutes",
-                ));
+    /// Counts these, unless any of them is over its limit.
+    fn count(&self, keys: &[(String, u32)]) -> Result<(), ApiError> {
+        let mut attempts = self.attempts.lock().expect("not poisoned");
+        if attempts.len() >= MAX_ENTRIES {
+            attempts.retain(|_, (_, since)| since.elapsed() < LOGIN_WINDOW);
+            // Someone with that many addresses wins a fresh start, rather than a lockout
+            // of everyone.
+            if attempts.len() >= MAX_ENTRIES {
+                attempts.clear();
             }
+        }
+        let over = keys.iter().any(|(key, max)| {
+            attempts
+                .get(key)
+                .is_some_and(|(n, since)| since.elapsed() < LOGIN_WINDOW && n >= max)
+        });
+        if over {
+            return Err(too_many_attempts());
+        }
+        for (key, _) in keys {
+            let entry = attempts.entry(key.clone()).or_insert((0, Instant::now()));
+            if entry.1.elapsed() >= LOGIN_WINDOW {
+                *entry = (0, Instant::now());
+            }
+            entry.0 += 1;
         }
         Ok(())
     }
 
-    pub fn failed(&self, username: &str, ip: Option<IpAddr>) {
-        let mut failures = self.failures.lock().expect("not poisoned");
-        failures.retain(|_, (_, since)| since.elapsed() < LOGIN_WINDOW);
+    /// A sign-in is starting: to be followed by [`Self::succeeded`] if it turns out right.
+    pub fn attempt(&self, username: &str, ip: Option<IpAddr>) -> Result<(), ApiError> {
+        self.count(&Self::keys(username, ip))
+    }
+
+    /// Takes back an attempt that said nothing about the password, like a busy server.
+    pub fn forgive(&self, username: &str, ip: Option<IpAddr>) {
+        let mut attempts = self.attempts.lock().expect("not poisoned");
         for (key, _) in Self::keys(username, ip) {
-            let entry = failures.entry(key).or_insert((0, Instant::now()));
-            entry.0 += 1;
+            if let Some(entry) = attempts.get_mut(&key) {
+                entry.0 = entry.0.saturating_sub(1);
+            }
         }
     }
 
-    pub fn succeeded(&self, username: &str) {
-        self.failures
-            .lock()
-            .expect("not poisoned")
-            .remove(&format!("user:{}", username.to_lowercase()));
+    /// Whoever knows the password starts over, from there.
+    pub fn succeeded(&self, username: &str, ip: Option<IpAddr>) {
+        self.forgive(username, ip);
+        let [(both, _), ..] = Self::keys(username, ip);
+        self.attempts.lock().expect("not poisoned").remove(&both);
+    }
+
+    /// Accounts are expensive to refuse: see [`secrets::hash_password`].
+    pub fn registration(&self, ip: Option<IpAddr>) -> Result<(), ApiError> {
+        // Without an address to tell people apart, everyone would share this limit.
+        let Some(ip) = ip else { return Ok(()) };
+        let key = format!("register:{}", address_key(Some(ip)));
+        self.count(&[(key, MAX_REGISTRATIONS_PER_IP)])
     }
 }
 
@@ -548,15 +610,66 @@ mod tests {
     }
 
     #[test]
-    fn limiter_blocks_after_repeated_failures() {
+    fn login_limiter() {
+        let (attacker, victim) = (
+            Some("198.51.100.1".parse().unwrap()),
+            Some("198.51.100.2".parse().unwrap()),
+        );
         let limiter = LoginLimiter::default();
-        for _ in 0..MAX_FAILURES_PER_USER {
-            assert!(limiter.check("alice", None).is_ok());
-            limiter.failed("Alice", None);
+        for _ in 0..MAX_ATTEMPTS_PER_USER_AND_IP {
+            assert!(limiter.attempt("Alice", attacker).is_ok());
         }
-        assert!(limiter.check("alice", None).is_err(), "case-insensitive");
-        assert!(limiter.check("bob", None).is_ok());
-        limiter.succeeded("alice");
-        assert!(limiter.check("alice", None).is_ok());
+        assert!(
+            limiter.attempt("alice", attacker).is_err(),
+            "case-insensitive"
+        );
+        // Being refused isn't counted, or waiting would never help.
+        assert!(limiter.attempt("bob", attacker).is_ok());
+        // Someone guessing doesn't lock the owner out.
+        assert!(limiter.attempt("alice", victim).is_ok());
+        limiter.succeeded("alice", attacker);
+        assert!(limiter.attempt("alice", attacker).is_ok());
+    }
+
+    #[test]
+    fn login_limits_on_many_addresses_and_many_usernames() {
+        let limiter = LoginLimiter::default();
+        let many = |i: u32| Some(IpAddr::from([198, 51, (i >> 8) as u8, i as u8]));
+        for i in 0..MAX_ATTEMPTS_PER_USER {
+            assert!(limiter.attempt("alice", many(i)).is_ok());
+        }
+        assert!(limiter.attempt("alice", many(9999)).is_err());
+
+        let one = many(0);
+        let limiter = LoginLimiter::default();
+        for i in 0..MAX_ATTEMPTS_PER_IP {
+            assert!(limiter.attempt(&format!("user{i}"), one).is_ok());
+        }
+        assert!(limiter.attempt("someone-else", one).is_err());
+    }
+
+    #[test]
+    fn ipv6_addresses_count_by_network() {
+        let ip = |s: &str| Some(s.parse().unwrap());
+        assert_eq!(
+            address_key(ip("2001:db8:1:2::1")),
+            address_key(ip("2001:db8:1:2:ffff::9"))
+        );
+        assert_ne!(
+            address_key(ip("2001:db8:1:2::1")),
+            address_key(ip("2001:db8:1:3::1"))
+        );
+        assert_eq!(address_key(ip("::ffff:192.0.2.1")), "192.0.2.1");
+    }
+
+    #[test]
+    fn registrations_are_limited_per_address() {
+        let limiter = LoginLimiter::default();
+        let ip = Some("198.51.100.1".parse().unwrap());
+        for _ in 0..MAX_REGISTRATIONS_PER_IP {
+            assert!(limiter.registration(ip).is_ok());
+        }
+        assert!(limiter.registration(ip).is_err());
+        assert!(limiter.registration(None).is_ok());
     }
 }

@@ -29,6 +29,8 @@ services:
     # After the file: these describe the containers, whatever .env says for other uses.
     environment:
       LOSSCAPE_LISTEN: 0.0.0.0:8080
+      # For the first account; unset, the server makes one up and prints it.
+      LOSSCAPE_SETUP_TOKEN: ${LOSSCAPE_SETUP_TOKEN:-}
       LOSSCAPE_WEB_DIR: /app/web
       # By default the https profile's Caddy, below; docs/DEPLOYMENT.md for your own proxy.
       LOSSCAPE_TRUSTED_PROXIES: ${LOSSCAPE_TRUSTED_PROXIES:-172.30.42.10}

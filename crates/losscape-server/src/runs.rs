@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::auth::{self, AuthUser, Role, forbidden};
 use crate::error::ApiError;
 use crate::ingest::window::SeqWindow;
-use crate::ingest::{json_object_or_none, parse_run_id};
+use crate::ingest::{json_object_or_none, parse_run_id, strip_nul};
 use crate::live::LiveEvent;
 use crate::proto_body::Proto;
 use crate::state::AppState;
@@ -24,8 +24,9 @@ const MAX_TAG_LEN: usize = 128;
 pub async fn init(
     State(state): State<AppState>,
     user: AuthUser,
-    Proto(req): Proto<RunInit>,
+    Proto(mut req): Proto<RunInit>,
 ) -> Result<Proto<RunInitResponse>, ApiError> {
+    strip_nul_from_init(&mut req);
     let run_id = parse_run_id(&req.run_id)?;
     crate::projects::validate_name(&req.project)?;
     let name = match req.name.trim() {
@@ -273,6 +274,35 @@ async fn next_console_line(
         .bind(run_id.to_string())
         .fetch_one::<u64>()
         .await?)
+}
+
+/// See [`strip_nul`]: JSON is handled by `json_object_or_none`, the rest here.
+fn strip_nul_from_init(req: &mut RunInit) {
+    let env = req.environment.as_mut();
+    let env_fields = env.into_iter().flat_map(|e| {
+        [
+            &mut e.hostname,
+            &mut e.command,
+            &mut e.python_version,
+            &mut e.sdk_version,
+            &mut e.git_remote,
+            &mut e.git_commit,
+            &mut e.git_diff,
+        ]
+    });
+    env_fields
+        .chain([
+            &mut req.project,
+            &mut req.name,
+            &mut req.group,
+            &mut req.notes,
+        ])
+        .chain(&mut req.tags)
+        .for_each(|field| {
+            if field.contains('\0') {
+                *field = strip_nul(field).into_owned();
+            }
+        });
 }
 
 pub(crate) fn validate_tags(tags: &[String]) -> Result<(), ApiError> {

@@ -4,12 +4,14 @@
 //! userspace PRNG.
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::error::ApiError;
 
@@ -56,8 +58,21 @@ fn argon2() -> Argon2<'static> {
     Argon2::default()
 }
 
+/// Argon2 takes 19 MiB and a CPU for each hash, on purpose. A few at a time, so that a flood
+/// of sign-ins, which anyone can send, slows down sign-ins only.
+static HASHING: Semaphore = Semaphore::const_new(8);
+const HASHING_WAIT: Duration = Duration::from_secs(10);
+
+async fn hashing_slot() -> Result<SemaphorePermit<'static>, ApiError> {
+    tokio::time::timeout(HASHING_WAIT, HASHING.acquire())
+        .await
+        .map_err(|_| ApiError::busy())
+        .map(|slot| slot.expect("never closed"))
+}
+
 /// Hashes on a blocking thread: Argon2 is deliberately slow and memory-hard.
 pub async fn hash_password(password: String) -> Result<String, ApiError> {
+    let _slot = hashing_slot().await?;
     tokio::task::spawn_blocking(move || {
         argon2()
             .hash_password(password.as_bytes())
@@ -73,14 +88,15 @@ pub async fn hash_password(password: String) -> Result<String, ApiError> {
 
 /// Verifies against `hash`, or against a fixed dummy hash when the user doesn't exist,
 /// so a login takes the same time whether or not the username is known.
-pub async fn verify_password(password: String, hash: Option<String>) -> bool {
+pub async fn verify_password(password: String, hash: Option<String>) -> Result<bool, ApiError> {
+    let _slot = hashing_slot().await?;
     static DUMMY: LazyLock<String> = LazyLock::new(|| {
         argon2()
             .hash_password(b"losscape-dummy-password")
             .expect("hashing a constant")
             .to_string()
     });
-    tokio::task::spawn_blocking(move || {
+    Ok(tokio::task::spawn_blocking(move || {
         let known = hash.is_some();
         let hash = hash.unwrap_or_else(|| DUMMY.clone());
         let matches = argon2()
@@ -89,7 +105,7 @@ pub async fn verify_password(password: String, hash: Option<String>) -> bool {
         known && matches
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or(false))
 }
 
 /// PKCE (RFC 7636) S256 challenge for a verifier.
@@ -127,9 +143,13 @@ mod tests {
         let b = hash_password("correct horse battery".into()).await.unwrap();
         assert!(a.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"), "{a}");
         assert_ne!(a, b, "fresh salt per hash");
-        assert!(verify_password("correct horse battery".into(), Some(a.clone())).await);
-        assert!(!verify_password("wrong".into(), Some(a)).await);
-        assert!(!verify_password("anything".into(), None).await);
+        assert!(
+            verify_password("correct horse battery".into(), Some(a.clone()))
+                .await
+                .unwrap()
+        );
+        assert!(!verify_password("wrong".into(), Some(a)).await.unwrap());
+        assert!(!verify_password("anything".into(), None).await.unwrap());
     }
 
     #[test]

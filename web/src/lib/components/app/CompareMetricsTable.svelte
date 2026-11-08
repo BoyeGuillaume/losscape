@@ -4,6 +4,8 @@
 	import type { RunSummary } from '#lib/api/types.js';
 	import { formatMetric } from '#lib/metric-units.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
+	import { metricHref as metricHrefIn } from '#lib/metrics/href.js';
+	import { own } from '#lib/group.js';
 
 	let {
 		project,
@@ -22,7 +24,7 @@
 
 	const registry = $derived(currentRegistry());
 	const value = (run: RunSummary, key: string) => {
-		const v = run.summary[key];
+		const v = own(run.summary, key);
 		return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 	};
 	/** The best value of each metric with a direction. */
@@ -56,8 +58,7 @@
 	}
 	const runHref = (r: RunSummary) =>
 		resolve('/p/[project]/r/[run]', { project, run: r.id.replaceAll('-', '') });
-	const metricHref = (key: string) =>
-		resolve('/p/[project]/(tabs)/metrics/[...name]', { project, name: key });
+	const metricHref = (key: string) => metricHrefIn(project, key);
 </script>
 
 <div class="overflow-x-auto rounded-lg border">
@@ -68,11 +69,13 @@
 				{#each metrics as key (key)}
 					{@const meta = registry.describe(key)}
 					<th class="px-3 py-2 text-right font-medium whitespace-nowrap">
+						<!-- eslint-disable svelte/no-navigation-without-resolve -- metricHref resolves it -->
 						<a
 							class="hover:text-foreground hover:underline"
 							href={metricHref(key)}
 							title={key}>{meta.label ?? key}</a
 						>
+						<!-- eslint-enable svelte/no-navigation-without-resolve -->
 						{#if meta.direction}<span
 								title={meta.direction === 'max'
 									? 'Higher is better'

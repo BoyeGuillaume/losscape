@@ -30,7 +30,13 @@ To build it from source instead, which takes a few minutes, skip the `.env` line
 
 **2. Set it up** at <http://localhost:8080>:
 
-1. Create an account. The first one becomes administrator.
+1. Create an account. The first one becomes administrator, and needs the setup token the server
+   printed when it started, so that nobody else can claim your server by getting there first:
+
+   ```sh
+   docker compose logs losscape | grep -A2 "setup token"
+   ```
+
 2. Create a project with **New project**. The SDK can't create projects.
 3. Create an API key under **Settings**, and copy it: it's only shown once.
 
@@ -139,7 +145,8 @@ Then, on the training machine:
 export LOSSCAPE_SERVER=https://losscape.example.com
 ```
 
-Read [Before opening it to others](docs/DEPLOYMENT.md#before-opening-it-to-others) first. Plain HTTP
+Read [Before opening it to others](docs/DEPLOYMENT.md#before-opening-it-to-others) first, and
+create your account right after starting it. Plain HTTP
 across a network would send passwords and API keys in the clear.
 
 ### When the server can't be reached
@@ -184,7 +191,7 @@ docker compose down                      # stop, and keep the data
 ```
 
 To update, run `git pull` and `docker compose pull losscape`, then start it again. For real use, pin a
-version such as `madproton/losscape:0.1.1` in `.env` rather than `latest`, so that you choose when it
+version such as `madproton/losscape:0.1.2` in `.env` rather than `latest`, so that you choose when it
 changes. If you build from source, use `--build` in place of `--no-build`, with `LOSSCAPE_IMAGE` unset.
 
 This runs the server and web interface, Postgres (accounts, projects, runs) and ClickHouse (metrics and
@@ -204,8 +211,8 @@ make dev-server   # API on http://localhost:8080
 make dev-web      # UI on http://localhost:5173 (or build it: the server serves web/build)
 ```
 
-Open the UI and create the first account: it becomes administrator and owns any existing
-projects. Create an API key under Settings and export it for the SDK, benchmarks and the crash
+Open the UI and create the first account, with the setup token `make dev-server` printed: it
+becomes administrator and owns any existing projects. Create an API key under Settings and export it for the SDK, benchmarks and the crash
 test (`LOSSCAPE_API_KEY=df_...`).
 
 ```sh
@@ -238,7 +245,9 @@ compose.yaml            the whole thing, in Docker
   forms show an estimate and advice, in the browser.
 - Browser sessions: random 256-bit token in an `HttpOnly`, `SameSite=Lax` cookie (`Secure` over
   HTTPS); stored as SHA-256. Cross-site state-changing requests are refused.
-- API keys (`df_...`): per user, shown once, stored as SHA-256, revocable.
+- API keys (`df_...`): per user, shown once, stored as SHA-256, revocable, and revoked when the
+  password changes. They log runs and read data; managing keys, members and projects takes a
+  signed-in session, so that a leaked key can't keep itself alive or delete anything.
 - Projects: created in the UI (New project), never by the SDK; the creator is owner. One owner
   per project (manages members and settings; ownership moves only by transfer), editors (log
   runs), viewers (read). Non-members get 404.

@@ -1,4 +1,5 @@
-# Local development databases. The losscape server and web app run on the host:
+# Local development databases, reachable from this machine only, with passwords that are no
+# secret. The losscape server and web app run on the host:
 #   make dev-db      # this file
 #   make dev-server  # Rust API on :8080
 #   make dev-web     # Vite on :5173, proxies /api to :8080
@@ -12,7 +13,7 @@ services:
       POSTGRES_PASSWORD: losscape
       POSTGRES_DB: losscape
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       # Postgres 18+ images keep data under /var/lib/postgresql/<major>/.
       - postgres:/var/lib/postgresql
@@ -30,8 +31,8 @@ services:
       CLICKHOUSE_DB: losscape
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ports:
-      - "8123:8123" # HTTP interface (used by the server)
-      - "9000:9000" # native protocol (clickhouse client)
+      - "127.0.0.1:8123:8123" # HTTP interface (used by the server)
+      - "127.0.0.1:9000:9000" # native protocol (clickhouse client)
     ulimits:
       nofile:
         soft: 262144

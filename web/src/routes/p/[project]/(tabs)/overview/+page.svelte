@@ -75,6 +75,7 @@
 	import { RunList } from '#lib/runs/list.svelte.js';
 	import { selectionOf } from '#lib/runs/selection.svelte.js';
 	import { SaveQueue, typingInField, type SaveStatus } from '#lib/save-queue.js';
+	import { metricHref as metricHrefIn } from '#lib/metrics/href.js';
 
 	/** Rows before the leaderboard scrolls. */
 	const MAX_ROWS = 15;
@@ -87,8 +88,7 @@
 	const projectPath = $derived(`/projects/${encodeURIComponent(project)}`);
 	const compareHref = $derived(resolve('/p/[project]/(tabs)/compare', { project }));
 	const metricsHref = $derived(resolve('/p/[project]/(tabs)/metrics', { project }));
-	const metricHref = (name: string) =>
-		resolve('/p/[project]/(tabs)/metrics/[...name]', { project, name });
+	const metricHref = (name: string) => metricHrefIn(project, name);
 	const runHref = (run: string) =>
 		resolve('/p/[project]/r/[run]', { project, run: shortId(run) });
 
@@ -454,7 +454,9 @@
 {#snippet figure(h: NonNullable<ReturnType<typeof headlineFor>>)}
 	<div class="min-w-0 rounded-xl border bg-card p-4">
 		<dt class="truncate text-sm text-muted-foreground" title={h.key}>
+			<!-- eslint-disable svelte/no-navigation-without-resolve -- metricHref resolves it -->
 			<a class="hover:underline" href={metricHref(h.key)}>{describe(h.key).label || h.key}</a>
+			<!-- eslint-enable svelte/no-navigation-without-resolve -->
 		</dt>
 		<dd class="mt-1 truncate text-2xl font-semibold">{formatMetric(h.key, h.value)}</dd>
 		<dd class="mt-1 truncate text-xs text-muted-foreground">

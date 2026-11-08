@@ -26,6 +26,8 @@
 		oauth_denied: 'Sign-in was cancelled at the provider.',
 		oauth_state: 'That sign-in link expired or was opened in another browser. Try again.',
 		oauth_failed: 'The sign-in provider could not confirm who you are. Try again.',
+		setup_token_required:
+			'Create the first account with a username, a password and the setup token. External sign-in works after that.',
 		signup_closed:
 			'No account is linked to that sign-in, and sign-up is closed on this server.',
 		identity_in_use: 'That external account is already linked to another user.',
@@ -46,6 +48,7 @@
 	let username = $state('');
 	let password = $state('');
 	let confirm = $state('');
+	let setupToken = $state('');
 	let busy = $state(false);
 	let error = $state<string | null>(
 		OAUTH_ERRORS[page.url.searchParams.get('error') ?? ''] ?? null
@@ -70,7 +73,8 @@
 				? await apiSend<Me>('POST', '/auth/register', {
 						username: username.trim(),
 						password,
-						display_name: displayName.trim() || null
+						display_name: displayName.trim() || null,
+						setup_token: setupToken.trim() || null
 					})
 				: await apiSend<Me>('POST', '/auth/login', { username: username.trim(), password });
 		} catch (err) {
@@ -78,7 +82,9 @@
 				err instanceof ApiError
 					? err.code === 'invalid_credentials'
 						? 'Wrong username or password.'
-						: err.message
+						: err.code === 'setup_token_required'
+							? "That isn't the setup token. The server prints it when it starts."
+							: err.message
 					: 'Something went wrong. Try again.';
 		} finally {
 			busy = false;
@@ -228,8 +234,29 @@
 				{#if settings?.signup === false}
 					<p class="text-sm text-muted-foreground">Sign-up is closed on this server.</p>
 				{:else}
-					{@render providers('Sign up')}
+					{#if !settings?.setup_token_required}
+						{@render providers('Sign up')}
+					{/if}
 					<form class="grid gap-3" onsubmit={submit}>
+						{#if settings?.setup_token_required}
+							<div class="grid gap-1.5">
+								<Label for="setup-token">Setup token</Label>
+								<Input
+									id="setup-token"
+									autocomplete="off"
+									spellcheck={false}
+									class="font-mono"
+									required
+									bind:value={setupToken}
+								/>
+								<p class="text-xs text-muted-foreground">
+									It shows that this is your server. The server printed it when it
+									started: <code class="font-mono"
+										>docker compose logs losscape</code
+									>.
+								</p>
+							</div>
+						{/if}
 						<div class="grid gap-1.5">
 							<Label for="display-name">Display name</Label>
 							<Input

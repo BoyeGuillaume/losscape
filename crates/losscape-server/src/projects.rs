@@ -314,6 +314,7 @@ pub async fn update_project(
     Path(project): Path<String>,
     Json(body): Json<ProjectUpdate>,
 ) -> Result<StatusCode, UiError> {
+    user.require_session()?;
     let project_id = members::project_id(&state, &project).await?;
     auth::require_role(&state, &user, project_id, Role::Owner, unknown_project).await?;
     if let Some(days) = body.archive_days {
@@ -339,6 +340,7 @@ pub async fn delete_project(
     user: AuthUser,
     Path(project): Path<String>,
 ) -> Result<StatusCode, UiError> {
+    user.require_session()?;
     let project_id = members::project_id(&state, &project).await?;
     auth::require_role(&state, &user, project_id, Role::Owner, unknown_project).await?;
     let mut tx = state.pg().begin().await?;

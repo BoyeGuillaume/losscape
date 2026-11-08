@@ -9,6 +9,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import ErrorCard from './ErrorCard.svelte';
 	import KeyValueList from './KeyValueList.svelte';
+	import { own } from '#lib/group.js';
 
 	/** Lines of the diff shown in the page; the whole file opens as text. */
 	const MAX_DIFF_LINES = 5_000;
@@ -24,7 +25,7 @@
 		const counts: Record<string, number> = {};
 		for (const d of devices) {
 			const name = join(d.name, d.memory_gb ? `(${d.memory_gb} GB)` : null) ?? 'GPU';
-			counts[name] = (counts[name] ?? 0) + 1;
+			counts[name] = (own(counts, name) ?? 0) + 1;
 		}
 		return Object.entries(counts)
 			.map(([name, n]) => (n > 1 ? `${n} × ${name}` : name))

@@ -123,6 +123,8 @@ jobs:
   # The real thing: the image, compose.yaml, a run through the SDK, a restart.
   deploy:
     runs-on: ubuntu-latest
+    env:
+      LOSSCAPE_SETUP_TOKEN: ci-setup-token
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

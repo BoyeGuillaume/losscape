@@ -17,6 +17,7 @@ import {
 } from '#lib/units.js';
 import { FormulaError, parseFormula, references, type Formula } from './formula.js';
 import { compile, isPattern, match } from './pattern.js';
+import { own } from '#lib/group.js';
 
 export type Direction = 'max' | 'min';
 export type UnitPreset =
@@ -306,7 +307,7 @@ export class RunMetrics {
 		{ renames = {}, rename_scales = {} }: Renames
 	) {
 		for (const raw of rawKeys) {
-			this.shown.set(renames[raw] ?? raw, { raw, scale: rename_scales[raw] ?? 1 });
+			this.shown.set(own(renames, raw) ?? raw, { raw, scale: own(rename_scales, raw) ?? 1 });
 		}
 	}
 
