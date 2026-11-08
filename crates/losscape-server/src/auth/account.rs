@@ -17,7 +17,6 @@ use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
 
-const MIN_PASSWORD_LEN: usize = 10;
 const MAX_API_KEYS: i64 = 100;
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
 
@@ -125,18 +124,14 @@ pub fn validate_username(username: &str) -> Result<(), ApiError> {
     }
 }
 
-fn validate_password(password: &str, username: &str) -> Result<(), ApiError> {
-    let chars = password.chars().count();
-    if chars < MIN_PASSWORD_LEN {
-        return Err(ApiError::invalid(format!(
-            "password: at least {MIN_PASSWORD_LEN} characters"
-        )));
+/// How strong a password is, is up to its owner: the UI rates it and gives advice. This only
+/// keeps out what can't work: an empty one, and one so long that hashing it is an attack.
+fn validate_password(password: &str) -> Result<(), ApiError> {
+    if password.is_empty() {
+        return Err(ApiError::invalid("password: can't be empty"));
     }
     if password.len() > secrets::MAX_PASSWORD_LEN {
         return Err(ApiError::invalid("password: too long"));
-    }
-    if password.eq_ignore_ascii_case(username) {
-        return Err(ApiError::invalid("password: must differ from the username"));
     }
     Ok(())
 }
@@ -212,7 +207,7 @@ pub async fn register(
     let username = body.username.trim();
     validate_username(username)?;
     let display_name = validate_display_name(body.display_name.as_deref())?;
-    validate_password(&body.password, username)?;
+    validate_password(&body.password)?;
     let hash = secrets::hash_password(body.password).await?;
     let id = create_user(&state, username, Some(&hash), display_name.as_deref(), None).await?;
     let cookie = start_session(&state, id, &headers).await?;
@@ -379,7 +374,7 @@ pub async fn change_password(
             .into());
         }
     }
-    validate_password(&body.new, &user.username)?;
+    validate_password(&body.new)?;
     let hash = secrets::hash_password(body.new).await?;
     let keep = jar
         .get(SESSION_COOKIE)
@@ -531,9 +526,10 @@ mod tests {
 
     #[test]
     fn passwords() {
-        assert!(validate_password("short", "alice").is_err());
-        assert!(validate_password("alice12345", "ALICE12345").is_err());
-        assert!(validate_password("correct horse", "alice").is_ok());
-        assert!(validate_password(&"x".repeat(2000), "alice").is_err());
+        assert!(validate_password("").is_err());
+        assert!(validate_password("x").is_ok());
+        assert!(validate_password("correct horse").is_ok());
+        assert!(validate_password(&"x".repeat(secrets::MAX_PASSWORD_LEN)).is_ok());
+        assert!(validate_password(&"x".repeat(secrets::MAX_PASSWORD_LEN + 1)).is_err());
     }
 }

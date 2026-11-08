@@ -22,6 +22,7 @@
 	import { timeAgo } from '#lib/format.js';
 	import { poll } from '#lib/poll.svelte.js';
 	import AvatarCropDialog from '#lib/components/app/AvatarCropDialog.svelte';
+	import PasswordStrength from '#lib/components/app/PasswordStrength.svelte';
 	import CodeBlock from '#lib/components/app/CodeBlock.svelte';
 	import UserAvatar from '#lib/components/app/UserAvatar.svelte';
 	import { notifyError, withToast } from '#lib/notify.js';
@@ -344,7 +345,7 @@
 					>{auth.user?.has_password ? 'Change password' : 'Set a password'}</Card.Title
 				>
 				<Card.Description>
-					At least 10 characters. Other browsers you are signed in on are signed out.
+					Other browsers you are signed in on are signed out.
 				</Card.Description>
 			</Card.Header>
 			<Card.Content>
@@ -367,9 +368,12 @@
 							id="new"
 							type="password"
 							autocomplete="new-password"
-							minlength={10}
 							required
 							bind:value={next}
+						/>
+						<PasswordStrength
+							password={next}
+							personal={[auth.user?.username ?? '', auth.user?.display_name ?? '']}
 						/>
 					</div>
 					<div class="grid gap-1.5">

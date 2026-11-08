@@ -16,6 +16,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
 	import Logo from './Logo.svelte';
+	import PasswordStrength from './PasswordStrength.svelte';
 	import ProviderIcon from './ProviderIcon.svelte';
 
 	/** Messages for the fixed error codes the OAuth callback redirects with. */
@@ -254,7 +255,6 @@
 									id="password"
 									type="password"
 									autocomplete="new-password"
-									minlength={10}
 									required
 									bind:value={password}
 								/>
@@ -270,7 +270,7 @@
 								/>
 							</div>
 						</div>
-						<p class="-mt-1 text-xs text-muted-foreground">At least 10 characters.</p>
+						<PasswordStrength {password} personal={[username, displayName]} />
 						<Button
 							type="submit"
 							disabled={busy || !username.trim() || !password || !confirm}

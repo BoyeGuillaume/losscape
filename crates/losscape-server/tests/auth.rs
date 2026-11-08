@@ -295,13 +295,17 @@ async fn register_login_logout() {
         register(&server, "ALICE", "another password").await.code(),
         "username_taken"
     );
+    // How strong a password is, is up to its owner; only an empty one can't work.
     assert_eq!(
-        register(&server, "bob", "short").await.status,
+        register(&server, "bob", "").await.status,
         StatusCode::BAD_REQUEST
     );
-    assert_eq!(
-        register(&server, "bob", "bob").await.status,
-        StatusCode::BAD_REQUEST
+    assert!(register(&server, "bob", "x").await.status.is_success());
+    assert!(
+        register(&server, "carol", "carol")
+            .await
+            .status
+            .is_success()
     );
 
     // Wrong password and unknown user look the same.
