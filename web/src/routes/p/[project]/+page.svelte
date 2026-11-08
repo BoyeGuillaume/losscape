@@ -4,6 +4,7 @@
 	import ChartLine from '@lucide/svelte/icons/chart-line';
 	import CircleQuestionMark from '@lucide/svelte/icons/circle-question-mark';
 	import Columns3 from '@lucide/svelte/icons/columns-3';
+	import FlaskConical from '@lucide/svelte/icons/flask-conical';
 	import Group from '@lucide/svelte/icons/group';
 	import Settings from '@lucide/svelte/icons/settings';
 	import X from '@lucide/svelte/icons/x';
@@ -15,12 +16,12 @@
 	import { apiJson, apiSend } from '#lib/api/client.js';
 	import type { ProjectInfo, RunSummary } from '#lib/api/types.js';
 	import type { ChartSeries, ChartSettings } from '#lib/charts/settings.js';
+	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
 	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
 	import FilterInput from '#lib/components/app/FilterInput.svelte';
 	import RunsTable from '#lib/components/app/RunsTable.svelte';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
-	import * as Card from '#lib/components/ui/card/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as Select from '#lib/components/ui/select/index.js';
@@ -312,26 +313,22 @@
 	{:else if !runs.data}
 		<Skeleton class="h-64 rounded-xl" />
 	{:else if all.length === 0 && archived}
-		<p class="text-sm text-muted-foreground">
-			No archived runs. Archived runs are kept {info.data?.archive_days ?? 30} days, then deleted
-			for good (change it in
-			<a class="underline" href={resolve('/p/[project]/settings', { project })}>Settings</a>).
-		</p>
+		<EmptyCard icon={Archive} title="No archived runs">
+			{#snippet description()}
+				Archived runs are hidden from the project and kept {info.data?.archive_days ?? 30} days,
+				then deleted for good (change it in
+				<a class="underline" href={resolve('/p/[project]/settings', { project })}
+					>Settings</a
+				>). Archive runs by ticking them in the table.
+			{/snippet}
+		</EmptyCard>
 	{:else if all.length === 0}
-		<Card.Root class="max-w-2xl">
-			<Card.Header>
-				<Card.Title>No runs yet</Card.Title>
-				<Card.Description>
-					Log one with the Python SDK and an API key from <a
-						class="underline"
-						href={resolve('/settings')}>Settings</a
-					>:
-				</Card.Description>
-			</Card.Header>
-			<Card.Content>
-				<SdkQuickstart {project} />
-			</Card.Content>
-		</Card.Root>
+		<EmptyCard icon={FlaskConical} title="No runs yet">
+			{#snippet description()}
+				Runs are logged from your code with the Python SDK. Three steps to the first one:
+			{/snippet}
+			<SdkQuickstart {project} />
+		</EmptyCard>
 	{:else}
 		<div class="mb-2 flex flex-wrap items-center gap-2">
 			<FilterInput

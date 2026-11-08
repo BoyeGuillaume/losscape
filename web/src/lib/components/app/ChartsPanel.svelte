@@ -1,9 +1,10 @@
 <script lang="ts">
+	import ChartLine from '@lucide/svelte/icons/chart-line';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Search from '@lucide/svelte/icons/search';
 	import { ChartGroup } from 'layerchart';
-	import { untrack } from 'svelte';
+	import { untrack, type Component } from 'svelte';
 
 	import { apiJson } from '#lib/api/client.js';
 	import { subscribeLive } from '#lib/api/live.js';
@@ -23,6 +24,8 @@
 	import { MetricSource } from '#lib/charts/source.js';
 	import { match } from '#lib/metrics/pattern.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
+	import CodeBlock from './CodeBlock.svelte';
+	import EmptyCard from './EmptyCard.svelte';
 	import FamilyChart from './FamilyChart.svelte';
 	import MetricChart from './MetricChart.svelte';
 
@@ -40,7 +43,7 @@
 		overrides = $bindable({}),
 		onRunState,
 		prefix,
-		empty = 'No metrics logged yet.',
+		empty,
 		renames,
 		summaryOf,
 		onRename
@@ -61,8 +64,8 @@
 		/** Only metrics under this prefix (e.g. `system/`), sectioned by what follows it.
 		 * Without it, system metrics are left out. */
 		prefix?: string;
-		/** Shown when the runs have no metrics. */
-		empty?: string;
+		/** Shown when the runs have no metrics (default: how to log some); code in backticks. */
+		empty?: { icon: Component; title: string; text: string };
 		/** A run's renamed metrics (logged name -> shown name). */
 		renames?: (run: string) => Record<string, string>;
 		/** A run's summary as shown, for family charts (none without it). */
@@ -81,6 +84,18 @@
 	// don't flash when a run is added.
 	let stored = $state<Map<string, Extent>>(new Map());
 	let loaded = $state(false);
+
+	const logExample = $derived(
+		[
+			'import losscape',
+			'',
+			`run = losscape.init(project=${JSON.stringify(project)})`,
+			'for step in range(100):',
+			'    loss = 1 / (step + 1)',
+			'    run.log({"train/loss": loss}, step=step)',
+			'run.finish()'
+		].join('\n')
+	);
 	let generation = 0;
 	async function loadMetrics() {
 		const gen = ++generation;
@@ -232,158 +247,186 @@
 	}
 </script>
 
-<div class="mb-4 flex flex-wrap items-center gap-2">
-	<div class="relative w-full sm:w-64">
-		<Search class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-		<Input
-			class="pl-8"
-			placeholder="Metrics (regex)"
-			aria-label="Filter metrics"
-			bind:value={metricFilter}
-		/>
-	</div>
-	<Select.Root type="single" value={settings.x} onValueChange={setX}>
-		<Select.Trigger size="sm" class="w-44" aria-label="X axis">
-			<span class="truncate"
-				><span class="text-muted-foreground">X</span> {xLabel(settings.x)}</span
+{#if series.length === 0}
+	<EmptyCard icon={ChartLine} title="No runs charted">
+		{#snippet description()}
+			Pick the runs to chart with the dots next to their names in the table above.
+		{/snippet}
+	</EmptyCard>
+{:else if loaded && keys.length === 0 && empty}
+	<EmptyCard icon={empty.icon} title={empty.title}>
+		{#snippet description()}
+			{#each empty.text.split('`') as part, i (i)}{#if i % 2}<code class="font-mono text-xs"
+						>{part}</code
+					>{:else}{part}{/if}{/each}
+		{/snippet}
+	</EmptyCard>
+{:else if loaded && keys.length === 0}
+	<EmptyCard icon={ChartLine} title="No metrics yet">
+		{#snippet description()}
+			Metrics logged with <code class="font-mono text-xs">run.log()</code> show here as
+			charts, grouped by their prefix (<code class="font-mono text-xs">train/</code>,
+			<code class="font-mono text-xs">val/</code>).
+		{/snippet}
+		<CodeBlock lang="python" title="train.py" code={logExample} />
+	</EmptyCard>
+{:else}
+	<div class="mb-4 flex flex-wrap items-center gap-2">
+		<div class="relative w-full sm:w-64">
+			<Search
+				class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+			/>
+			<Input
+				class="pl-8"
+				placeholder="Metrics (regex)"
+				aria-label="Filter metrics"
+				bind:value={metricFilter}
+			/>
+		</div>
+		<Select.Root type="single" value={settings.x} onValueChange={setX}>
+			<Select.Trigger size="sm" class="w-44" aria-label="X axis">
+				<span class="truncate"
+					><span class="text-muted-foreground">X</span> {xLabel(settings.x)}</span
+				>
+			</Select.Trigger>
+			<Select.Content>
+				{#each xOptions as x (x)}
+					<Select.Item value={x} label={xLabel(x)} />
+				{/each}
+			</Select.Content>
+		</Select.Root>
+		<label class="flex h-8 items-center gap-2 rounded-md border px-2.5 text-sm">
+			<span class="text-muted-foreground">Smoothing</span>
+			<input
+				type="range"
+				min="0"
+				max="0.99"
+				step="0.01"
+				class="w-24 accent-primary"
+				value={settings.smoothing}
+				oninput={(e) =>
+					(settings = { ...settings, smoothing: Number(e.currentTarget.value) })}
+			/>
+			<span class="w-8 text-right font-mono text-xs tabular-nums"
+				>{settings.smoothing.toFixed(2)}</span
 			>
-		</Select.Trigger>
-		<Select.Content>
-			{#each xOptions as x (x)}
-				<Select.Item value={x} label={xLabel(x)} />
-			{/each}
-		</Select.Content>
-	</Select.Root>
-	<label class="flex h-8 items-center gap-2 rounded-md border px-2.5 text-sm">
-		<span class="text-muted-foreground">Smoothing</span>
-		<input
-			type="range"
-			min="0"
-			max="0.99"
-			step="0.01"
-			class="w-24 accent-primary"
-			value={settings.smoothing}
-			oninput={(e) => (settings = { ...settings, smoothing: Number(e.currentTarget.value) })}
-		/>
-		<span class="w-8 text-right font-mono text-xs tabular-nums"
-			>{settings.smoothing.toFixed(2)}</span
-		>
-	</label>
-	<Toggle
-		size="sm"
-		variant="outline"
-		pressed={settings.logY}
-		onPressedChange={(logY) => (settings = { ...settings, logY })}
-	>
-		Log y
-	</Toggle>
-	<Toggle
-		size="sm"
-		variant="outline"
-		pressed={settings.band}
-		onPressedChange={(band) => (settings = { ...settings, band })}
-		title="Min/max of downsampled points"
-	>
-		Range band
-	</Toggle>
-	{#if ranked}
+		</label>
 		<Toggle
 			size="sm"
 			variant="outline"
-			pressed={settings.best}
-			onPressedChange={(best) => (settings = { ...settings, best })}
-			title="Best value so far, for metrics where higher or lower is better"
+			pressed={settings.logY}
+			onPressedChange={(logY) => (settings = { ...settings, logY })}
 		>
-			Best so far
+			Log y
 		</Toggle>
-	{/if}
-	{#if grouped}
-		<Select.Root
-			type="single"
-			value={settings.spread}
-			onValueChange={(v) =>
-				(settings = { ...settings, spread: v as ChartSettings['spread'] })}
+		<Toggle
+			size="sm"
+			variant="outline"
+			pressed={settings.band}
+			onPressedChange={(band) => (settings = { ...settings, band })}
+			title="Min/max of downsampled points"
 		>
-			<Select.Trigger size="sm" class="w-40" aria-label="Group band">
-				<span class="text-muted-foreground">Groups</span>
-				{settings.spread === 'std' ? 'mean ± std' : 'min – max'}
-			</Select.Trigger>
-			<Select.Content>
-				<Select.Item value="std" label="mean ± std" />
-				<Select.Item value="range" label="min – max" />
-			</Select.Content>
-		</Select.Root>
-	{/if}
-	{#if view}
-		<Button variant="ghost" size="sm" onclick={() => (view = null)}>
-			<RotateCcw /> Reset zoom
-		</Button>
-	{/if}
-</div>
-
-{#if series.length === 0}
-	<p class="text-sm text-muted-foreground">Select runs to chart them.</p>
-{:else if loaded && sections.length === 0}
-	<p class="text-sm text-muted-foreground">
-		{keys.length ? 'No metric matches.' : empty}
-	</p>
-{/if}
-
-<!-- Hovering one chart marks the same x on all of them; zoom is shared through `view`. -->
-<ChartGroup brush={false} domain={false}>
-	<div class="grid gap-6">
-		{#if families.length && summaryOf}
-			{@const open = !collapsed['\u0000families']}
-			<section>
-				<button
-					class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-					onclick={() => (collapsed['\u0000families'] = open)}
-					aria-expanded={open}
-				>
-					<ChevronRight class={['size-4 transition-transform', open && 'rotate-90']} />
-					Families
-					<span class="text-xs tabular-nums">{families.length}</span>
-				</button>
-				{#if open}
-					<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-						{#each families as f (f.def.name)}
-							<FamilyChart def={f.def} members={f.members} {series} {summaryOf} />
-						{/each}
-					</div>
-				{/if}
-			</section>
+			Range band
+		</Toggle>
+		{#if ranked}
+			<Toggle
+				size="sm"
+				variant="outline"
+				pressed={settings.best}
+				onPressedChange={(best) => (settings = { ...settings, best })}
+				title="Best value so far, for metrics where higher or lower is better"
+			>
+				Best so far
+			</Toggle>
 		{/if}
-		{#each sections as [section, sectionKeys] (section)}
-			{@const open = !collapsed[section]}
-			<section>
-				<button
-					class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-					onclick={() => (collapsed[section] = open)}
-					aria-expanded={open}
-				>
-					<ChevronRight class={['size-4 transition-transform', open && 'rotate-90']} />
-					{section || 'Charts'}
-					<span class="text-xs tabular-nums">{sectionKeys.length}</span>
-				</button>
-				{#if open}
-					<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-						{#each sectionKeys as key (key)}
-							<MetricChart
-								{series}
-								metric={key}
-								title={prefix ? key.slice(prefix.length) : key}
-								{source}
-								{onRename}
-								{settings}
-								override={overrides[key]}
-								onOverride={(o) => setOverride(key, o)}
-								{xOptions}
-								bind:view
-							/>
-						{/each}
-					</div>
-				{/if}
-			</section>
-		{/each}
+		{#if grouped}
+			<Select.Root
+				type="single"
+				value={settings.spread}
+				onValueChange={(v) =>
+					(settings = { ...settings, spread: v as ChartSettings['spread'] })}
+			>
+				<Select.Trigger size="sm" class="w-40" aria-label="Group band">
+					<span class="text-muted-foreground">Groups</span>
+					{settings.spread === 'std' ? 'mean ± std' : 'min – max'}
+				</Select.Trigger>
+				<Select.Content>
+					<Select.Item value="std" label="mean ± std" />
+					<Select.Item value="range" label="min – max" />
+				</Select.Content>
+			</Select.Root>
+		{/if}
+		{#if view}
+			<Button variant="ghost" size="sm" onclick={() => (view = null)}>
+				<RotateCcw /> Reset zoom
+			</Button>
+		{/if}
 	</div>
-</ChartGroup>
+
+	{#if loaded && sections.length === 0}
+		<p class="text-sm text-muted-foreground">No metric matches.</p>
+	{/if}
+
+	<!-- Hovering one chart marks the same x on all of them; zoom is shared through `view`. -->
+	<ChartGroup brush={false} domain={false}>
+		<div class="grid gap-6">
+			{#if families.length && summaryOf}
+				{@const open = !collapsed['\u0000families']}
+				<section>
+					<button
+						class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+						onclick={() => (collapsed['\u0000families'] = open)}
+						aria-expanded={open}
+					>
+						<ChevronRight
+							class={['size-4 transition-transform', open && 'rotate-90']}
+						/>
+						Families
+						<span class="text-xs tabular-nums">{families.length}</span>
+					</button>
+					{#if open}
+						<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+							{#each families as f (f.def.name)}
+								<FamilyChart def={f.def} members={f.members} {series} {summaryOf} />
+							{/each}
+						</div>
+					{/if}
+				</section>
+			{/if}
+			{#each sections as [section, sectionKeys] (section)}
+				{@const open = !collapsed[section]}
+				<section>
+					<button
+						class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+						onclick={() => (collapsed[section] = open)}
+						aria-expanded={open}
+					>
+						<ChevronRight
+							class={['size-4 transition-transform', open && 'rotate-90']}
+						/>
+						{section || 'Charts'}
+						<span class="text-xs tabular-nums">{sectionKeys.length}</span>
+					</button>
+					{#if open}
+						<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+							{#each sectionKeys as key (key)}
+								<MetricChart
+									{series}
+									metric={key}
+									title={prefix ? key.slice(prefix.length) : key}
+									{source}
+									{onRename}
+									{settings}
+									override={overrides[key]}
+									onOverride={(o) => setOverride(key, o)}
+									{xOptions}
+									bind:view
+								/>
+							{/each}
+						</div>
+					{/if}
+				</section>
+			{/each}
+		</div>
+	</ChartGroup>
+{/if}

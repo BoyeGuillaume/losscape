@@ -5,6 +5,7 @@
 
 	import { apiJson } from '#lib/api/client.js';
 	import type { ProjectSummary } from '#lib/api/types.js';
+	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
 	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import NewProjectDialog from '#lib/components/app/NewProjectDialog.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -39,21 +40,14 @@
 			{#each [0, 1, 2] as i (i)}<Skeleton class="h-28 rounded-xl" />{/each}
 		</div>
 	{:else if projects.data.length === 0}
-		<Card.Root class="max-w-2xl">
-			<Card.Header>
-				<Card.Title>No projects yet</Card.Title>
-				<Card.Description>
-					<button class="underline" onclick={() => (creating = true)}
-						>Create a project</button
-					>
-					and an API key in <a class="underline" href={resolve('/settings')}>Settings</a>,
-					then log your first run with the Python SDK:
-				</Card.Description>
-			</Card.Header>
-			<Card.Content>
-				<SdkQuickstart project="my-project" />
-			</Card.Content>
-		</Card.Root>
+		<EmptyCard icon={FolderKanban} title="No projects yet">
+			{#snippet description()}
+				A project holds the runs of one experiment or model.
+				<button class="underline" onclick={() => (creating = true)}>Create one</button>,
+				then log runs to it from Python:
+			{/snippet}
+			<SdkQuickstart project="my-project" />
+		</EmptyCard>
 	{:else}
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			{#each projects.data as project (project.name)}

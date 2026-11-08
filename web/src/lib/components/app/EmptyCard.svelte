@@ -11,22 +11,22 @@
 		icon: Component;
 		title: string;
 		description: Snippet;
-		/** Below the header, e.g. a code example. */
+		/** Under the description, aligned with it, e.g. a code example. */
 		children?: Snippet;
 	} = $props();
 </script>
 
 <div class="rounded-xl border bg-card p-6">
 	<div class="flex items-start gap-3">
-		<div class="rounded-lg bg-muted p-2 text-muted-foreground">
+		<div class="shrink-0 rounded-lg bg-muted p-2 text-muted-foreground">
 			<Icon class="size-5" />
 		</div>
-		<div class="grid gap-1">
-			<h3 class="font-medium">{title}</h3>
+		<div class="grid min-w-0 flex-1 gap-1">
+			<h3 class="text-base font-medium">{title}</h3>
 			<p class="text-sm text-muted-foreground">{@render description()}</p>
+			{#if children}
+				<div class="mt-4 grid max-w-3xl gap-3">{@render children()}</div>
+			{/if}
 		</div>
 	</div>
-	{#if children}
-		<div class="mt-5 grid max-w-3xl gap-2">{@render children()}</div>
-	{/if}
 </div>

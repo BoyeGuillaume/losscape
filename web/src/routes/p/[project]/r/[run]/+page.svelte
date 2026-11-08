@@ -4,6 +4,7 @@
 	import AtSign from '@lucide/svelte/icons/at-sign';
 	import Check from '@lucide/svelte/icons/check';
 	import Copy from '@lucide/svelte/icons/copy';
+	import Cpu from '@lucide/svelte/icons/cpu';
 	import GitCommitHorizontal from '@lucide/svelte/icons/git-commit-horizontal';
 	import Plus from '@lucide/svelte/icons/plus';
 	import Server from '@lucide/svelte/icons/server';
@@ -413,7 +414,13 @@
 					{renames}
 					summaryOf={() => summary}
 					onRename={canEdit ? startRename : undefined}
-					empty="No system metrics yet: they are sampled every 5 seconds while the run is going."
+					empty={{
+						icon: Cpu,
+						title: running ? 'No system metrics yet' : 'No system metrics',
+						text: running
+							? 'CPU, memory, disk, network and GPU usage are sampled every 5 seconds while the run is going; the first ones show up shortly.'
+							: 'CPU, memory, disk, network and GPU usage are sampled every 5 seconds while a run is going. This one has none: it ran with `system_metrics=False` (or `LOSSCAPE_SYSTEM_METRICS=0`), or ended before the first sample.'
+					}}
 				/>{/if}
 		</Tabs.Content>
 
