@@ -6,6 +6,8 @@ build-backend = "maturin"
 name = "losscape-sdk"
 description = "Python SDK for losscape, a self-hosted ML experiment tracker"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dynamic = ["version"]
 classifiers = [
