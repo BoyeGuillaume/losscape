@@ -26,6 +26,7 @@ RUN cargo build --release --locked -p losscape-server \
 # ---- What runs: no shell, no package manager, not root ------------------------------
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=server /out/losscape-server /usr/local/bin/losscape-server
+COPY LICENSE /app/LICENSE
 COPY --from=web /src/web/build /app/web
 # Served with the web interface, for its About page.
 COPY --from=server /out/THIRD-PARTY-NOTICES-SERVER.txt /out/third-party-server.json /app/web/

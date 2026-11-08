@@ -184,6 +184,42 @@ Stopping is safe at any time. The server writes what's queued, then exits. SDKs 
 in a local log until the server confirms it's stored, and retry for as long as it takes, so runs
 in progress lose nothing while it's down, whether it's restarting or being upgraded.
 
+### Using a published image
+
+Instead of building, you can run the image from Docker Hub. In `.env`, with the version you want:
+
+```sh
+LOSSCAPE_IMAGE=<namespace>/losscape:0.1.1
+```
+
+```sh
+docker compose up -d --wait --no-build
+```
+
+Images exist for Intel and ARM Linux, as `<version>`, `<major>.<minor>` and `latest`. To upgrade,
+change the version and run the same command. The databases are started the same way, so everything
+else on this page applies.
+
+### Publishing the server image
+
+`.github/workflows/publish-image.yml` builds the image for both processors and publishes it when a
+tag `server-v<version>` is pushed. It refuses a tag that doesn't match `version` in `Cargo.toml`, and
+tags nothing unless both images run and report that version. Run by hand from the Actions tab, it
+does all of that and publishes nothing.
+
+It needs setting up once:
+
+1. On Docker Hub, create the public repository, and a personal access token with read and write
+   access.
+2. In the GitHub repository's Settings → Secrets and variables → Actions, add the secrets
+   `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and the variable `DOCKERHUB_REPOSITORY`, such as
+   `<namespace>/losscape`.
+
+```sh
+git tag server-v0.1.1
+git push origin server-v0.1.1
+```
+
 ### Upgrading
 
 Back up first: there's no way to downgrade a database once migrated.
