@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Area, Chart, Spline } from 'layerchart/canvas';
+	import { Area, Chart, Points, Spline } from 'layerchart/canvas';
 	import { Tooltip, type BrushContext } from 'layerchart';
 	import { scaleLog } from 'd3-scale';
 	import type { ComponentProps } from 'svelte';
@@ -27,6 +27,7 @@
 		type XAxis
 	} from '#lib/charts/settings.js';
 	import type { MetricSource } from '#lib/charts/source.js';
+	import { isolatedPoints } from '#lib/charts/isolated.js';
 	import { levelFor, tileStore, type SeriesPoints } from '#lib/charts/tiles.svelte.js';
 	import { formatMetric, metricAxis, unitFor, unitTicks } from '#lib/metric-units.js';
 	import { nav } from '#lib/nav.svelte.js';
@@ -685,6 +686,14 @@
 									: 1.5}
 							opacity={highlight && highlight !== line.series.id ? 0.15 : 1}
 							fill="none"
+						/>
+						<Points
+							data={isolatedPoints(line.rows, definedY)}
+							x="x"
+							y="y"
+							r={3}
+							fill={colors[line.series.id]}
+							opacity={highlight && highlight !== line.series.id ? 0.15 : 1}
 						/>
 					{/each}
 				{/snippet}
