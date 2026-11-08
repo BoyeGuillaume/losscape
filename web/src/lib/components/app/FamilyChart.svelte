@@ -3,7 +3,8 @@
 	import { Tooltip } from 'layerchart';
 	import { mode } from 'mode-watcher';
 
-	import type { ChartSeries } from '#lib/charts/settings.js';
+	import { distinctTicks, isFlat, type ChartSeries } from '#lib/charts/settings.js';
+	import { chartSize } from '#lib/charts/size.svelte.js';
 	import { formatMetric, metricAxis } from '#lib/metric-units.js';
 	import { compile, match } from '#lib/metrics/pattern.js';
 	import type { MetricDef } from '#lib/metrics/registry.js';
@@ -62,7 +63,7 @@
 		if (!all.length) return undefined;
 		let [lo, hi] = [Math.min(...all.map((r) => r.y)), Math.max(...all.map((r) => r.y))];
 		if (meta.bounds) [lo, hi] = [meta.bounds[0] ?? lo, meta.bounds[1] ?? hi];
-		return lo === hi ? [lo - 1, hi + 1] : [lo, hi];
+		return isFlat(lo, hi) ? [lo - 1, hi + 1] : [lo, hi];
 	});
 	const xDomain = $derived.by((): [number, number] => {
 		const xs = points.map((p) => p.x);
@@ -106,7 +107,7 @@
 			{meta.summary === 'best' ? 'best' : 'last'} value by {param}
 		</span>
 	</header>
-	<div class="h-48 w-full">
+	<div class={['w-full', chartSize.height]}>
 		{#if all.length}
 			<Chart
 				data={all}
@@ -117,7 +118,7 @@
 				yNice
 				padding={{ top: 6, right: 10, bottom: 20, left: 44 }}
 				axis
-				grid={{ x: false, y: true, stroke: grid }}
+				grid={{ x: false, y: true, stroke: grid, yTicks: distinctTicks() }}
 				tooltipContext={{ mode: 'bisect-x' }}
 				props={{
 					xAxis: {

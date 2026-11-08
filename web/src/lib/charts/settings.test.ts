@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { aggregate, durationTicks, logTicks, smooth } from './settings.js';
+import {
+	aggregate,
+	distinctTicks,
+	durationTicks,
+	isFlat,
+	logTicks,
+	smooth,
+	stepTicks,
+	withoutOutliers
+} from './settings.js';
 
 describe('smooth', () => {
 	it('is the identity at weight 0', () => {
@@ -59,5 +68,71 @@ describe('aggregate', () => {
 		expect(aggregate([1, 2, 3], 'std')).toEqual({ mean: 2, lo: 1, hi: 3 });
 		expect(aggregate([1, 2, 6], 'range')).toEqual({ mean: 3, lo: 1, hi: 6 });
 		expect(aggregate([4], 'std')).toEqual({ mean: 4, lo: 4, hi: 4 });
+	});
+});
+
+describe('stepTicks', () => {
+	it('shows only whole steps when few fit', () => {
+		expect(stepTicks(-0.5, 0.5)).toEqual([0]);
+		expect(stepTicks(0, 3)).toEqual([0, 1, 2, 3]);
+		expect(stepTicks(2.5, 4.5)).toEqual([3, 4]);
+	});
+
+	it('leaves wide ranges to the chart', () => {
+		expect(stepTicks(0, 1000)).toBe(5);
+	});
+});
+
+describe('withoutOutliers', () => {
+	const steady = Array.from({ length: 200 }, (_, i) => 1 + i / 200);
+
+	it('leaves a spike out of the range', () => {
+		const range = withoutOutliers([...steady, 1e6, 1e6])!;
+		expect(range[0]).toBeGreaterThanOrEqual(1);
+		expect(range[1]).toBeLessThan(3);
+	});
+
+	it('leaves out extremes on both sides', () => {
+		const range = withoutOutliers([-1e6, -1e6, ...steady, 1e6, 1e6])!;
+		expect(range[0]).toBeGreaterThan(0);
+		expect(range[1]).toBeLessThan(3);
+	});
+
+	it("doesn't go beyond the data", () => {
+		const range = withoutOutliers(steady)!;
+		expect(range[0]).toBeGreaterThanOrEqual(1);
+		expect(range[1]).toBeLessThanOrEqual(2);
+	});
+
+	it('gives up without enough values, or on a flat line', () => {
+		expect(withoutOutliers([1, 2, 3])).toBe(null);
+		expect(withoutOutliers(Array(50).fill(3))).toBe(null);
+	});
+});
+
+describe('near-identical values', () => {
+	// What buckets of a constant learning rate really average to.
+	const means = [3e-6 * (1 - 2 ** -52), 3e-6, 3e-6 * (1 + 2 ** -52)];
+	const [lo, hi] = [means[0], means[2]];
+
+	it('count as flat', () => {
+		expect(isFlat(lo, hi)).toBe(true);
+		expect(isFlat(0, 0)).toBe(true);
+		expect(isFlat(5, 5)).toBe(true);
+	});
+
+	it("aren't confused with a small but real range", () => {
+		expect(isFlat(3e-6, 3.1e-6)).toBe(false);
+		expect(isFlat(0, 1e-300)).toBe(false);
+		expect(isFlat(-1, 1)).toBe(false);
+	});
+
+	it('give no outlier-free range', () => {
+		expect(withoutOutliers(Array.from({ length: 50 }, (_, i) => means[i % 3]))).toBe(null);
+	});
+
+	it('never give the grid the same tick twice', () => {
+		const scale = { ticks: () => [3e-6, 3e-6, hi] };
+		expect(distinctTicks()(scale)).toEqual([3e-6, hi]);
 	});
 });

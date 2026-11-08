@@ -3,7 +3,7 @@
 
 import { scaleLinear } from 'd3-scale';
 
-import { formatCompact, formatValue } from '#lib/format.js';
+import { formatCompact, formatValue, preciseAxis } from '#lib/format.js';
 import { currentRegistry } from '#lib/metrics/store.svelte.js';
 import { COUNT, formatUnit, stepFor, type Unit } from '#lib/units.js';
 
@@ -18,10 +18,11 @@ export function formatMetric(key: string, value: unknown): string {
 	return unit ? formatUnit(value as number, unit) : formatValue(value);
 }
 
-/** Axis labels for a metric: its unit, or compact numbers (1.5k, 0.002). */
-export function metricAxis(key: string): (value: number) => string {
+/** Axis labels for a metric: its unit, or numbers as compact as `range` allows (1.5k, 0.002). */
+export function metricAxis(key: string, range?: [number, number]): (value: number) => string {
 	const unit = unitFor(key);
-	return unit ? (v) => formatUnit(v, unit) : formatCompact;
+	if (unit) return (v) => formatUnit(v, unit);
+	return (range && preciseAxis(...range)) ?? formatCompact;
 }
 
 /** Step counts: 50k, 1.2M. */
@@ -35,8 +36,9 @@ export function unitTicks(unit: Unit, lo: number, hi: number, count = 4): number
 	const scale = unit.scale ?? 1;
 	const { factor } = stepFor(Math.max(Math.abs(lo), Math.abs(hi)) * scale, unit);
 	const per = scale / factor; // stored value -> shown number
-	return scaleLinear()
+	const ticks = scaleLinear()
 		.domain([lo * per, hi * per])
 		.ticks(count)
 		.map((t) => t / per);
+	return [...new Set(ticks)];
 }

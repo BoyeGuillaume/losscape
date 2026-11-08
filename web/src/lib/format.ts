@@ -20,6 +20,21 @@ export function formatCompact(value: number | null | undefined): string {
 	return compact.format(value);
 }
 
+/**
+ * Axis labels with all the digits it takes to tell ticks over `[lo, hi]` apart, when that's more
+ * than compact ones have (2.72M, 2.72M, 2.72M). Null when compact labels will do.
+ */
+export function preciseAxis(lo: number, hi: number): ((value: number) => string) | null {
+	const spacing = (hi - lo) / 5;
+	if (!(spacing > 0)) return null;
+	const digits = Math.ceil(Math.log10(Math.max(Math.abs(lo), Math.abs(hi)) / spacing)) + 1;
+	if (digits <= 3) return null;
+	return (value) =>
+		value !== 0 && Math.abs(value) < 1e-3
+			? value.toExponential(digits - 1)
+			: Number(value.toPrecision(digits)).toLocaleString('en', { maximumFractionDigits: 20 });
+}
+
 /** Metric values: 4 significant digits. */
 export function formatValue(value: unknown): string {
 	if (value === null || value === undefined) return '–';

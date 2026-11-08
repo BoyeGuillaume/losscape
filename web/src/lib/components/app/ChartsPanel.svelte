@@ -32,6 +32,7 @@
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
 	import FamilyChart from './FamilyChart.svelte';
+	import ChartSizeSelect from './ChartSizeSelect.svelte';
 	import MetricChart from './MetricChart.svelte';
 
 	type Extent = { min: number; max: number };
@@ -337,6 +338,7 @@
 				{/each}
 			</Select.Content>
 		</Select.Root>
+		<ChartSizeSelect />
 		<label class="flex h-8 items-center gap-2 rounded-md border px-2.5 text-sm">
 			<span class="text-muted-foreground">Smoothing</span>
 			<input

@@ -5,7 +5,8 @@
 	import { mode } from 'mode-watcher';
 	import { page } from '$app/state';
 
-	import { logTicks } from '#lib/charts/settings.js';
+	import { distinctTicks, isFlat, logTicks } from '#lib/charts/settings.js';
+	import { chartSize } from '#lib/charts/size.svelte.js';
 	import { formatMetric, metricAxis } from '#lib/metric-units.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
@@ -86,7 +87,7 @@
 		if (!ys.length) return [0, 1];
 		const [lo, hi] = [Math.min(...ys), Math.max(...ys)];
 		// A single value: around it, at a scale that suits it.
-		if (lo === hi)
+		if (isFlat(lo, hi))
 			return lo === 0 ? [-1, 1] : [lo - Math.abs(lo) * 0.1, hi + Math.abs(hi) * 0.1];
 		const margin = (hi - lo) * Y_MARGIN;
 		return [lo - margin, hi + margin];
@@ -183,7 +184,7 @@
 		</h3>
 		{#if note}<span class="ml-auto shrink-0 text-xs text-muted-foreground">{note}</span>{/if}
 	</header>
-	<div class="h-52 w-full">
+	<div class={['w-full', chartSize.height]}>
 		{#if dots.length}
 			<Chart
 				data={dots}
@@ -196,7 +197,7 @@
 				clip
 				padding={{ top: 8, right: 16, bottom: 20, left: 52 }}
 				axis
-				grid={{ x: false, y: true, stroke: grid }}
+				grid={{ x: false, y: true, stroke: grid, yTicks: distinctTicks() }}
 				tooltipContext={{
 					mode: 'quadtree',
 					radius: 24,

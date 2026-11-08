@@ -23,6 +23,7 @@
 	import { poll } from '#lib/poll.svelte.js';
 	import AvatarCropDialog from '#lib/components/app/AvatarCropDialog.svelte';
 	import PasswordStrength from '#lib/components/app/PasswordStrength.svelte';
+	import ChartSizeSelect from '#lib/components/app/ChartSizeSelect.svelte';
 	import CodeBlock from '#lib/components/app/CodeBlock.svelte';
 	import UserAvatar from '#lib/components/app/UserAvatar.svelte';
 	import { notifyError, withToast } from '#lib/notify.js';
@@ -241,6 +242,16 @@
 					>
 				</form>
 			</div>
+		</Card.Content>
+	</Card.Root>
+
+	<Card.Root>
+		<Card.Header>
+			<Card.Title>Charts</Card.Title>
+			<Card.Description>How tall charts are. Saved in this browser only.</Card.Description>
+		</Card.Header>
+		<Card.Content>
+			<ChartSizeSelect />
 		</Card.Content>
 	</Card.Root>
 
