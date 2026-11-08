@@ -34,7 +34,7 @@ export class MetricSource {
 		return this.runs.get(run)?.resolve(key) ?? null;
 	}
 
-	/** Every metric shown for these runs (and the hidden sources of merges and formulas). */
+	/** Every metric shown for these runs (and the hidden ones, if asked). */
 	keys(withHidden = false): string[] {
 		const all = new Set<string>();
 		for (const metrics of this.runs.values()) metrics.keys(withHidden).forEach((k) => all.add(k));

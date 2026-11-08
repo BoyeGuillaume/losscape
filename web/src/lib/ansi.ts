@@ -102,7 +102,10 @@ export function stripAnsi(line: string): string {
 /** Inline styles for a segment (applied through the DOM, not as HTML). */
 export function css(style: Style): { color?: string; background?: string; class: string } {
 	const [fg, bg] = style.inverse
-		? [style.bg ?? 'var(--background)', style.fg ?? 'var(--foreground)']
+		? [
+				style.bg ?? 'var(--term-bg, var(--background))',
+				style.fg ?? 'var(--term-fg, var(--foreground))'
+			]
 		: [style.fg, style.bg];
 	const classes = [
 		style.bold && 'font-bold',

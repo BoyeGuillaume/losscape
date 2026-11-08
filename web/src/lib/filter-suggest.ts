@@ -12,7 +12,13 @@ export type Suggestion = {
 	detail?: string;
 };
 
-export type Suggestions = { from: number; to: number; items: Suggestion[] };
+export type Suggestions = {
+	from: number;
+	to: number;
+	items: Suggestion[];
+	/** What was typed of the word at the caret, when the caller needs to know. */
+	query?: string;
+};
 
 const MAX = 8;
 const OPS = ['<=', '>=', '!=', ':', '=', '<', '>', '~'];

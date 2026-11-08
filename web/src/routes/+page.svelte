@@ -52,7 +52,7 @@
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			{#each projects.data as project (project.name)}
 				<a
-					href={resolve('/p/[project]', { project: project.name })}
+					href={resolve('/p/[project]/(tabs)/runs', { project: project.name })}
 					class="group rounded-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 				>
 					<Card.Root class="h-full transition-colors group-hover:bg-muted/50">

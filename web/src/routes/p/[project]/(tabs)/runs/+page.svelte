@@ -1,12 +1,10 @@
 <script lang="ts">
 	import Archive from '@lucide/svelte/icons/archive';
 	import ArchiveRestore from '@lucide/svelte/icons/archive-arrow-up';
-	import ChartLine from '@lucide/svelte/icons/chart-line';
-	import CircleQuestionMark from '@lucide/svelte/icons/circle-question-mark';
 	import Columns3 from '@lucide/svelte/icons/columns-3';
 	import FlaskConical from '@lucide/svelte/icons/flask-conical';
+	import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
 	import Group from '@lucide/svelte/icons/group';
-	import Settings from '@lucide/svelte/icons/settings';
 	import X from '@lucide/svelte/icons/x';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { toast } from 'svelte-sonner';
@@ -16,11 +14,14 @@
 	import { apiJson, apiSend } from '#lib/api/client.js';
 	import type { ProjectInfo, RunSummary } from '#lib/api/types.js';
 	import type { ChartSeries, ChartSettings } from '#lib/charts/settings.js';
+	import AbortRuns from '#lib/components/app/AbortRuns.svelte';
 	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
 	import SdkQuickstart from '#lib/components/app/SdkQuickstart.svelte';
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
+	import FilterHelp from '#lib/components/app/FilterHelp.svelte';
 	import FilterInput from '#lib/components/app/FilterInput.svelte';
 	import RunsTable from '#lib/components/app/RunsTable.svelte';
+	import TagsMenu from '#lib/components/app/TagsMenu.svelte';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -28,11 +29,15 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import { FilterError, matches, parseFilter, type Node } from '#lib/filter.js';
+	import { literal } from '#lib/filter-suggest.js';
 	import { buildCatalog } from '#lib/runs/catalog.js';
 	import { withMetrics } from '#lib/metrics/apply.js';
-	import { currentRegistry, useProjectMetrics } from '#lib/metrics/store.svelte.js';
+	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import { errorMessage } from '#lib/notify.js';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
+	import { RunList } from '#lib/runs/list.svelte.js';
+	import { selectionOf } from '#lib/runs/selection.svelte.js';
+	import { nav } from '#lib/nav.svelte.js';
 	import { projectsChanged } from '#lib/projects.svelte.js';
 	import {
 		availableKeys,
@@ -61,6 +66,10 @@
 
 	const project = $derived(page.params.project ?? '');
 	const projectPath = $derived(`/projects/${encodeURIComponent(project)}`);
+	// Run pages link back to the list as it is now.
+	$effect(() => {
+		nav.runsQuery[project] = page.url.search;
+	});
 
 	// ---- View state, mirrored in the URL ----
 	let archived = $state(param('archived') === '1');
@@ -74,8 +83,11 @@
 	let chosenColumns = $state<string[] | null>(param('cols')?.split(',').filter(Boolean) ?? null);
 	let pinned = $state<string[]>(param('pin')?.split(',').filter(Boolean) ?? []);
 	let groupBy = $state<string | null>(param('group'));
-	/** Charted run ids (32 hex), or null: the first runs (or groups) of the table. */
-	let picked = $state<string[] | null>(param('runs')?.split(',').filter(Boolean) ?? null);
+	/** Picked runs: charted below the table, acted on in bulk (shared with other pages). */
+	const selection = $derived(selectionOf(project));
+	// A link with runs picks exactly those.
+	const linked = param('runs')?.split(',').filter(Boolean);
+	if (linked?.length) selectionOf(page.params.project ?? '').replace(linked);
 	let settings = $state<ChartSettings>(readChartSettings());
 	let metricFilter = $state(param('metrics') ?? '');
 	let view = $state(readZoom());
@@ -88,7 +100,7 @@
 		cols: chosenColumns?.join(',') ?? null,
 		pin: pinned.join(',') || null,
 		group: groupBy,
-		runs: picked?.join(',') ?? null,
+		runs: selection.size && selection.size <= MAX_CHARTED ? selection.ids.join(',') : null,
 		...chartSettingsParams(settings),
 		metrics: metricFilter.trim() || null,
 		zoom: zoomParam(view),
@@ -100,23 +112,18 @@
 		() => 30_000
 	);
 	const canEdit = $derived(info.data?.role === 'owner' || info.data?.role === 'editor');
-	const runs: Polled<RunSummary[]> = poll(
-		() => apiJson<RunSummary[]>(`${projectPath}/runs${archived ? '?archived=true' : ''}`),
-		() => ((runs.data?.length ?? 0) > 5_000 ? 60_000 : 10_000)
-	);
-	useProjectMetrics(() => project);
-	/** Runs with the project's custom metrics applied to their summaries. */
-	const all = $derived((runs.data ?? []).map((r) => withMetrics(r, currentRegistry())));
-	const runById = $derived(new Map(all.map((r) => [r.id, r])));
-
-	// Selection for bulk actions; cleared when the list changes meaning.
-	const selected = new SvelteSet<string>();
-	const collapsed = new SvelteSet<string>();
+	/** The runs of the project (or its archived ones): newest first, then kept current. */
+	let list = $state<RunList | null>(null);
 	$effect(() => {
-		void archived;
-		void project;
-		selected.clear();
+		const l = new RunList(projectPath, archived, (n) => (n > 5_000 ? 30_000 : 10_000));
+		list = l;
+		l.start();
+		return () => l.stop();
 	});
+	/** Runs with the project's custom metrics applied to their summaries. */
+	const all = $derived((list?.runs ?? []).map((r) => withMetrics(r, currentRegistry())));
+	const runById = $derived(new Map(all.map((r) => [r.id, r])));
+	const collapsed = new SvelteSet<string>();
 
 	// ---- Filter, sort, group ----
 	let lastValid: Node | null = null;
@@ -176,8 +183,12 @@
 
 	// ---- Charted runs ----
 	const byId = $derived(new Map(all.map((r) => [shortId(r.id), r])));
+	/** Picked runs in this list, in the order picked. */
+	const selectedRuns = $derived(
+		selection.ids.map((id) => byId.get(id)).filter((r): r is RunSummary => !!r)
+	);
 	const charted = $derived.by((): RunSummary[] => {
-		if (picked) return picked.map((id) => byId.get(id)).filter((r): r is RunSummary => !!r);
+		if (selection.size) return selectedRuns.slice(0, MAX_CHARTED);
 		if (!groups) return sorted.slice(0, AUTO_CHARTED);
 		const out: RunSummary[] = [];
 		for (const g of groups.slice(0, AUTO_CHARTED)) out.push(...g.runs);
@@ -207,26 +218,19 @@
 	);
 	const chartedRunning = $derived(charted.filter((r) => r.state === 'running').map((r) => r.id));
 
-	function chart(list: RunSummary[], on: boolean) {
-		const ids = list.map((r) => shortId(r.id));
-		const current = picked ?? charted.map((r) => shortId(r.id));
-		const next = on
-			? [...current, ...ids.filter((id) => !current.includes(id))]
-			: current.filter((id) => !ids.includes(id));
-		if (next.length > MAX_CHARTED) {
-			toast.warning(`Too many runs to chart`, {
-				description: `At most ${MAX_CHARTED} runs can be charted at once; hide some first.`
-			});
-			return;
-		}
-		picked = next;
+	function select(runs: RunSummary[], on: boolean) {
+		selection.toggle(
+			runs.map((r) => r.id),
+			on
+		);
 	}
 
-	function select(list: RunSummary[], on: boolean) {
-		for (const r of list) {
-			if (on) selected.add(r.id);
-			else selected.delete(r.id);
-		}
+	/** Shows the runs with this tag (added to the filter). */
+	function filterTag(tag: string) {
+		const term = `tag:${literal(tag)}`;
+		const current = filterText.trim();
+		if (!current.split(/\s+/).includes(term))
+			filterText = current ? `${current} ${term}` : term;
 	}
 
 	function toggleGroup(key: string) {
@@ -235,7 +239,6 @@
 	}
 
 	// ---- Archive and restore ----
-	const selectedRuns = $derived(all.filter((r) => selected.has(r.id)));
 
 	async function setArchived(ids: string[], archive: boolean, undoable = true) {
 		const action = archive ? 'archive' : 'restore';
@@ -257,8 +260,8 @@
 					? { label: 'Undo', onClick: () => void setArchived(ids, !archive, false) }
 					: undefined
 			});
-			selected.clear();
-			runs.refresh();
+			selection.toggle(ids, false);
+			list?.refresh();
 			info.refresh();
 			projectsChanged();
 		} catch (err) {
@@ -270,15 +273,12 @@
 	}
 </script>
 
-<div class="mx-auto max-w-[1600px]">
-	<div class="mb-4 flex flex-wrap items-start justify-between gap-2">
-		<div>
-			<h1 class="text-2xl font-semibold tracking-tight">{project}</h1>
-			<p class="text-sm text-muted-foreground tabular-nums">
-				{all.length}
-				{archived ? 'archived' : ''} runs{#if running}{` · ${running} running`}{/if}{#if parsed.node}{` · ${filtered.length} match`}{/if}
-			</p>
-		</div>
+<div>
+	<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+		<p class="text-sm text-muted-foreground tabular-nums">
+			{all.length.toLocaleString('en')}
+			{archived ? 'archived' : ''} runs{#if list?.partial}&nbsp;(loading more…){/if}{#if running}{` · ${running} running`}{/if}{#if parsed.node}{` · ${filtered.length.toLocaleString('en')} match`}{/if}
+		</p>
 		<div class="flex flex-wrap items-center gap-2">
 			<ToggleGroup.Root
 				type="single"
@@ -299,25 +299,19 @@
 					>
 				</ToggleGroup.Item>
 			</ToggleGroup.Root>
-			<a
-				class={buttonVariants({ variant: 'outline', size: 'sm' })}
-				href={resolve('/p/[project]/settings', { project })}
-			>
-				<Settings /> Settings
-			</a>
 		</div>
 	</div>
 
-	{#if runs.error}
-		<p class="text-sm text-destructive">{String(runs.error)}</p>
-	{:else if !runs.data}
+	{#if list?.error}
+		<p class="text-sm text-destructive">{String(list.error)}</p>
+	{:else if !list?.runs}
 		<Skeleton class="h-64 rounded-xl" />
 	{:else if all.length === 0 && archived}
 		<EmptyCard icon={Archive} title="No archived runs">
 			{#snippet description()}
 				Archived runs are hidden from the project and kept {info.data?.archive_days ?? 30} days,
 				then deleted for good (change it in
-				<a class="underline" href={resolve('/p/[project]/settings', { project })}
+				<a class="underline" href={resolve('/p/[project]/(tabs)/settings', { project })}
 					>Settings</a
 				>). Archive runs by ticking them in the table.
 			{/snippet}
@@ -337,31 +331,7 @@
 				invalid={!!parsed.error}
 				describedby="filter-help"
 			/>
-			<DropdownMenu.Root>
-				<DropdownMenu.Trigger
-					class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
-					aria-label="Filter syntax"
-				>
-					<CircleQuestionMark />
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end" class="w-96 p-3 text-xs leading-relaxed">
-					<p class="mb-2 font-medium text-foreground">Filter syntax</p>
-					<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-muted-foreground">
-						<dt class="font-mono text-foreground">config.lr &lt; 1e-3</dt>
-						<dd>compare numbers: = != &lt; &lt;= &gt; &gt;=</dd>
-						<dt class="font-mono text-foreground">summary.val/acc &gt; 0.9</dt>
-						<dd>any config or summary key</dd>
-						<dt class="font-mono text-foreground">tag:baseline</dt>
-						<dd>also state:, alias:, group:, name:</dd>
-						<dt class="font-mono text-foreground">name ~ "^bert"</dt>
-						<dd>regular expression</dd>
-						<dt class="font-mono text-foreground">a or (b and not c)</dt>
-						<dd>combine; spaces mean and</dd>
-						<dt class="font-mono text-foreground">falcon</dt>
-						<dd>search names, tags, groups, aliases</dd>
-					</dl>
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
+			<FilterHelp />
 			<Select.Root
 				type="single"
 				value={groupBy ?? ''}
@@ -439,31 +409,55 @@
 				<span class="text-destructive">
 					{parsed.error.message} (at character {parsed.error.at + 1})
 				</span>
-			{:else if selected.size}
-				<span class="font-medium tabular-nums">{selected.size} selected</span>
-				<Button
-					variant="outline"
-					size="sm"
-					class="h-7"
-					onclick={() => {
-						if (selectedRuns.length > MAX_CHARTED) {
-							toast.warning(`Too many runs to chart`, {
-								description: `At most ${MAX_CHARTED} runs can be charted at once; select fewer.`
-							});
-						} else {
-							picked = selectedRuns.map((r) => shortId(r.id));
-						}
-					}}
-				>
-					<ChartLine /> Chart them
-				</Button>
-				{#if canEdit}
+			{:else if selection.size}
+				<span class="font-medium tabular-nums">
+					{selection.size.toLocaleString('en')} selected{#if selectedRuns.length < selection.size}<span
+							class="font-normal text-muted-foreground"
+						>
+							({selectedRuns.length} in this list)</span
+						>{/if}
+				</span>
+				<span class="text-muted-foreground">
+					· {selectedRuns.length > MAX_CHARTED
+						? `the first ${MAX_CHARTED} are charted below`
+						: 'charted below'}
+				</span>
+				{#if selection.size > 1}
+					<a
+						class={buttonVariants({ variant: 'outline', size: 'sm', class: 'h-7' })}
+						href={resolve('/p/[project]/(tabs)/compare', { project })}
+					>
+						<GitCompareArrows /> Compare
+					</a>
+				{:else}
+					<Button
+						variant="outline"
+						size="sm"
+						class="h-7"
+						disabled
+						title="Comparing takes two runs or more"
+					>
+						<GitCompareArrows /> Compare
+					</Button>
+				{/if}
+				{#if canEdit && selectedRuns.length}
+					<TagsMenu {project} runs={selectedRuns} onChanged={() => list?.refresh()} />
+					<AbortRuns
+						{project}
+						runs={selectedRuns}
+						class="h-7"
+						onDone={() => list?.refresh()}
+					/>
 					{#if archived}
 						<Button
 							variant="outline"
 							size="sm"
 							class="h-7"
-							onclick={() => setArchived([...selected], false)}
+							onclick={() =>
+								setArchived(
+									selectedRuns.map((r) => r.id),
+									false
+								)}
 						>
 							<ArchiveRestore /> Restore
 						</Button>
@@ -472,31 +466,27 @@
 							variant="outline"
 							size="sm"
 							class="h-7"
-							onclick={() => setArchived([...selected], true)}
+							onclick={() =>
+								setArchived(
+									selectedRuns.map((r) => r.id),
+									true
+								)}
 						>
 							<Archive /> Archive
 						</Button>
 					{/if}
 				{/if}
-				<Button variant="ghost" size="sm" class="h-7" onclick={() => selected.clear()}>
-					<X /> Clear
+				<Button variant="ghost" size="sm" class="h-7" onclick={() => selection.clear()}>
+					<X /> Clear selection
 				</Button>
 			{:else}
 				<span class="text-muted-foreground">
-					{#if picked}
-						{charted.length} runs charted ·
-						<button
-							class="underline hover:text-foreground"
-							onclick={() => (picked = null)}
-							>chart the first {AUTO_CHARTED}
-							{groupBy ? 'groups' : 'runs'} instead</button
-						>
-					{:else if groupBy}
+					{#if groupBy}
 						Charting the first {Math.min(AUTO_CHARTED, groups?.length ?? 0)} groups (mean
-						of their runs); click the dots to choose.
+						of their runs); tick runs to chart them, tag or archive them.
 					{:else}
 						Charting the first {Math.min(AUTO_CHARTED, sorted.length)} runs of the table;
-						click the dots to choose, tick runs to archive them.
+						tick runs to chart them, tag or archive them.
 					{/if}
 				</span>
 			{/if}
@@ -509,11 +499,11 @@
 			{pinned}
 			bind:sort
 			{colors}
-			{selected}
+			{selection}
 			{groupBy}
 			{collapsed}
 			archiveDays={archived ? (info.data?.archive_days ?? null) : null}
-			onChart={chart}
+			onTag={filterTag}
 			onSelect={select}
 			onToggleGroup={toggleGroup}
 			onPin={setPinned}
@@ -551,9 +541,9 @@
 			bind:metricFilter
 			bind:view
 			bind:overrides
-			renames={(id) => runById.get(id)?.renames ?? {}}
+			renames={(id) => runById.get(id)}
 			summaryOf={(id) => runById.get(id)?.summary}
-			onRunState={() => runs.refresh()}
+			onRunState={() => list?.refresh()}
 		/>
 	{/if}
 </div>

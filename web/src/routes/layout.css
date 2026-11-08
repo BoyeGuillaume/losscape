@@ -3,6 +3,7 @@
 @import 'shadcn-svelte/tailwind.css';
 @import '@fontsource-variable/inter';
 @import '@fontsource-variable/geist-mono';
+@import '@fontsource-variable/cascadia-mono';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -204,4 +205,66 @@
 }
 .dark .code-block code span {
 	color: var(--dark, inherit);
+}
+
+/* Console output: a terminal, with a terminal font (box drawing, block elements, braille),
+   light or dark with the page. Its own colors stay distinct from the page's. */
+.terminal {
+	--term-bg: #f6f6f7;
+	--term-fg: #27272a;
+	--term-bar: #ececee;
+	--term-border: #d4d4d8;
+	--term-muted: #71717a;
+	--term-hover: rgb(0 0 0 / 0.04);
+	--term-mark: rgb(0 0 0 / 0.08);
+	--term-button: rgb(255 255 255 / 0.92);
+	--ansi-0: #3f3f46;
+	--ansi-1: #c4262e;
+	--ansi-2: #1f7a35;
+	--ansi-3: #946200;
+	--ansi-4: #2361c4;
+	--ansi-5: #9c2f98;
+	--ansi-6: #0e7480;
+	--ansi-7: #71717a;
+	--ansi-8: #52525b;
+	--ansi-9: #dc3a40;
+	--ansi-10: #23843a;
+	--ansi-11: #a87600;
+	--ansi-12: #3577e0;
+	--ansi-13: #b844b3;
+	--ansi-14: #0f8692;
+	--ansi-15: #18181b;
+	background-color: var(--term-bg);
+	color: var(--term-fg);
+	border-color: var(--term-border);
+	font-family: 'Cascadia Mono Variable', var(--font-mono);
+	font-variant-ligatures: none;
+	color-scheme: light;
+}
+.dark .terminal {
+	--term-bg: #141417;
+	--term-fg: #d4d4d8;
+	--term-bar: #1c1c20;
+	--term-border: #2e2e33;
+	--term-muted: #a1a1aa;
+	--term-hover: rgb(255 255 255 / 0.05);
+	--term-mark: rgb(255 255 255 / 0.1);
+	--term-button: rgb(39 39 42 / 0.92);
+	--ansi-0: #3f3f46;
+	--ansi-1: #f14c4c;
+	--ansi-2: #23d18b;
+	--ansi-3: #e5c07b;
+	--ansi-4: #3b8eea;
+	--ansi-5: #d670d6;
+	--ansi-6: #29b8db;
+	--ansi-7: #d4d4d8;
+	--ansi-8: #71717a;
+	--ansi-9: #ff6b6b;
+	--ansi-10: #5af0b0;
+	--ansi-11: #f5f543;
+	--ansi-12: #6aa9ff;
+	--ansi-13: #ee8cee;
+	--ansi-14: #6ce0f5;
+	--ansi-15: #fafafa;
+	color-scheme: dark;
 }

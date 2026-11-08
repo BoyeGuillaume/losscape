@@ -1,11 +1,15 @@
 <script lang="ts">
 	import ArrowDownToLine from '@lucide/svelte/icons/arrow-down-to-line';
+	import ArrowUpToLine from '@lucide/svelte/icons/arrow-up-to-line';
+	import Download from '@lucide/svelte/icons/download';
 	import Search from '@lucide/svelte/icons/search';
 	import { tick } from 'svelte';
 
+	import { stripAnsi } from '#lib/ansi.js';
 	import { apiJson } from '#lib/api/client.js';
 	import { subscribeLive, type LogLine } from '#lib/api/live.js';
-	import { Button } from '#lib/components/ui/button/index.js';
+	import { buttonVariants } from '#lib/components/ui/button/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { dateTime } from '#lib/format.js';
 	import type { RunEnvironment } from '#lib/api/types.js';
@@ -14,7 +18,8 @@
 
 	type Logs = { count: number; lines: LogLine[] };
 
-	const ROW = 20;
+	/** Row height: the font's own line height, so box drawing characters join up. */
+	const ROW = 17;
 	/** Lines per request; pages load as they scroll into view, the last one first. */
 	const PAGE = 500;
 	const OVERSCAN = 40;
@@ -36,6 +41,10 @@
 		capture: RunEnvironment['console'];
 	} = $props();
 
+	// The page reloads its run every few seconds. Through this, effects only see the id: read
+	// directly, the prop would depend on the whole run and restart them on every reload.
+	const runId = $derived(run);
+
 	let count = $state(0);
 	let loaded = $state(false);
 	/** Scrolled to where the view opens (the end), so nothing above gets fetched first. */
@@ -56,8 +65,68 @@
 	let follow = $state(true);
 	let highlight = $state<number | null>(null);
 
+	/** The whole log as a file (streamed by the server), plain or with its colors. */
+	const downloadHref = (ansi: boolean) =>
+		`/api/v0/runs/${encodeURIComponent(runId)}/logs.txt${ansi ? '?ansi=true' : ''}`;
+
+	// Progress bars are rewritten in place, and stay where they started as the log moves on:
+	// for instance tqdm's on stderr, its messages on stdout. They show pinned below the log,
+	// as in a terminal, until they finish, get overwritten or stop changing.
+	const BAR_STALE_MS = 600_000; // long: an outer bar moves once per epoch
+	/** Other lines being rewritten (`\rstep 12`) only stay while it goes on. */
+	const REWRITE_STALE_MS = 3_000;
+	const MAX_LIVE = 6;
+	/** Rows the strip keeps after losing some, so it doesn't resize as bars come and go. */
+	const SHRINK_AFTER_MS = 3_000;
+
+	/** Its percentage, if a line has the shape of a tqdm or rich bar. */
+	function barPercent(text: string): number | null {
+		const m = /(\d+)%\s*\||[━╸╺]\s*(\d+)%/.exec(stripAnsi(text));
+		return m ? Number(m[1] ?? m[2]) : null;
+	}
+
+	type Live = { line: LogLine; at: number; bar: boolean; times: number };
+	let live = $state.raw<Record<number, Live>>({});
+	let clock = $state(Date.now());
+	$effect(() => {
+		if (!running) return;
+		const timer = setInterval(() => (clock = Date.now()), 1000);
+		return () => clearInterval(timer);
+	});
+
+	const isFresh = (r: Live, now: number) =>
+		now - r.at < (r.bar ? BAR_STALE_MS : REWRITE_STALE_MS);
+
+	/** `at`: when these changed, if not just now (lines loaded rather than pushed). */
+	function noteLive(found: LogLine[], at?: (l: LogLine) => number) {
+		const now = Date.now();
+		const next = Object.fromEntries(
+			Object.entries(live).filter(([, r]) => isFresh(r, now))
+		) as typeof live;
+		for (const l of found) {
+			const before = next[l.line];
+			const known = lines.get(l.line);
+			if (known?.text === l.text) continue;
+			const percent = barPercent(l.text);
+			const bar = percent !== null;
+			if (bar && percent < 100) {
+				next[l.line] = { line: l, at: at?.(l) ?? now, bar, times: 0 };
+			} else if (!bar && l.text && known && !before?.bar) {
+				next[l.line] = { line: l, at: now, bar, times: (before?.times ?? 0) + 1 };
+			} else {
+				// Finished, cleared, or a message that took the row of a bar.
+				delete next[l.line];
+			}
+		}
+		live = next;
+	}
+
 	const fetchLogs = (query: string) =>
-		apiJson<Logs>(`/runs/${encodeURIComponent(run)}/logs?${query}`);
+		apiJson<Logs>(`/runs/${encodeURIComponent(runId)}/logs?${query}`);
+
+	/** Lines not older than what's here: requests and pushes can arrive out of order. */
+	const newer = (found: LogLine[]) =>
+		found.filter((l) => (lines.get(l.line)?.ts_ms ?? -Infinity) <= l.ts_ms);
 
 	function store(found: LogLine[], total: number) {
 		for (const l of found) lines.set(l.line, l);
@@ -68,7 +137,12 @@
 	async function loadTail() {
 		try {
 			const tail = await fetchLogs(`tail=${PAGE}`);
-			store(tail.lines, tail.count);
+			const found = newer(tail.lines);
+			noteLive(
+				found.filter((l) => !lines.has(l.line)),
+				(l) => l.ts_ms
+			);
+			store(found, tail.count);
 			loaded = true;
 			if (follow) await toEnd();
 			positioned = true;
@@ -81,14 +155,15 @@
 		if (pages.has(page)) return;
 		pages.add(page);
 		fetchLogs(`from=${page * PAGE}&to=${(page + 1) * PAGE}`)
-			.then((r) => store(r.lines, r.count))
+			.then((r) => store(newer(r.lines), r.count))
 			.catch(() => pages.delete(page));
 	}
 
 	$effect(() => {
-		void run;
+		void runId;
 		lines = new Map();
 		pages = new Set();
+		live = {};
 		count = 0;
 		loaded = false;
 		positioned = false;
@@ -98,11 +173,13 @@
 
 	$effect(() => {
 		if (!running) return;
-		const id = run;
+		const id = runId;
 		return subscribeLive(project, [id], {
 			onConsole: (c) => {
 				if (c.run !== id || !c.lines.length) return;
-				store(c.lines, Math.max(...c.lines.map((l) => l.line)) + 1);
+				const found = newer(c.lines);
+				noteLive(found);
+				store(found, Math.max(...c.lines.map((l) => l.line)) + 1);
 				if (follow) void toEnd();
 			},
 			onReset: () => {
@@ -141,6 +218,36 @@
 		}
 	});
 
+	/** The bars and rewritten lines now, in log order. */
+	const liveNow = $derived(
+		running
+			? Object.values(live)
+					.filter((r) => (r.bar || r.times >= 2) && isFresh(r, clock))
+					.map((r) => r.line)
+					.sort((a, b) => a.line - b.line)
+					.slice(-MAX_LIVE)
+			: []
+	);
+
+	// Bars still at the very end of the log are on screen already, as in a terminal. Once the
+	// log has moved past them, the strip stays until they're gone: bars can come back to the
+	// end for a moment (a message moves them), and that shouldn't make it blink.
+	let pinned = $state(false);
+	let stripRows = $state(0);
+	let lastFull = 0;
+	$effect(() => {
+		void clock;
+		const n = liveNow.length;
+		if (n >= stripRows) {
+			stripRows = n;
+			lastFull = Date.now();
+		} else if (Date.now() - lastFull > SHRINK_AFTER_MS) {
+			stripRows = n;
+		}
+		if (!stripRows) pinned = false;
+		else if (n && liveNow[0].line < count - n) pinned = true;
+	});
+
 	const lineAt = (i: number) => {
 		void version;
 		return lines.get(i);
@@ -152,6 +259,11 @@
 			viewport.scrollTop = viewport.scrollHeight;
 			scrollTop = viewport.scrollTop; // before the scroll event, for what loads next
 		}
+	}
+
+	function toTop() {
+		follow = false;
+		if (viewport) viewport.scrollTop = 0;
 	}
 
 	function onScroll() {
@@ -215,72 +327,137 @@
 				{count.toLocaleString('en')} lines
 			{/if}
 		</span>
-		{#if !matches && !follow && count > 0}
-			<Button
-				variant="outline"
-				size="sm"
-				class="ml-auto"
-				onclick={() => ((follow = true), toEnd())}
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger
+				class={buttonVariants({ variant: 'outline', size: 'sm', class: 'ml-auto' })}
+				disabled={count === 0}
 			>
-				<ArrowDownToLine />
-				{running ? 'Follow' : 'Go to end'}
-			</Button>
-		{/if}
+				<Download /> Download
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" class="w-56">
+				<!-- eslint-disable svelte/no-navigation-without-resolve -- API files, not pages -->
+				<DropdownMenu.Item>
+					{#snippet child({ props })}
+						<a {...props} href={downloadHref(false)} download>Plain text (.log)</a>
+					{/snippet}
+				</DropdownMenu.Item>
+				<DropdownMenu.Item>
+					{#snippet child({ props })}
+						<a {...props} href={downloadHref(true)} download>With colors (ANSI codes)</a
+						>
+					{/snippet}
+				</DropdownMenu.Item>
+				<!-- eslint-enable svelte/no-navigation-without-resolve -->
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
 	</div>{/if}
 
 {#if error}
 	<p class="text-sm text-destructive">{error}</p>
 {:else if matches}
-	<div class="max-h-[70vh] overflow-auto rounded-xl border bg-card py-1 font-mono text-xs">
+	<div class="terminal max-h-[70vh] overflow-auto rounded-xl border py-2 text-[13px]">
 		{#each matches as l (l.line)}
 			<button
-				class="flex w-full min-w-max text-left leading-5 hover:bg-muted/60"
+				class={[
+					'block w-full min-w-max border-l-2 px-3 text-left whitespace-pre hover:bg-[var(--term-hover)]',
+					l.stream === 'stderr' ? 'border-l-red-500/70' : 'border-l-transparent'
+				]}
+				style:line-height={`${ROW}px`}
 				onclick={() => jumpTo(l.line)}
-				title="Show in context"
+				title="Show in context"><AnsiText text={l.text} /></button
 			>
-				<span class="w-16 shrink-0 pr-3 text-right text-muted-foreground select-none"
-					>{l.line + 1}</span
-				>
-				<span class="pr-4 whitespace-pre"><AnsiText text={l.text} /></span>
-			</button>
 		{:else}
-			<p class="px-3 py-2 font-sans text-sm text-muted-foreground">No line matches.</p>
+			<p class="px-3 py-2 font-sans text-sm text-[var(--term-muted)]">No line matches.</p>
 		{/each}
 	</div>
 {:else if loaded && count === 0}
 	<ConsoleEmpty {project} {capture} {running} />
 {:else}
-	<div
-		bind:this={viewport}
-		bind:clientHeight={viewHeight}
-		onscroll={onScroll}
-		class="relative h-[70vh] overflow-auto rounded-xl border bg-card font-mono text-xs"
-		role="log"
-		aria-label="Console output"
-		tabindex="-1"
-	>
-		<div class="relative min-w-full" style:height={`${height}px`}>
-			{#each visible as i (i)}
-				{@const l = lineAt(i)}
-				<div
-					class={[
-						'absolute left-0 flex h-5 w-max min-w-full leading-5 hover:bg-muted/50',
-						highlight === i && 'bg-primary/10'
-					]}
-					style:top={`${scrollTop + i * ROW - virtualTop}px`}
-					title={l ? dateTime(l.ts_ms) : undefined}
-				>
-					<span
-						class={[
-							'sticky left-0 w-16 shrink-0 border-r bg-card pr-3 text-right text-muted-foreground select-none',
-							l?.stream === 'stderr' && 'border-r-destructive/60'
-						]}>{i + 1}</span
-					>
-					<span class="pr-4 pl-3 whitespace-pre"
-						>{#if l}<AnsiText text={l.text} />{/if}</span
-					>
-				</div>
-			{/each}
+	<div class="terminal relative overflow-hidden rounded-xl border">
+		<div
+			class="flex h-8 items-center gap-2 border-b border-[var(--term-border)] bg-[var(--term-bar)] px-3 font-sans text-xs text-[var(--term-muted)]"
+		>
+			<span class="flex gap-1.5" aria-hidden="true">
+				<span class="size-2.5 rounded-full bg-[var(--term-border)]"></span>
+				<span class="size-2.5 rounded-full bg-[var(--term-border)]"></span>
+				<span class="size-2.5 rounded-full bg-[var(--term-border)]"></span>
+			</span>
+			<span class="ml-1">stdout · stderr</span>
+			{#if running}
+				<span class="ml-auto inline-flex items-center gap-1.5">
+					<span class="size-1.5 animate-pulse rounded-full bg-emerald-500"></span>
+					{follow ? 'Following' : 'Live'}
+				</span>
+			{/if}
 		</div>
+		<div class="relative">
+			<div
+				bind:this={viewport}
+				bind:clientHeight={viewHeight}
+				onscroll={onScroll}
+				class="relative h-[calc(100svh-27rem)] min-h-64 overflow-auto text-[13px]"
+				role="log"
+				aria-label="Console output"
+				tabindex="-1"
+			>
+				<div class="relative min-w-full" style:height={`${height + 16}px`}>
+					{#each visible as i (i)}
+						{@const l = lineAt(i)}
+						<div
+							class={[
+								'absolute left-0 w-max min-w-full border-l-2 pr-4 pl-3 whitespace-pre hover:bg-[var(--term-hover)]',
+								l?.stream === 'stderr'
+									? 'border-l-red-500/70'
+									: 'border-l-transparent',
+								highlight === i && 'bg-[var(--term-mark)]'
+							]}
+							style:top={`${8 + scrollTop + i * ROW - virtualTop}px`}
+							style:height={`${ROW}px`}
+							style:line-height={`${ROW}px`}
+							title={l
+								? `${dateTime(l.ts_ms)}${l.stream === 'stderr' ? ' · stderr' : ''}`
+								: undefined}
+						>
+							{#if l}<AnsiText text={l.text} />{/if}
+						</div>
+					{/each}
+				</div>
+			</div>
+			<div class="absolute right-4 bottom-4 flex flex-col gap-2">
+				{#if scrollTop > 0}
+					<button
+						class="flex items-center gap-1.5 rounded-full border border-[var(--term-border)] bg-[var(--term-button)] px-3 py-1.5 font-sans text-xs text-[var(--term-fg)] shadow-lg backdrop-blur hover:bg-[var(--term-bar)]"
+						onclick={toTop}
+					>
+						<ArrowUpToLine class="size-3.5" /> Top
+					</button>
+				{/if}
+				{#if !follow}
+					<button
+						class="flex items-center gap-1.5 rounded-full border border-[var(--term-border)] bg-[var(--term-button)] px-3 py-1.5 font-sans text-xs text-[var(--term-fg)] shadow-lg backdrop-blur hover:bg-[var(--term-bar)]"
+						onclick={() => ((follow = true), toEnd())}
+					>
+						<ArrowDownToLine class="size-3.5" />
+						{running ? 'Follow' : 'Bottom'}
+					</button>
+				{/if}
+			</div>
+		</div>
+		{#if pinned && running}
+			<!-- Lines stay at the bottom: newer bars keep their place as older lines leave. -->
+			<div
+				class="flex flex-col justify-end overflow-x-auto border-t border-[var(--term-border)] bg-[var(--term-bar)] py-1 pl-3.5 text-[13px]"
+				style:min-height={`${stripRows * ROW + 8}px`}
+				role="status"
+				aria-label="Live progress"
+				title="Lines being rewritten in place (progress bars)"
+			>
+				{#each liveNow as l (l.line)}
+					<div class="whitespace-pre" style:line-height={`${ROW}px`}>
+						<AnsiText text={l.text} />
+					</div>
+				{/each}
+			</div>
+		{/if}
 	</div>
 {/if}

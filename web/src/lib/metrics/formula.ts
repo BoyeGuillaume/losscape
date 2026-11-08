@@ -19,6 +19,8 @@ const FUNCTIONS: Record<string, (...args: number[]) => number> = {
 	exp: Math.exp
 };
 
+export const FUNCTION_NAMES = Object.keys(FUNCTIONS);
+
 export class FormulaError extends Error {}
 
 type Token =

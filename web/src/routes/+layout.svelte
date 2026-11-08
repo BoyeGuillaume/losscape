@@ -22,6 +22,14 @@
 		loadMe();
 	});
 
+	/** Project tabs other than the run list, named in the header. */
+	const TAB_LABELS: Record<string, string> = {
+		'/p/[project]/(tabs)/compare': 'Compare',
+		'/p/[project]/(tabs)/metrics': 'Metrics',
+		'/p/[project]/(tabs)/tags': 'Tags',
+		'/p/[project]/(tabs)/settings': 'Settings'
+	};
+
 	const project = $derived(page.params.project);
 	const run = $derived(page.params.run);
 
@@ -31,8 +39,17 @@
 		const trail: { label: string; href?: string }[] = [
 			{ label: 'Projects', href: resolve('/') }
 		];
-		if (project) trail.push({ label: project, href: resolve('/p/[project]', { project }) });
-		if (page.route.id === '/p/[project]/settings') trail.push({ label: 'Settings' });
+		if (project)
+			trail.push({ label: project, href: resolve('/p/[project]/(tabs)/runs', { project }) });
+		const tab = TAB_LABELS[page.route.id ?? ''];
+		if (tab) trail.push({ label: tab });
+		if (project && page.route.id === '/p/[project]/(tabs)/metrics/[...name]') {
+			const name = page.params.name ?? '';
+			trail.push(
+				{ label: 'Metrics', href: resolve('/p/[project]/(tabs)/metrics', { project }) },
+				{ label: name.endsWith('/*') ? name.slice(0, -1) : name }
+			);
+		}
 		if (run) trail.push({ label: nav.runName ?? run.slice(0, 8) });
 		return trail;
 	});

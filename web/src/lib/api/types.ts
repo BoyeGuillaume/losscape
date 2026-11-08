@@ -27,7 +27,11 @@ export type RunSummary = {
 	metric_min: Record<string, number>;
 	metric_max: Record<string, number>;
 	/** Metrics renamed in this run: logged name -> shown name. */
+	/** Someone asked this running run to stop; it does at its next heartbeat. */
+	abort_requested_at_ms: number | null;
 	renames: Record<string, string>;
+	/** Factors of renamed metrics, when not 1. */
+	rename_scales: Record<string, number>;
 	heartbeat_at_ms: number;
 	finished_at_ms: number | null;
 	summary: Record<string, unknown>;
@@ -129,4 +133,22 @@ export type RunEnvironment = {
 	/** Console capture: whether it ran, and why not (`off`: console=False, LOSSCAPE_CONSOLE,
 	 * windows, notebook; `error`: it failed to start). */
 	console?: { captured?: boolean; off?: string; error?: string };
+};
+
+/** A page of the run list (`limit`/`after`), or the runs changed since `since_ms`. */
+export type RunsPage = {
+	runs: RunSummary[];
+	/** Cursor of the next page, if there may be one. */
+	next: string | null;
+	/** Server time of the listing, for the next `since_ms`. */
+	as_of_ms: number;
+};
+
+/** A tag of a project: how it shows, and how many runs have it (archived ones aside). */
+export type TagInfo = {
+	name: string;
+	/** A palette color; null: derived from the name. */
+	color: string | null;
+	description: string;
+	runs: number;
 };

@@ -9,7 +9,6 @@
 	import { apiJson, apiSend } from '#lib/api/client.js';
 	import type { Member, ProjectAccess, ProjectInfo, Role } from '#lib/api/types.js';
 	import { auth } from '#lib/auth.svelte.js';
-	import MetricDefinitions from '#lib/components/app/MetricDefinitions.svelte';
 	import UserAvatar from '#lib/components/app/UserAvatar.svelte';
 	import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
@@ -189,22 +188,12 @@
 	}
 </script>
 
-<div class="mx-auto grid max-w-4xl gap-6">
-	<div class="flex flex-wrap items-end justify-between gap-2">
-		<div>
-			<h1 class="text-2xl font-semibold tracking-tight">Project settings</h1>
-			<p class="text-sm text-muted-foreground">
-				<span class="font-medium text-foreground">{project}</span>
-				{#if info.data}· created {dateTime(info.data.created_at_ms)}{/if}
-			</p>
-		</div>
-		<a
-			class={buttonVariants({ variant: 'outline', size: 'sm' })}
-			href={resolve('/p/[project]', { project })}
-		>
-			Back to runs
-		</a>
-	</div>
+<div class="grid max-w-4xl gap-6">
+	{#if info.data}
+		<p class="-mt-2 text-sm text-muted-foreground">
+			Created {dateTime(info.data.created_at_ms)}
+		</p>
+	{/if}
 
 	{#if access.error}
 		<p class="text-sm text-destructive">{String(access.error)}</p>
@@ -256,11 +245,6 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
-
-		<MetricDefinitions
-			{project}
-			canEdit={access.data.role === 'owner' || access.data.role === 'editor'}
-		/>
 
 		<Card.Root>
 			<Card.Header>

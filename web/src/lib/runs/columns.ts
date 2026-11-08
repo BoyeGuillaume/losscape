@@ -115,24 +115,30 @@ export function availableKeys(runs: RunSummary[]) {
 }
 
 /**
- * Default columns: run fields and the most common numeric summary values. Config keys
- * (there can be many) are added by hand, from the column picker or the config explorer.
+ * Default columns: run fields, then summary values: the important metrics, then the most
+ * common numeric ones (hidden metrics left out). Config keys (there can be many) are added
+ * by hand, from the column picker.
  */
 export function defaultColumns(runs: RunSummary[]): string[] {
 	const sample = runs.slice(0, SCAN);
 	const { summary } = availableKeys(sample);
-	const hidden = currentRegistry().hidden();
+	const registry = currentRegistry();
 	const numericSummary = summary.filter(
 		(key) =>
-			!hidden.has(key) && sample.some((run) => typeof flatRun(run).summary.get(key) === 'number')
+			!registry.describe(key).hidden &&
+			sample.some((run) => typeof flatRun(run).summary.get(key) === 'number')
 	);
+	const important = numericSummary.filter((key) => registry.describe(key).important);
+	const others = numericSummary.filter((key) => !registry.describe(key).important);
 	return [
 		'state',
 		'created',
 		'runtime',
 		'steps',
 		'tags',
-		...numericSummary.slice(0, 6).map((k) => `summary.${k}`)
+		...[...important, ...others.slice(0, Math.max(0, 6 - important.length))].map(
+			(k) => `summary.${k}`
+		)
 	];
 }
 

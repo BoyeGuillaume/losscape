@@ -6,6 +6,7 @@
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import { mode } from 'mode-watcher';
+	import { page } from '$app/state';
 
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
@@ -28,6 +29,7 @@
 	import type { MetricSource } from '#lib/charts/source.js';
 	import { levelFor, tileStore, type SeriesPoints } from '#lib/charts/tiles.svelte.js';
 	import { formatMetric, metricAxis, unitFor, unitTicks } from '#lib/metric-units.js';
+	import { nav } from '#lib/nav.svelte.js';
 
 	/** BrushContext's event payload (not exported by name). */
 	type BrushEvent = Parameters<NonNullable<ComponentProps<typeof BrushContext>['onBrushEnd']>>[0];
@@ -60,12 +62,15 @@
 		xOptions = [],
 		view: sharedView = $bindable(null),
 		title = metric,
+		href,
 		onRename
 	}: {
 		series: ChartSeries[];
 		metric: string;
 		/** Shown name (defaults to the metric). */
 		title?: string;
+		/** Where the title links to: the metric's page. */
+		href?: string;
 		/** Reads metrics as shown (renamed, merged, computed). */
 		source: MetricSource;
 		/** Offers "Rename in this run" (the run page). */
@@ -81,9 +86,22 @@
 	} = $props();
 
 	const settings = $derived<ChartSettings>({ ...pageSettings, ...override });
+
+	/** The metric's page links back here: this run, or the run list. */
+	const tabLabel = () => {
+		const id = page.route.id ?? '';
+		if (id.endsWith('/overview')) return 'Overview';
+		return id.endsWith('/compare') ? 'Compare' : `Runs of ${page.params.project ?? ''}`;
+	};
+	function rememberWayBack() {
+		nav.back = {
+			href: page.url.pathname + page.url.search,
+			label: nav.runName ?? tabLabel()
+		};
+	}
 	const meta = $derived(source.registry.describe(metric));
-	const virtual = $derived(source.registry.isVirtual(metric));
-	/** The logged metric shown here, for a single run whose name differs (merges, renames). */
+	const computed = $derived(source.registry.isComputed(metric));
+	/** The logged metric shown here, for a single run that renamed it. */
 	const fromKey = $derived(
 		series.length === 1 && series[0].runs.length === 1
 			? source.sourceOf(series[0].runs[0].id, metric)
@@ -441,11 +459,22 @@
 			class="flex min-w-0 items-center gap-1 truncate text-sm font-medium"
 			title={[metric, meta.description].filter(Boolean).join(' — ')}
 		>
-			{#if virtual}<span
+			{#if computed}<span
 					class="shrink-0 font-serif text-xs text-primary italic"
-					title="Virtual metric (project settings > Metrics)">ƒ</span
+					title="Computed metric (Metrics tab)">ƒ</span
 				>{/if}
-			<span class="truncate">{meta.label ?? title}</span>
+			{#if href}
+				<!-- eslint-disable svelte/no-navigation-without-resolve -- resolved by the caller -->
+				<a
+					class="truncate hover:underline"
+					{href}
+					title="Settings of this metric"
+					onclick={rememberWayBack}>{meta.label ?? title}</a
+				>
+				<!-- eslint-enable svelte/no-navigation-without-resolve -->
+			{:else}
+				<span class="truncate">{meta.label ?? title}</span>
+			{/if}
 		</h3>
 		{#if fromKey}
 			<span class="shrink-0 truncate text-xs text-muted-foreground" title="Read from">
@@ -547,7 +576,7 @@
 					<DropdownMenu.Item disabled={!overridden} onSelect={() => onOverride?.(null)}>
 						Use the page's settings
 					</DropdownMenu.Item>
-					{#if onRename && !virtual}
+					{#if onRename && !computed}
 						<DropdownMenu.Separator />
 						<DropdownMenu.Item onSelect={() => onRename(metric)}>
 							Rename in this run…

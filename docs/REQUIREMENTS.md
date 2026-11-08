@@ -108,7 +108,7 @@ Targets to aim for, not measurements.
 
 ### Captured automatically
 - **P0 (done)** Git commit + diff of uncommitted changes, command line, Python environment (`pip freeze` or `uv.lock`), CUDA version, driver, GPU model, hostname, Slurm job ID, container image. (Packages come from `*.dist-info` names on `sys.path`; the diff is stored as a run file, up to 2 MB; the container image is known for Apptainer, privileged Podman, or `LOSSCAPE_CONTAINER_IMAGE`.)
-- **P0 (done)** System metrics: NVIDIA GPU usage, memory, power, temperature (NVML); CPU, RAM, disk, network. Logged as `system/...` metrics every 5 s (step = unix seconds), kept out of the summary. Network traffic is `system/network/recv` and `sent`, in bits per second. The UI shows them with units (%, bytes, bps) from built-in metric definitions (`BUILTIN` in `web/src/lib/metrics/registry.ts`), which a project's own definitions override.
+- **P0 (done)** System metrics: NVIDIA GPU usage, memory, power, temperature (NVML); CPU, RAM, disk, network. Logged as `system/...` metrics every 5 s (step = unix seconds), kept out of the summary. Network traffic is `system/network/recv` and `sent`, in bits per second; disk traffic `system/disk/read` and `write`, in bytes per second. `system/cpu/process_pct` adds up the process's threads, so it can exceed 100%. The UI shows them with units (%, bytes, bps) from built-in metric definitions (`BUILTIN` in `web/src/lib/metrics/registry.ts`), which a project's own definitions override.
 - **P0 (done)** stdout and stderr, processed so `\r` progress bars display correctly (see Design 3). Captured at the file-descriptor level (C extensions, subprocesses), through a pseudo-terminal when the output was one; off on Windows and in Jupyter for now; 100 MB per run. The run's environment records whether capture ran and why not (`console=False`, `LOSSCAPE_CONSOLE`, Windows, notebook, or a start error), so the Logs tab tells "nothing printed" from "not recorded" and shows how to turn it on.
 - **P0 (done)** Values that look like secrets (`*KEY*`, `*TOKEN*`, `*SECRET*`) are hidden in captured environment variables and configs (whole words in the name, so `max_tokens` is kept; also strings shaped like known tokens).
 - **P1** AMD (ROCm) and Apple Silicon GPU metrics.
@@ -120,14 +120,22 @@ Targets to aim for, not measurements.
 
 ## 5. Runs and UI
 
+### Project layout
+- **P0 (done)** A project has tabs: Overview (its opening page: see below), Runs (the table, with charts of the picked runs below), Compare (picked runs side by side), Metrics, Tags, Settings.
+
 ### Runs
 - **P0** Projects, runs, groups (e.g. seeds of the same config), notes.
-- **P0** **Tags**: many per run.
+- **P0 (done)** **Tags**: many per run, set by the SDK or added and removed in the UI (on the run page, or on picked runs). Each project gives its tags a color from a palette (or one derived from the name) and a description; clicking a tag filters the runs by it. The Tags tab lists them with their run counts, colors and descriptions.
 - **P0 (partly done)** **Aliases**: a name unique within a project that points to exactly one run (e.g. `baseline`, `best`). Setting it on another run moves it. Usable everywhere: `api.run("proj/@baseline")`, URLs, chart filters. Done: set and remove on the run page, `/p/<project>/r/@best`, `alias:best` in filters. To do: `api.run`.
+- **P0 (done)** Abort a running run from its page, or picked runs from the Runs tab (editors): the SDK learns about it from its heartbeat (every 5 s) and interrupts the script like Ctrl-C (also one started in the background, which otherwise ignores interrupts), so what was logged is kept and the run ends as killed. A script still running a minute later is terminated.
 - **P0** Run states (running, finished, crashed, killed) with crash detection through heartbeats. Crashed runs show their exit code; their output is on the Logs tab (the Overview doesn't repeat it).
-- **P1 (partly done)** Bulk actions: tag, alias, move, archive, delete with a trash bin. Done: archive (the trash bin: hidden, restorable, deleted for good after a per-project number of days, 30 by default) and chart selected. To do: tag, alias, move.
+- **P1 (partly done)** Bulk actions: tag, alias, move, archive, delete with a trash bin. Done: tag, archive (the trash bin: hidden, restorable, deleted for good after a per-project number of days, 30 by default). To do: alias, move.
 
-### Overview page, configurable from the UI (P0, main feature)
+### Overview page (P0 done, main feature)
+- **One board per project**, its opening page: a query, a sort and a limit (at most 40 runs) choose the runs, edited on the board itself by editors and saved with the project (`/projects/{project}/board`). A leaderboard shows their important metrics; charts of those metrics follow, for the first 8 runs or the ones ticked, each run keeping its color as rows move. Picked runs go to Compare. Code: `web/src/routes/p/[project]/(tabs)/overview/`, `web/src/lib/runs/board.ts`, `crates/losscape-server/src/board.rs`.
+- Run pages show their important metrics as figures above the charts and the overview.
+
+Later, if one board proves too little:
 - A grid of widgets you can drag and resize: runs table, line charts, scatter and bar charts of summary values, parallel coordinates, leaderboard, config diff, markdown.
 - **Run sets:** each widget uses either the page's run selection (filter, tags, aliases) or its own. Comparing runs = pick the runs once, every widget follows.
 - **Saved views:** multiple layouts per project, each with a shareable URL. Layouts are stored as versioned JSON in Postgres.
@@ -136,16 +144,19 @@ Targets to aim for, not measurements.
 - **P0 (done)** Any config or summary value as a column; sort, group, pin columns. (Group rows by a run field or config value; group headers show column means.)
 - **P0 (done)** Config keys aren't default columns (there can be many); add them from the column picker.
 - **P0 (done)** Filter syntax, e.g. `config.lr < 1e-3 and tag:baseline and state:finished and alias:best` (also `or`, `not`, parentheses, `~` regex, bare-word search; `web/src/lib/filter.ts`). The filter bar suggests fields, config keys and their values as you type.
-- **P0 (done)** Virtualized rendering for 100k rows (only visible rows are in the DOM; 20k runs load in < 1 s, filter in ~250 ms).
+- **P0 (done)** Virtualized rendering for 100k rows (only visible rows are in the DOM; filter in ~250 ms for 20k runs). The run list loads newest first, page by page (the first rows show in ~0.4 s, 20k runs in ~0.9 s), then only fetches runs changed since (`since_ms`, from a `runs.updated_at` kept by triggers).
 
-### Custom metrics (P0, done)
-Set in project settings > Metrics (editors), stored per project in Postgres, applied by the UI when reading: logged data is never rewritten. Code: `web/src/lib/metrics/`, `crates/losscape-server/src/metric_defs.rs`.
-- **Describe** a metric, or every metric a pattern matches (`*` anything, `{k}` one path segment): display name, description, unit (count, %, fraction as %, bytes, bit/s, duration, custom suffix; with a scale for values logged in other units, and decimals), range (fixes the y axis), which way is better, and the summary value (last, or best). The most specific pattern wins; equally specific ones apply in list order.
-- **Merge:** one metric read from the first of several metrics a run has, each with a scale (`val/pck-8` or `val/pck-8-fine` × 0.01 as `val/pck@8`), to compare runs that logged it under different names. Optionally hides its sources from charts and default columns (they stay filterable).
-- **Family:** a pattern with one parameter (`val/pck-{k}`): its members are described alike, and a chart plots each run's summary value against `k` (numeric members only when there are some).
-- **Formula:** a metric computed from others, `[metric]` references with `+ - * / ^`, `min`, `max`, `abs`, `sqrt`, `log`, `log10`, `exp`. Charted bucket by bucket where all inputs exist, and in summaries.
-- **Best values:** ingest keeps each run's min and max per metric (not `system/`), so "best" summaries cost nothing to read. Tables label columns with display names, sort best first and mark the best value; charts can show the best value so far.
-- **Renames per run:** a metric of one run shown under another name (`pck-8` as `pck-8px`), from the chart menu on the run page; listed, editable and removable in the run's Overview. Renamed metrics line up with other runs' metric of that name in charts, tables, filters, merges and formulas.
+### Metrics tab (P0, done)
+Per project, editors; stored in Postgres and applied by the UI when reading: logged data is never rewritten. Code: `web/src/lib/metrics/`, `web/src/lib/components/app/MetricsList.svelte`, `.../metrics/[...name]/+page.svelte`, `crates/losscape-server/src/metric_defs.rs`.
+- **A list of metrics**, logged and computed (ƒ), grouped by prefix: ★ important and hidden are one click; each row shows its settings in one line ("% (0–1) · ↑ higher · best"). Then **families** (below).
+- **A page per metric** (`/p/<project>/metrics/<name>`): a live preview (its chart for the latest runs), settings (display name, description, which way is better, summary, unit, range; the formula of a computed metric), the runs that have it or rename it (with undo), and reset or delete. Each setting shows what it inherits ("Auto (↑ higher)").
+- **Units** are picked as a kind (number, percent, bytes, bits/s, time, custom suffix), how values were logged (0–1 or 0–100; B, KiB, MiB, GiB; ms, s, min, h; a custom suffix alone or after k, M, B; or another factor) and a precision.
+- **Groups:** each prefix (`val/`, `system/`) has a page whose settings apply to every metric under it, field by field, unless the metric sets its own. Built-in defaults describe the system metrics.
+- **Important metrics** are charted first (their own section), are the first default columns of the run table, and come first in a run's summary. **Hidden** ones are left out of charts and default columns (still filterable).
+- **Renames** (per run, because the same name can mean different things in different runs): from the chart menu on the run page, or for many runs at once from the Metrics tab (picked runs, every run that logged it, or runs matching a filter), with an optional factor (`val/pck-8-fine` × 0.01 shown as `val/pck-8`). Renamed metrics line up with other runs' metric of that name everywhere.
+- **Families** (`val/pck-4`, `-8`, `-16`, …, also with a suffix: `pck-4px`, `pck-8px`) are found from the names, logged or given by renames, and can be charted as one: each run's summary value against the number.
+- **Computed metrics** are listed with the others (marked ƒ, "Computed metric" makes a blank one and opens its page, where its name and formula are edited, with suggestions for metrics and functions at the caret; removed from the list or from their page, with an undo): formulas over logged metrics (`[metric]`, `+ - * / ^`, `min`, `max`, `abs`, `sqrt`, `log`, `log10`, `exp`), charted bucket by bucket where all inputs exist, and summarized.
+- **Best values:** ingest keeps each run's min and max per metric (not `system/`), so "best" summaries cost nothing to read; tables sort best first and mark the best value; charts can show the best value so far.
 
 ### Line charts
 - **P0 (partly done)** Every metric's chart is configurable: x-axis, smoothing (EMA, time-weighted EMA, running average), log scale, range, aggregation (mean, min/max band, last). Done, for the page and per chart: x-axis (step, wall time, relative time, any metric), EMA weighted by points per bucket, log y, min/max band. To do: other smoothers, range, `last` aggregation.
@@ -155,15 +166,20 @@ Set in project settings > Metrics (editors), stored per project in Postgres, app
 - **P0 (done)** Live updates: new points and new runs appear without a reload (one SSE stream per page for all its running runs; the run list is polled).
 
 ### Comparing
-- **P0 (done)** Overlay any set of runs on one chart (tick runs in the table; up to 40).
+- **P0 (done)** Overlay any set of runs on one chart (tick runs in the table; up to 40). Picked runs are one selection per project, kept across pages and visits: charted below the table, tagged or archived in bulk, and compared.
 - **P0 (done)** Plot metric A against metric B (pairs the two metrics' buckets at the same steps).
 - **P0** Side-by-side charts with linked axes.
 - **P0** "Relative to baseline" mode: plot run − `@baseline`.
 - **P1 (done)** Group runs by any key and show mean ± std or min–max bands across seeds.
-- **P1** Config diff highlighting only the keys that differ; code diff; environment diff.
+- **P0 (done)** Compare tab (`/p/<project>/compare`), on the project's picked runs (at least two), shareable by its link (runs and reference run in the URL; up to 40 runs):
+  - Pick runs with a filter (Add, Replace or Remove the runs it matches) and one by one (chips with a remove button); also from the Runs tab's selection bar and "Add to compare" on a run's page.
+  - Metrics: one row per run, the important metrics as columns (else the most common ones), the best value marked, and the difference to the reference run (green or red when the metric has a direction).
+  - Config diff: one column per run, reference first, only the keys that differ by default (or all, with a key search); values different from the reference highlighted, keys a run doesn't set shown as such.
+  - Charts of the picked runs.
+- **P1** Code diff; environment diff (git commit, packages).
 
 ### Other views
-- **P0 (partly done)** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info. Done except files (artifacts). The config has its own tab: searchable (keys, values, or dotted paths such as `data.ba` for `data.batch_size`; matching branches only, matches highlighted), as a collapsible tree or as highlighted YAML.
+- **P0 (partly done)** Run page: overview, config and summary, system metrics, logs (searchable, ANSI colors, `\r` handled), files, git info. Done except files (artifacts). Logs show as a terminal (light or dark with the page, Cascadia Mono for box drawing, block elements and braille, the 16/256/truecolor ANSI palette), stderr lines marked by a red edge. While a run is going, progress bars the log has moved past are pinned below it, as in a real terminal, along with other lines being rewritten; lines reach viewers about 0.1 s after being printed (pushed on arrival, before they are stored). With Top / Bottom (Follow while running) buttons and a download of the whole log as a file (`/runs/{id}/logs.txt`, plain or with its ANSI codes). The config has its own tab: searchable (keys, values, or dotted paths such as `data.ba` for `data.batch_size`; matching branches only, matches highlighted), as a collapsible tree or as highlighted YAML.
 - **P0 (done)** The whole view state lives in the URL, so a link opens exactly the same view (filter, sort, columns, pins, charted runs, chart settings, metric regex, zoom).
 - **P0 (done)** Dark mode.
 - **P1 (done)** Workspace with charts created automatically from logged keys, in sections by prefix (`train/`, `val/`).
@@ -302,6 +318,6 @@ CREATE TABLE metrics (
 
 ### Design 3 — Console logs with `\r` and progress bars
 
-- **SDK:** keep the current line in memory and apply `\r`, `\n` and a small ANSI subset (`ESC[A` cursor up, `ESC[K` / `ESC[2K` clear line) — enough for tqdm and rich. Send a line on `\n`; send the state of a line still being rewritten at most once per second as a replaceable line. A tqdm bar becomes one updated line, not thousands.
+- **SDK:** keep the current line in memory and apply `\r`, `\n` and a small ANSI subset (`ESC[A` cursor up, `ESC[K` / `ESC[2K` clear line) — enough for tqdm and rich. Send a line on `\n`; send the state of a line still being rewritten at most four times per second as a replaceable line, or with a new line of the same stream so that a bar moving down never shows twice. A row just cleared (tqdm clears with spaces) is held back for 0.5 s, since it is usually being redrawn. A tqdm bar becomes one updated line, not thousands.
 - **Server:** store `(run_id, line_no, text, ts)` in a ClickHouse `ReplacingMergeTree` so an updated line replaces the old one.
 - **UI:** virtualized list with an ANSI color parser (not xterm.js, which struggles with millions of lines).

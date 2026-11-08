@@ -58,7 +58,9 @@
 							>
 								{#snippet child({ props })}
 									<a
-										href={resolve('/p/[project]', { project: project.name })}
+										href={resolve('/p/[project]/(tabs)/runs', {
+											project: project.name
+										})}
 										{...props}
 									>
 										<FolderKanban />

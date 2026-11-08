@@ -25,6 +25,7 @@
 		type RunGroup
 	} from '#lib/runs/columns.js';
 	import StateBadge from './StateBadge.svelte';
+	import TagChip from './TagChip.svelte';
 
 	const ROW_HEIGHT = 36;
 	const HEADER_HEIGHT = 44;
@@ -44,13 +45,13 @@
 		pinned,
 		sort = $bindable(),
 		colors,
-		selected,
+		selection,
 		groupBy = null,
 		collapsed,
 		archiveDays = null,
 		maxRows = 12,
-		onChart,
 		onSelect,
+		onTag,
 		onToggleGroup,
 		onPin,
 		onHide
@@ -64,8 +65,8 @@
 		sort: { id: string; desc: boolean };
 		/** Charted runs and their colors. */
 		colors: Map<string, string>;
-		/** Ids of runs selected for bulk actions. */
-		selected: ReadonlySet<string>;
+		/** Picked runs (charted, acted on in bulk). */
+		selection: { has(id: string): boolean };
 		/** Column to group runs by. */
 		groupBy?: string | null;
 		/** Keys of collapsed groups. */
@@ -73,12 +74,14 @@
 		/** Set in the archived view: runs show when they will be deleted. */
 		archiveDays?: number | null;
 		maxRows?: number;
-		/** Shows (true) or hides runs in the charts. */
-		onChart: (runs: RunSummary[], on: boolean) => void;
+		/** Picks (true) or unpicks runs. */
 		onSelect: (runs: RunSummary[], on: boolean) => void;
-		onToggleGroup: (key: string) => void;
-		onPin: (id: string, pin: boolean) => void;
-		onHide: (id: string) => void;
+		/** A tag was clicked (e.g. to filter by it). */
+		onTag: (tag: string) => void;
+		onToggleGroup?: (key: string) => void;
+		/** Without these two, columns are fixed. */
+		onPin?: (id: string, pin: boolean) => void;
+		onHide?: (id: string) => void;
 	} = $props();
 
 	/** Pinned columns first; they stay visible when scrolling sideways. */
@@ -183,11 +186,11 @@
 		c.id in stickyLeft ? `position: sticky; left: ${stickyLeft[c.id]}px; z-index: 1;` : '';
 
 	/** all / some / none of `list` selected. */
-	function selection(list: RunSummary[]): boolean | 'mixed' {
-		const n = list.filter((r) => selected.has(r.id)).length;
+	function tickState(list: RunSummary[]): boolean | 'mixed' {
+		const n = list.filter((r) => selection.has(r.id)).length;
 		return n === 0 ? false : n === list.length ? true : 'mixed';
 	}
-	const allSelected = $derived(runs.length ? selection(runs) : false);
+	const allSelected = $derived(runs.length ? tickState(runs) : false);
 
 	/** Mean of a numeric column over a group, for its header row. */
 	function groupMean(group: RunGroup, id: string): number | undefined {
@@ -245,22 +248,13 @@
 	</button>
 {/snippet}
 
-{#snippet chartDot(color: string | undefined, label: string, toggle: () => void)}
-	<button
-		aria-pressed={!!color}
-		aria-label={label}
-		title={color ? 'Shown in the charts: click to hide' : 'Show in the charts'}
-		class="flex size-5 shrink-0 items-center justify-center rounded-full hover:bg-muted"
-		onclick={toggle}
+{#snippet chartDot(color: string | undefined)}
+	<span
+		class="flex size-5 shrink-0 items-center justify-center"
+		title={color ? 'Charted below' : undefined}
 	>
-		<span
-			class={[
-				'size-2.5 rounded-full transition-colors',
-				!color && 'border border-muted-foreground/60'
-			]}
-			style:background-color={color}
-		></span>
-	</button>
+		{#if color}<span class="size-2.5 rounded-full" style:background-color={color}></span>{/if}
+	</span>
 {/snippet}
 
 <div
@@ -343,19 +337,21 @@
 							<DropdownMenu.Item onSelect={() => sortBy(c.id, true)}>
 								<ArrowDown /> Sort descending
 							</DropdownMenu.Item>
-							<DropdownMenu.Separator />
-							{#if pinned.includes(c.id)}
-								<DropdownMenu.Item onSelect={() => onPin(c.id, false)}>
-									<PinOff /> Unpin
-								</DropdownMenu.Item>
-							{:else}
-								<DropdownMenu.Item onSelect={() => onPin(c.id, true)}>
-									<Pin /> Pin to the left
+							{#if onPin && onHide}
+								<DropdownMenu.Separator />
+								{#if pinned.includes(c.id)}
+									<DropdownMenu.Item onSelect={() => onPin(c.id, false)}>
+										<PinOff /> Unpin
+									</DropdownMenu.Item>
+								{:else}
+									<DropdownMenu.Item onSelect={() => onPin(c.id, true)}>
+										<Pin /> Pin to the left
+									</DropdownMenu.Item>
+								{/if}
+								<DropdownMenu.Item onSelect={() => onHide(c.id)}>
+									<EyeOff /> Hide column
 								</DropdownMenu.Item>
 							{/if}
-							<DropdownMenu.Item onSelect={() => onHide(c.id)}>
-								<EyeOff /> Hide column
-							</DropdownMenu.Item>
 						</DropdownMenu.Content>
 					</DropdownMenu.Root>
 				</div>
@@ -367,7 +363,7 @@
 				{#if item.kind === 'group'}
 					{@const group = item.group}
 					{@const open = !collapsed.has(group.key)}
-					{@const charted = group.runs.every((r) => colors.has(r.id))}
+					{@const charted = group.runs.some((r) => colors.has(r.id))}
 					<div
 						role="row"
 						aria-rowindex={index + 2}
@@ -381,8 +377,8 @@
 							role="gridcell"
 							class="sticky left-0 z-[2] flex items-center justify-center bg-muted"
 						>
-							{@render checkbox(selection(group.runs), `Select ${group.label}`, () =>
-								onSelect(group.runs, selection(group.runs) !== true)
+							{@render checkbox(tickState(group.runs), `Select ${group.label}`, () =>
+								onSelect(group.runs, tickState(group.runs) !== true)
 							)}
 						</div>
 						<div
@@ -391,13 +387,13 @@
 							style:left={`${SELECT_WIDTH}px`}
 						>
 							{@render chartDot(
-								charted ? colors.get(group.runs[0].id) : undefined,
-								`Chart ${group.label}`,
-								() => onChart(group.runs, !charted)
+								charted
+									? colors.get(group.runs.find((r) => colors.has(r.id))!.id)
+									: undefined
 							)}
 							<button
 								class="flex min-w-0 items-center gap-1 font-medium"
-								onclick={() => onToggleGroup(group.key)}
+								onclick={() => onToggleGroup?.(group.key)}
 							>
 								<ChevronRight
 									class={[
@@ -434,7 +430,7 @@
 				{:else}
 					{@const run = item.run}
 					{@const color = colors.get(run.id)}
-					{@const isSelected = selected.has(run.id)}
+					{@const isSelected = selection.has(run.id)}
 					{@const deleted = deletedIn(run)}
 					<div
 						role="row"
@@ -464,9 +460,7 @@
 							]}
 							style:left={`${SELECT_WIDTH}px`}
 						>
-							{@render chartDot(color, `Chart ${run.name}`, () =>
-								onChart([run], !color)
-							)}
+							{@render chartDot(color)}
 							<a
 								class="truncate font-medium hover:underline"
 								href={runHref(run)}
@@ -521,9 +515,7 @@
 								{:else if c.kind === 'tags'}
 									<span class="flex min-w-0 gap-1 overflow-hidden">
 										{#each run.tags as tag (tag)}
-											<span class="shrink-0 rounded-md border px-1.5 text-xs"
-												>{tag}</span
-											>
+											<TagChip name={tag} onclick={() => onTag(tag)} />
 										{/each}
 									</span>
 								{:else}

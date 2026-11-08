@@ -10,13 +10,15 @@
 		value = $bindable(''),
 		catalog,
 		invalid = false,
-		describedby
+		describedby,
+		disabled = false
 	}: {
 		value?: string;
 		/** Where suggestions come from (read only while suggesting). */
 		catalog: () => Catalog;
 		invalid?: boolean;
 		describedby?: string;
+		disabled?: boolean;
 	} = $props();
 
 	const listId = 'filter-suggestions';
@@ -79,6 +81,7 @@
 		aria-activedescendant={shown ? `${listId}-${active}` : undefined}
 		autocomplete="off"
 		spellcheck={false}
+		{disabled}
 		oninput={update}
 		onclick={update}
 		onfocus={update}

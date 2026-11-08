@@ -37,7 +37,7 @@
 			});
 			projectsChanged();
 			open = false;
-			goto(resolve('/p/[project]', { project: trimmed }));
+			goto(resolve('/p/[project]/(tabs)/runs', { project: trimmed }));
 		} catch (err) {
 			error = err instanceof ApiError ? err.message : 'Something went wrong.';
 		} finally {

@@ -3,8 +3,10 @@
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Search from '@lucide/svelte/icons/search';
+	import Star from '@lucide/svelte/icons/star';
 	import { ChartGroup } from 'layerchart';
 	import { untrack, type Component } from 'svelte';
+	import { resolve } from '$app/paths';
 
 	import { apiJson } from '#lib/api/client.js';
 	import { subscribeLive } from '#lib/api/live.js';
@@ -23,6 +25,7 @@
 	import { Toggle } from '#lib/components/ui/toggle/index.js';
 	import { MetricSource } from '#lib/charts/source.js';
 	import { match } from '#lib/metrics/pattern.js';
+	import type { Renames } from '#lib/metrics/registry.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
@@ -46,7 +49,9 @@
 		empty,
 		renames,
 		summaryOf,
-		onRename
+		onRename,
+		only,
+		importantOnly = false
 	}: {
 		project: string;
 		/** Lines to draw (runs, or groups of runs), in legend order. */
@@ -67,11 +72,15 @@
 		/** Shown when the runs have no metrics (default: how to log some); code in backticks. */
 		empty?: { icon: Component; title: string; text: string };
 		/** A run's renamed metrics (logged name -> shown name). */
-		renames?: (run: string) => Record<string, string>;
+		renames?: (run: string) => Renames | undefined;
 		/** A run's summary as shown, for family charts (none without it). */
 		summaryOf?: (run: string) => Record<string, unknown> | undefined;
 		/** Offers renaming a metric (the run page). */
 		onRename?: (key: string) => void;
+		/** Just this metric's chart, without the toolbar (a metric's page). */
+		only?: string;
+		/** Only metrics marked important. */
+		importantOnly?: boolean;
 	} = $props();
 
 	const sep = '\u0000';
@@ -162,7 +171,7 @@
 		return { min: Math.min(a.min, b.min), max: Math.max(a.max, b.max) };
 	}
 
-	/** Metrics as shown: renamed, merged, computed (project settings > Metrics). */
+	/** Metrics as shown: renamed, described, computed (the project's Metrics tab). */
 	const registry = $derived(currentRegistry());
 	const source = $derived.by(() => {
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- built once per change
@@ -174,15 +183,20 @@
 			rawByRun.get(run)!.add(key);
 		}
 		const runs = new Map(
-			[...rawByRun].map(([run, raw]) => [run, registry.forRun(raw, renames?.(run) ?? {})])
+			[...rawByRun].map(([run, raw]) => [run, registry.forRun(raw, renames?.(run))])
 		);
 		return new MetricSource(registry, runs, extentOf);
 	});
 
 	const keys = $derived(
-		source
-			.keys()
-			.filter((key) => (prefix ? key.startsWith(prefix) : !key.startsWith(SYSTEM_PREFIX)))
+		only
+			? source.keys(true).filter((key) => key === only)
+			: source
+					.keys()
+					.filter((key) =>
+						prefix ? key.startsWith(prefix) : !key.startsWith(SYSTEM_PREFIX)
+					)
+					.filter((key) => !importantOnly || registry.describe(key).important)
 	);
 
 	/** Families (`val/pck-{k}`) with at least two members here: charted against `k`. */
@@ -192,7 +206,7 @@
 			: registry.families
 					.map((def) => ({
 						def,
-						// Hidden sources of a merge are still members of their family.
+						// Hidden metrics are still members of their family.
 						members: source.keys(true).filter((k) => match(def.name, k))
 					}))
 					.filter((f) => f.members.length >= 2)
@@ -213,12 +227,17 @@
 
 	let collapsed = $state<Record<string, boolean>>({});
 
-	/** Charts grouped by the metric name's prefix: `train/loss` goes to "train". */
+	const shownKeys = $derived(
+		keys.filter((key) => metricMatch(prefix ? key.slice(prefix.length) : key))
+	);
+	/** Metrics marked important: charted first, in a section of their own. */
+	const important = $derived(shownKeys.filter((key) => registry.describe(key).important));
+	/** The other charts, grouped by the metric name's prefix: `train/loss` goes to "train". */
 	const sections = $derived.by(() => {
 		const groups: Record<string, string[]> = {};
-		for (const key of keys) {
+		for (const key of shownKeys) {
+			if (registry.describe(key).important) continue;
 			const name = prefix ? key.slice(prefix.length) : key;
-			if (!metricMatch(name)) continue;
 			const section = name.includes('/') ? name.slice(0, name.indexOf('/')) : '';
 			(groups[section] ??= []).push(key);
 		}
@@ -247,7 +266,25 @@
 	}
 </script>
 
-{#if series.length === 0}
+{#if only}
+	{#if keys.length}
+		<ChartGroup brush={false} domain={false}>
+			<MetricChart
+				{series}
+				metric={only}
+				title={only}
+				{source}
+				{settings}
+				override={overrides[only]}
+				onOverride={(o) => setOverride(only, o)}
+				{xOptions}
+				bind:view
+			/>
+		</ChartGroup>
+	{:else if loaded}
+		<p class="text-sm text-muted-foreground">These runs have no points of it yet.</p>
+	{/if}
+{:else if series.length === 0}
 	<EmptyCard icon={ChartLine} title="No runs charted">
 		{#snippet description()}
 			Pick the runs to chart with the dots next to their names in the table above.
@@ -363,13 +400,54 @@
 		{/if}
 	</div>
 
-	{#if loaded && sections.length === 0}
+	{#if loaded && shownKeys.length === 0}
 		<p class="text-sm text-muted-foreground">No metric matches.</p>
 	{/if}
+
+	{#snippet chartSection(id: string, label: string, sectionKeys: string[])}
+		{@const open = !collapsed[id]}
+		<section>
+			<button
+				class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+				onclick={() => (collapsed[id] = open)}
+				aria-expanded={open}
+			>
+				<ChevronRight class={['size-4 transition-transform', open && 'rotate-90']} />
+				{#if id === '\u0000important'}<Star class="size-3.5 fill-current" />{/if}
+				{label}
+				<span class="text-xs tabular-nums">{sectionKeys.length}</span>
+			</button>
+			{#if open}
+				<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+					{#each sectionKeys as key (key)}
+						<MetricChart
+							{series}
+							metric={key}
+							title={prefix ? key.slice(prefix.length) : key}
+							href={resolve('/p/[project]/(tabs)/metrics/[...name]', {
+								project,
+								name: key
+							})}
+							{source}
+							{onRename}
+							{settings}
+							override={overrides[key]}
+							onOverride={(o) => setOverride(key, o)}
+							{xOptions}
+							bind:view
+						/>
+					{/each}
+				</div>
+			{/if}
+		</section>
+	{/snippet}
 
 	<!-- Hovering one chart marks the same x on all of them; zoom is shared through `view`. -->
 	<ChartGroup brush={false} domain={false}>
 		<div class="grid gap-6">
+			{#if important.length}
+				{@render chartSection('\u0000important', 'Important', important)}
+			{/if}
 			{#if families.length && summaryOf}
 				{@const open = !collapsed['\u0000families']}
 				<section>
@@ -394,38 +472,7 @@
 				</section>
 			{/if}
 			{#each sections as [section, sectionKeys] (section)}
-				{@const open = !collapsed[section]}
-				<section>
-					<button
-						class="mb-3 flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-						onclick={() => (collapsed[section] = open)}
-						aria-expanded={open}
-					>
-						<ChevronRight
-							class={['size-4 transition-transform', open && 'rotate-90']}
-						/>
-						{section || 'Charts'}
-						<span class="text-xs tabular-nums">{sectionKeys.length}</span>
-					</button>
-					{#if open}
-						<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-							{#each sectionKeys as key (key)}
-								<MetricChart
-									{series}
-									metric={key}
-									title={prefix ? key.slice(prefix.length) : key}
-									{source}
-									{onRename}
-									{settings}
-									override={overrides[key]}
-									onOverride={(o) => setOverride(key, o)}
-									{xOptions}
-									bind:view
-								/>
-							{/each}
-						</div>
-					{/if}
-				</section>
+				{@render chartSection(section, section || 'Charts', sectionKeys)}
 			{/each}
 		</div>
 	</ChartGroup>

@@ -1,5 +1,5 @@
 // Formatting metric values in their unit. Units come from the project's metric
-// definitions (project settings > Metrics), with built-in defaults for system metrics.
+// definitions (its Metrics tab), with built-in defaults for system metrics.
 
 import { scaleLinear } from 'd3-scale';
 

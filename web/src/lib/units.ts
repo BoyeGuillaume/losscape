@@ -40,6 +40,11 @@ export const BYTES: Unit = {
 	}))
 };
 
+/** Bytes per second, binary: 512 B/s, 3.5 MiB/s. */
+export const BYTES_PER_SECOND: Unit = {
+	steps: BYTES.steps.map(({ factor, suffix }) => ({ factor, suffix: `${suffix}/s` }))
+};
+
 /** Bits per second, decimal: 800 bps, 12.5 Mbps, 1 Gbps. */
 export const BITS_PER_SECOND: Unit = {
 	steps: ['bps', 'kbps', 'Mbps', 'Gbps', 'Tbps'].map((suffix, i) => ({
