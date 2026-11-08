@@ -8,6 +8,7 @@ import {
 	BITS_PER_SECOND,
 	BYTES,
 	BYTES_PER_SECOND,
+	FLOPS,
 	COUNT,
 	PERCENT,
 	SECONDS,
@@ -21,6 +22,7 @@ export type Direction = 'max' | 'min';
 export type UnitPreset =
 	| 'none'
 	| 'count'
+	| 'flops'
 	| 'percent'
 	| 'fraction'
 	| 'bytes'
@@ -91,7 +93,14 @@ export type Renames = {
 };
 
 /** Built-in descriptions (lowest precedence): system metrics. */
+/** Recorded by `run.describe_model()`: one value per run, only logged again if it changes. */
+export const isModelMetric = (key: string) =>
+	/^model\/(.+\/)?(params|trainable_params|size_bytes|flops)$/.test(key);
+
 export const BUILTIN: MetricDef[] = [
+	{ name: 'model/*params', kind: 'describe', spec: { unit: { preset: 'count' } } },
+	{ name: 'model/*flops', kind: 'describe', spec: { unit: { preset: 'flops' } } },
+	{ name: 'model/*size_bytes', kind: 'describe', spec: { unit: { preset: 'bytes' } } },
 	{
 		name: 'system/*_pct',
 		kind: 'describe',
@@ -136,6 +145,7 @@ export function unitOf(spec: UnitSpec | undefined): Unit | null {
 		fraction: { ...PERCENT, scale: 100 },
 		bytes: BYTES,
 		bytes_per_s: BYTES_PER_SECOND,
+		flops: FLOPS,
 		bps: BITS_PER_SECOND,
 		seconds: SECONDS,
 		custom: customUnit(spec.suffix ?? '', spec.compact ?? false)

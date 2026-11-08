@@ -811,6 +811,45 @@ async fn abort_reaches_the_run_through_its_heartbeat() {
 }
 
 #[tokio::test]
+async fn model_descriptions_replace_by_name_and_stay_out_of_run_lists() {
+    let server = server!();
+    let run = RunId::new();
+    server.init(run, false).await;
+    let id = run.to_string();
+    let uri = format!("/api/v0/runs/{id}/models");
+    assert_eq!(get_json(&server, &uri).await.1, serde_json::json!({}));
+
+    let models = |seq, json: &str| LogBatch {
+        run_id: run.as_bytes().to_vec(),
+        seq,
+        models_json: json.to_owned(),
+        ..Default::default()
+    };
+    server
+        .log(models(
+            0,
+            r#"{"model": {"params": 1}, "head": {"params": 2}}"#,
+        ))
+        .await;
+    server.log(models(1, r#"{"model": {"params": 3}}"#)).await;
+    let (status, stored) = get_json(&server, &uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        stored,
+        serde_json::json!({"model": {"params": 3}, "head": {"params": 2}}),
+        "the latest of each name"
+    );
+
+    let (status, _) = server.send("/api/v0/ingest", models(2, "[1]"), false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let listed = listing(&server, "/api/v0/projects/test/runs").await;
+    assert!(listed["runs"][0].get("models").is_none());
+    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    assert!(detail.get("models").is_none());
+}
+
+#[tokio::test]
 async fn rejects_bad_requests() {
     let server = server!();
     let run = RunId::new();

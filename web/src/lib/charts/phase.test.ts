@@ -48,6 +48,35 @@ describe('phasePath', () => {
 		]);
 	});
 
+	it('can follow the metric that moves, for one logged only when it changes', () => {
+		const params = series([
+			[0, 100],
+			[3, 500]
+		]);
+		const loss = series([
+			[0, 4],
+			[1, 3],
+			[2, 2],
+			[3, 1],
+			[4, 0.5]
+		]);
+		expect(phasePath(params, loss)).toHaveLength(2);
+		expect(phasePath(params, loss, 'y').map((p) => [p.x, p.y])).toEqual([
+			[100, 4],
+			[100, 3],
+			[100, 2],
+			[500, 1],
+			[500, 0.5]
+		]);
+		expect(phasePath(loss, params, 'x').map((p) => [p.x, p.y])).toEqual([
+			[4, 100],
+			[3, 100],
+			[2, 100],
+			[1, 500],
+			[0.5, 500]
+		]);
+	});
+
 	it('starts once both have a value, and skips gaps', () => {
 		const late = series([
 			[2, 7],

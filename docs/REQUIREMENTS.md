@@ -149,6 +149,10 @@ Later, if one board proves too little:
 - **Run sets:** each widget uses either the page's run selection (filter, tags, aliases) or its own. Comparing runs = pick the runs once, every widget follows.
 - **Saved views:** multiple layouts per project, each with a shareable URL. Layouts are stored as versioned JSON in Postgres.
 
+### Model information
+- **P0 (done)** `run.describe_model(model, args=..., kwargs=..., name=..., path=...)` takes any `torch.nn.Module` (the SDK doesn't depend on PyTorch; DDP, DataParallel and `torch.compile` are unwrapped). It records totals, each module's class, parameter and buffer shapes, and `extra_repr`, with shared weights counted once and identical numbered neighbours collapsed (`Block × 12`), up to 5,000 modules. With inputs it also runs the model once for input and output shapes per module and a FLOPs estimate: in eval mode, without gradients, with modes and random state restored. Weights and inputs are never uploaded; problems become warnings.
+- Totals are logged as metrics at the current step without advancing it (`model/params`, `model/trainable_params`, `model/size_bytes`, `model/flops`; `model/<name>/...` for a named model), so they filter, sort, show as columns and plot in Explore, while staying out of charts and default columns unless starred. Describing a model again adds a point, which trajectories carry forward until the next. The latest description of each name shows on the run's Model tab, with collapsed blocks listed one by one on request (at most 5,000 rows drawn). FLOPs read as Flops, MFlops, GFlops: operations of one forward pass, not a rate. Later: comparing architectures in Compare.
+
 ### Runs table
 - **P0 (done)** Any config or summary value as a column; sort, group, pin columns. (Group rows by a run field or config value; group headers show column means.)
 - **P0 (done)** Config keys aren't default columns (there can be many); add them from the column picker.
@@ -257,7 +261,7 @@ Per project, editors; stored in Postgres and applied by the UI when reading: log
 
 ## 11. Security and access
 
-- **P0 (done)** Accounts with username + password: Argon2id (OWASP parameters, random salt per hash), constant-response sign-in, rate-limited failures. The first account is administrator.
+- **P0 (done)** Accounts with username + password: Argon2id (OWASP parameters, random salt per hash), no rules on strength: sign-up and password changes show a bar with an entropy estimate and ideas to improve it (in the browser only). The estimate cuts a password into its cheapest pieces: a dictionary of about 6,000 common passwords, words and names, keyboard runs, repeats, years, the owner's name, and letters at their lowest cost among 1-, 2- and 3-letter statistics (`web/src/lib/password.ts`; `scripts/gen_password_data.py` computes the data from zxcvbn's MIT-licensed frequency lists); only empty passwords and those over 1,024 bytes are refused, constant-response sign-in, rate-limited failures. The first account is administrator.
 - **P0 (done)** Browser sessions in an `HttpOnly`, `SameSite=Lax` (`Secure` on HTTPS) cookie, stored hashed; cross-site state-changing requests refused (`Sec-Fetch-Site` / `Origin`).
 - **P0 (done)** Per-user API keys for the SDK: shown once, stored as SHA-256, revocable, last-use shown.
 - **P0 (done)** Project roles: owner (manages members), editor (logs runs), viewer (reads). Checked on the server for every request; non-members get 404 so ids reveal nothing. A project has exactly one owner (a unique index); ownership moves only by transfer in the project settings (danger zone), never by changing roles or removing the owner. Projects are created explicitly in the UI (`POST /projects`, the creator becomes owner); `runs/init` on an unknown project is refused (404 `unknown_project`), so a typo in `project=` never starts a new project.

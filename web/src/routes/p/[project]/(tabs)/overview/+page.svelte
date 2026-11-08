@@ -37,6 +37,7 @@
 	import { literal } from '#lib/filter-suggest.js';
 	import { formatMetric } from '#lib/metric-units.js';
 	import { withMetrics, type ValueMode } from '#lib/metrics/apply.js';
+	import { isModelMetric } from '#lib/metrics/registry.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import { errorMessage } from '#lib/notify.js';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
@@ -370,7 +371,10 @@
 	const phaseX = $derived(
 		phaseKey && metricKeys.includes(phaseKey)
 			? phaseKey
-			: (choices.metrics[0]?.slice('summary.'.length) ?? metricKeys[0] ?? null)
+			: (metricKeys.find((k) => !important.includes(k) && !isModelMetric(k)) ??
+					metricKeys.find((k) => !isModelMetric(k)) ??
+					metricKeys[0] ??
+					null)
 	);
 	const phaseY = $derived(important.filter((key) => key !== phaseX));
 </script>
@@ -771,7 +775,11 @@
 								dots={c.dots}
 								{colors}
 								x={explore.kind === 'metric'
-									? { kind: 'metric', key: choiceMetric(explore) }
+									? {
+											kind: 'metric',
+											key: choiceMetric(explore),
+											log: c.plot.log
+										}
 									: c.plot.categories
 										? { kind: 'category', names: c.plot.categories }
 										: { kind: 'number', log: c.plot.log }}

@@ -371,6 +371,12 @@ impl Run {
         self.buffer().update_config(update);
     }
 
+    /// Records what a model is made of, replacing earlier descriptions of the same name.
+    pub fn update_models(&self, mut update: Map<String, Value>) {
+        crate::redact::redact_json(&mut update);
+        self.buffer().update_models(update);
+    }
+
     /// Flushes everything to the local log, then waits up to `timeout` for the upload.
     /// Later calls return the first outcome.
     pub fn finish(&self, state: RunExitState, exit_code: i32, timeout: Duration) -> FinishOutcome {
@@ -571,6 +577,7 @@ async fn batch_loop(
                 scalars: Some(drained.scalars),
                 summary_json: json_object(drained.summary),
                 config_json: json_object(drained.config),
+                models_json: json_object(drained.models),
                 console,
             };
             let payload = zstd::bulk::compress(&batch.encode_to_vec(), ZSTD_LEVEL)?;

@@ -6,8 +6,9 @@
 	import { phasePath } from '#lib/charts/phase.js';
 	import { MetricSource, type Extent } from '#lib/charts/source.js';
 	import { tileStore } from '#lib/charts/tiles.svelte.js';
+	import { isModelMetric } from '#lib/metrics/registry.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
-	import type { Dot } from '#lib/runs/board.js';
+	import { spansOrders, type Dot } from '#lib/runs/board.js';
 	import DotChart from './DotChart.svelte';
 
 	/** Points asked for per metric of a run: enough for a path, without noise at every step. */
@@ -98,7 +99,8 @@
 				const ys = source.points(run.id, key, from, to, WIDTH);
 				if (!xs || !ys) continue;
 				complete &&= xs.complete && ys.complete;
-				const points = phasePath(xs, ys).map((p): Dot => ({
+				const follow = isModelMetric(xKey) ? 'y' : isModelMetric(key) ? 'x' : undefined;
+				const points = phasePath(xs, ys, follow).map((p): Dot => ({
 					id: run.id,
 					name: run.name,
 					x: p.x,
@@ -122,7 +124,13 @@
 			dots={p.paths.flatMap((path) => path.points)}
 			paths={p.paths}
 			{colors}
-			x={{ kind: 'metric', key: xKey }}
+			x={{
+				kind: 'metric',
+				key: xKey,
+				log:
+					isModelMetric(xKey) &&
+					spansOrders(p.paths.flatMap((path) => path.points.map((d) => d.x)))
+			}}
 			{xName}
 			{highlight}
 			{onHover}

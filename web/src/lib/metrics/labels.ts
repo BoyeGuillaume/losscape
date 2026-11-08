@@ -3,7 +3,8 @@
 
 import type { Direction, Meta, UnitPreset, UnitSpec } from './registry.js';
 
-export type UnitKind = 'number' | 'percent' | 'bytes' | 'bytes_per_s' | 'bps' | 'time' | 'custom';
+export type UnitKind =
+	'number' | 'percent' | 'bytes' | 'bytes_per_s' | 'bps' | 'flops' | 'time' | 'custom';
 export type LoggedAs = { label: string; preset: UnitPreset; scale: number; compact?: boolean };
 
 export const UNIT_KINDS: { value: UnitKind; label: string }[] = [
@@ -12,6 +13,7 @@ export const UNIT_KINDS: { value: UnitKind; label: string }[] = [
 	{ value: 'bytes', label: 'Bytes' },
 	{ value: 'bytes_per_s', label: 'Bytes/s' },
 	{ value: 'bps', label: 'Bits/s' },
+	{ value: 'flops', label: 'Flops' },
 	{ value: 'time', label: 'Time' },
 	{ value: 'custom', label: 'Custom' }
 ];
@@ -32,6 +34,7 @@ export const LOGGED_AS: Record<UnitKind, LoggedAs[]> = {
 		{ label: 'MiB', preset: 'bytes', scale: 2 ** 20 },
 		{ label: 'GiB', preset: 'bytes', scale: 2 ** 30 }
 	],
+	flops: [{ label: 'Flops', preset: 'flops', scale: 1 }],
 	bytes_per_s: [
 		{ label: 'B/s', preset: 'bytes_per_s', scale: 1 },
 		{ label: 'KiB/s', preset: 'bytes_per_s', scale: 2 ** 10 },
@@ -64,6 +67,8 @@ export function unitKind(spec: UnitSpec | null | undefined): UnitKind {
 			return 'bytes';
 		case 'bytes_per_s':
 			return 'bytes_per_s';
+		case 'flops':
+			return 'flops';
 		case 'bps':
 			return 'bps';
 		case 'seconds':
@@ -97,6 +102,8 @@ export function unitLabel(spec: UnitSpec | null | undefined): string {
 			return (spec?.preset === 'count' ? 'compact number' : 'number') + factor;
 		case 'percent':
 			return (spec?.preset === 'fraction' ? '% (0–1)' : '%') + factor;
+		case 'flops':
+			return 'Flops' + factor;
 		case 'custom':
 			return `“${spec?.suffix ?? ''}”${spec?.compact ? ' (compact)' : ''}${factor}`;
 		default:

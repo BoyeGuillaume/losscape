@@ -32,6 +32,14 @@ export const COUNT: Unit = {
 	space: false
 };
 
+/** Operations of a forward pass, not a rate: 950 Flops, 217 kFlops, 6.4 MFlops, 2 GFlops. */
+export const FLOPS: Unit = {
+	steps: ['Flops', 'kFlops', 'MFlops', 'GFlops', 'TFlops', 'PFlops'].map((suffix, i) => ({
+		factor: KILO ** i,
+		suffix
+	}))
+};
+
 /** Bytes, binary: 512 B, 1.5 KiB, 3.2 GiB. */
 export const BYTES: Unit = {
 	steps: ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'].map((suffix, i) => ({

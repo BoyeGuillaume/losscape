@@ -252,6 +252,12 @@ describe('board', () => {
 			['c', 30, 3]
 		]);
 		expect([plot.categories, plot.log]).toEqual([null, false]);
+		const sized = [
+			run('s', { m: 1, 'model/params': 600 }),
+			run('l', { m: 2, 'model/params': 400_000 })
+		];
+		expect(explorePlot(sized, 'm', metricChoice('model/params')).log).toBe(true);
+		expect(explorePlot(sized.slice(0, 1), 'm', metricChoice('model/params')).log).toBe(false);
 	});
 
 	it('says which value a chart shows', () => {

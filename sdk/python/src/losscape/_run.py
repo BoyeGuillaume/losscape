@@ -13,11 +13,12 @@ import signal
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from losscape import _native
+from losscape import _model, _native
 from losscape.utils import random_name
 
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -204,6 +205,53 @@ class Run:
                 raise TypeError(f"log() takes a dict of metrics, got {type(data).__name__}")
             data = dict(data)
         native.log(data, step)
+
+    def describe_model(
+        self,
+        model: Any,
+        *,
+        args: Any = None,
+        kwargs: Mapping[str, Any] | None = None,
+        name: str = "model",
+        path: str | None = None,
+    ) -> None:
+        """Record what a model is made of: for its page on the run's Model tab, and as
+        metrics (``model/params``, ``model/trainable_params``, ``model/size_bytes``,
+        ``model/flops``; ``model/<name>/...`` for a model with its own name).
+
+        Takes any ``torch.nn.Module``. With ``args`` and/or ``kwargs``, also runs it once
+        as ``model(*args, **kwargs)`` for input and output shapes and FLOPs: in eval mode,
+        without gradients, with its modes and random state put back. A single value for
+        ``args`` is one argument. Inputs are not moved to the model's device or uploaded;
+        nor are its weights.
+
+        Call it again when the model changes (say, after unfreezing layers): the metrics
+        get a new point at the current step, without advancing it, and this description
+        replaces the last one. ``path`` records where it is kept, such as a checkpoint.
+
+        Problems with the model become warnings, so they never stop a training.
+        """
+        if not _model.is_module(model):
+            raise TypeError(f"describe_model() takes a torch.nn.Module, got {type(model).__name__}")
+        if not name or not isinstance(name, str):
+            raise ValueError("name must be a non-empty string")
+        native = self._native
+        if native is None or self._finished:
+            return
+        if self._pid != _Process.pid:
+            self._warn_fork()
+            return
+        try:
+            description = _model.describe(model, args=args, kwargs=kwargs, path=path)
+            if description.get("forward_error"):
+                _say(f"model {name}: no shapes: {description['forward_error']}")
+            description["step"] = self._step
+            native.update_models(_to_json({name: description}))
+            native.log(_model.metrics(description, name), self._step)
+        except Exception as err:  # noqa: BLE001 - describing a model must not stop a training
+            warnings.warn(
+                f"losscape: couldn't describe model {name}: {err}", RuntimeWarning, stacklevel=2
+            )
 
     def finish(
         self, exit_code: int = 0, *, state: str | None = None, timeout: float | None = None

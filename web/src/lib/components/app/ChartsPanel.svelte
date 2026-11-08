@@ -25,7 +25,7 @@
 	import { Toggle } from '#lib/components/ui/toggle/index.js';
 	import { MetricSource } from '#lib/charts/source.js';
 	import { match } from '#lib/metrics/pattern.js';
-	import type { Renames } from '#lib/metrics/registry.js';
+	import { isModelMetric, type Renames } from '#lib/metrics/registry.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
@@ -199,6 +199,8 @@
 					.filter((key) =>
 						prefix ? key.startsWith(prefix) : !key.startsWith(SYSTEM_PREFIX)
 					)
+					// Flat lines, on every run: charted only if asked for.
+					.filter((key) => !isModelMetric(key) || registry.describe(key).important)
 					.filter((key) => !importantOnly || registry.describe(key).important)
 	);
 

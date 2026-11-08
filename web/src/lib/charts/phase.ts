@@ -16,11 +16,12 @@ function known(s: Series) {
 /**
  * Pairs two metrics of a run. They're often logged at different rates (training every step,
  * validation every few): one point per step of the sparser one, with the other's latest
- * value at that step. Nothing before both have started.
+ * value at that step. Nothing before both have started. `follow` picks the one to follow
+ * instead: a value only logged when it changes shouldn't make a path a single point.
  */
-export function phasePath(xs: Series, ys: Series): PhasePoint[] {
+export function phasePath(xs: Series, ys: Series, follow?: 'x' | 'y'): PhasePoint[] {
 	const [a, b] = [known(xs), known(ys)];
-	const xIsBase = a.length <= b.length;
+	const xIsBase = follow ? follow === 'x' : a.length <= b.length;
 	const [base, other] = xIsBase ? [a, b] : [b, a];
 	const path: PhasePoint[] = [];
 	let j = 0;

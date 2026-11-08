@@ -338,6 +338,7 @@ struct RunUpdate {
     run_id: Uuid,
     summary: Option<Map<String, Value>>,
     config: Option<Map<String, Value>>,
+    models: Option<Map<String, Value>>,
     last_step: Option<u64>,
     /// Lowest and highest finite value per metric in these batches.
     extremes: HashMap<String, (f64, f64)>,
@@ -383,6 +384,7 @@ async fn update_runs(
                 run_id: batch.run_id,
                 summary: None,
                 config: None,
+                models: None,
                 last_step: None,
                 extremes: HashMap::new(),
             });
@@ -390,6 +392,7 @@ async fn update_runs(
         let update = merged.last_mut().expect("pushed above");
         merge_into(&mut update.summary, batch.summary_json.as_deref());
         merge_into(&mut update.config, batch.config_json.as_deref());
+        merge_into(&mut update.models, batch.models_json.as_deref());
         update.last_step = update.last_step.max(max_step(batch));
         add_extremes(&mut update.extremes, batch);
     }
@@ -407,6 +410,7 @@ async fn update_runs(
         run_id,
         summary,
         config,
+        models,
         last_step,
         extremes,
     } in merged
@@ -426,7 +430,8 @@ async fn update_runs(
                      FROM jsonb_each($7) n), '{}'),
                  metric_max = metric_max || COALESCE((
                      SELECT jsonb_object_agg(n.key, GREATEST(n.value::float8, (metric_max ->> n.key)::float8))
-                     FROM jsonb_each($8) n), '{}')
+                     FROM jsonb_each($8) n), '{}'),
+                 models = models || COALESCE($9, '{}'::jsonb)
              WHERE id = $1",
         )
         .bind(run_id)
@@ -437,6 +442,7 @@ async fn update_runs(
         .bind(last_step.map(|s| s as i64))
         .bind(Json(mins))
         .bind(Json(maxs))
+        .bind(models.map(Json))
         .execute(&mut *tx)
         .await?;
     }

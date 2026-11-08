@@ -5,6 +5,7 @@
 	import { mode } from 'mode-watcher';
 	import { page } from '$app/state';
 
+	import { logTicks } from '#lib/charts/settings.js';
 	import { formatMetric, metricAxis } from '#lib/metric-units.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
@@ -48,7 +49,7 @@
 			| { kind: 'time' }
 			| { kind: 'number'; log: boolean }
 			| { kind: 'category'; names: string[] }
-			| { kind: 'metric'; key: string };
+			| { kind: 'metric'; key: string; log?: boolean };
 		xName: string;
 		baseline?: number | null;
 		highlight?: string | null;
@@ -61,12 +62,13 @@
 
 	const meta = $derived(currentRegistry().describe(metric));
 
+	const isLog = $derived(x.kind !== 'time' && x.kind !== 'category' && !!x.log);
 	const xs = $derived(dots.map((d) => d.x));
 	const xDomain = $derived.by((): [number, number] => {
 		if (x.kind === 'category') return [-0.5, x.names.length - 0.5];
 		if (!xs.length) return [0, 1];
 		const [lo, hi] = [Math.min(...xs), Math.max(...xs)];
-		if (x.kind === 'number' && x.log) {
+		if (isLog) {
 			const margin = (hi / lo) ** X_MARGIN;
 			return lo === hi ? [lo / 2, hi * 2] : [lo / margin, hi * margin];
 		}
@@ -83,13 +85,13 @@
 		if (baseline !== null) ys.push(baseline);
 		if (!ys.length) return [0, 1];
 		const [lo, hi] = [Math.min(...ys), Math.max(...ys)];
-		if (lo === hi) return [lo - 1, hi + 1];
+		// A single value: around it, at a scale that suits it.
+		if (lo === hi)
+			return lo === 0 ? [-1, 1] : [lo - Math.abs(lo) * 0.1, hi + Math.abs(hi) * 0.1];
 		const margin = (hi - lo) * Y_MARGIN;
 		return [lo - margin, hi + margin];
 	});
-	const xScale = $derived(
-		x.kind === 'time' ? scaleTime() : x.kind === 'number' && x.log ? scaleLog() : undefined
-	);
+	const xScale = $derived(x.kind === 'time' ? scaleTime() : isLog ? scaleLog() : undefined);
 
 	const formatTime = $derived.by(() => {
 		const span = xDomain[1] - xDomain[0];
@@ -120,9 +122,11 @@
 		if (x.kind === 'metric') return formatMetric(x.key, d.x);
 		return x.kind === 'category' ? x.names[Math.round(d.x)] : String(d.x);
 	};
-	const xTicks = $derived(
-		x.kind === 'category' ? x.names.map((_, i) => i) : x.kind === 'time' ? 4 : 5
-	);
+	const xTicks = $derived.by(() => {
+		if (x.kind === 'category') return x.names.map((_, i) => i);
+		if (isLog) return logTicks(xDomain[0], xDomain[1]);
+		return x.kind === 'time' ? 4 : 5;
+	});
 
 	// Theme colors as literal values (see MetricChart).
 	let themeTick = $state(0);

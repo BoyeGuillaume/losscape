@@ -26,6 +26,7 @@ pub struct Buffer {
 
     summary: Map<String, Value>,
     config: Map<String, Value>,
+    models: Map<String, Value>,
 }
 
 /// What one batch carries, before it gets a seq.
@@ -34,6 +35,7 @@ pub struct Drained {
     pub scalars: ScalarColumns,
     pub summary: Map<String, Value>,
     pub config: Map<String, Value>,
+    pub models: Map<String, Value>,
 }
 
 impl Buffer {
@@ -110,8 +112,15 @@ impl Buffer {
         self.config.extend(update);
     }
 
+    pub fn update_models(&mut self, update: Map<String, Value>) {
+        self.models.extend(update);
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.value.is_empty() && self.summary.is_empty() && self.config.is_empty()
+        self.value.is_empty()
+            && self.summary.is_empty()
+            && self.config.is_empty()
+            && self.models.is_empty()
     }
 
     /// Takes everything buffered, with metric names remapped to a per-batch dictionary.
@@ -150,6 +159,7 @@ impl Buffer {
             },
             summary,
             config: std::mem::take(&mut self.config),
+            models: std::mem::take(&mut self.models),
         }
     }
 }
@@ -215,6 +225,21 @@ mod tests {
         b.push("a", 1, 0, 2.0);
         b.truncate(1);
         assert_eq!(b.drain().scalars.value, [1.0]);
+    }
+
+    #[test]
+    fn model_descriptions_replace_by_name() {
+        let mut b = Buffer::default();
+        assert!(b.is_empty());
+        b.update_models(obj(json!({"model": {"params": 1}, "head": {"params": 2}})));
+        assert!(!b.is_empty());
+        b.update_models(obj(json!({"model": {"params": 3}})));
+        let drained = b.drain();
+        assert_eq!(
+            drained.models,
+            obj(json!({"model": {"params": 3}, "head": {"params": 2}}))
+        );
+        assert!(b.is_empty());
     }
 
     #[test]

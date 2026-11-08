@@ -79,6 +79,12 @@ impl NativeRun {
         Ok(())
     }
 
+    /// Merges a JSON object into the run's model descriptions, by model name.
+    fn update_models(&self, json: &str) -> PyResult<()> {
+        self.run.update_models(parse_object(json)?);
+        Ok(())
+    }
+
     /// Returns (outcome, message, pending batches); outcome is "uploaded",
     /// "saved_locally" or "failed". Releases the GIL while waiting.
     fn finish(

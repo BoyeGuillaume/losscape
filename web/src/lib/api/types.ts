@@ -48,6 +48,56 @@ export type MetricInfo = {
 /** `POST /projects/{project}/metrics`: one row per (run, metric). */
 export type RunMetricInfo = MetricInfo & { run: string };
 
+/** What `run.describe_model()` recorded. */
+export type ModelTensor = {
+	name: string;
+	/** Null until a lazy module is initialized. */
+	shape: number[] | null;
+	trainable?: boolean;
+	buffer?: boolean;
+	shared_with?: string;
+};
+export type ModelNode = {
+	name: string;
+	class: string;
+	/** In this module and below it, shared weights counted once. */
+	params: number;
+	trainable: number;
+	extra?: string;
+	input?: string;
+	output?: string;
+	calls?: number;
+	/** Identical numbered neighbours shown as this one, up to the one named `last`. */
+	repeat?: number;
+	last?: string;
+	/** All their names (older runs don't have it: they count up from this one's). */
+	names?: string[];
+	tensors?: ModelTensor[];
+	children?: ModelNode[];
+	/** Children left out of a very large model. */
+	hidden_children?: number;
+	shared_with?: string;
+};
+export type ModelDescription = {
+	class: string;
+	params: number;
+	trainable_params: number;
+	buffers: number;
+	size_bytes: number;
+	dtypes: string[];
+	devices: string[];
+	tree: ModelNode;
+	step: number;
+	uninitialized?: number;
+	wrappers?: string[];
+	path?: string;
+	input?: string;
+	output?: string;
+	flops?: number;
+	forward_error?: string;
+	truncated?: boolean;
+};
+
 export type RunDetail = RunSummary & {
 	project: string;
 	notes: string;

@@ -4,6 +4,7 @@
 import type { RunSummary } from '#lib/api/types.js';
 import { fieldValue, flatRun } from '#lib/filter.js';
 import { formatValue } from '#lib/format.js';
+import { isModelMetric } from '#lib/metrics/registry.js';
 import { currentRegistry } from '#lib/metrics/store.svelte.js';
 
 export type ColumnKind = 'state' | 'created' | 'runtime' | 'steps' | 'group' | 'tags' | 'value';
@@ -126,6 +127,7 @@ export function defaultColumns(runs: RunSummary[]): string[] {
 	const numericSummary = summary.filter(
 		(key) =>
 			!registry.describe(key).hidden &&
+			(!isModelMetric(key) || registry.describe(key).important) &&
 			sample.some((run) => typeof flatRun(run).summary.get(key) === 'number')
 	);
 	const important = numericSummary.filter((key) => registry.describe(key).important);

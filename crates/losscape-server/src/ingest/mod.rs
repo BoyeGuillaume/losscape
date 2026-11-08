@@ -33,6 +33,7 @@ pub struct Batch {
     pub scalars: ScalarColumns,
     pub summary_json: Option<String>,
     pub config_json: Option<String>,
+    pub models_json: Option<String>,
     pub console: Vec<ConsoleLine>,
 }
 
@@ -53,6 +54,7 @@ pub async fn ingest(
     validate_scalars(&scalars)?;
     let summary_json = json_object_or_none(batch.summary_json, "summary_json")?;
     let config_json = json_object_or_none(batch.config_json, "config_json")?;
+    let models_json = json_object_or_none(batch.models_json, "models_json")?;
     let console = validate_console(batch.console)?;
     let project_id = auth::require_run(&state, &user, run_id, Role::Editor).await?;
 
@@ -75,6 +77,7 @@ pub async fn ingest(
             scalars,
             summary_json,
             config_json,
+            models_json,
             console,
         })
         .await?;

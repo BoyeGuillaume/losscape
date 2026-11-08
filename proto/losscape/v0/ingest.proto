@@ -85,6 +85,8 @@ message LogBatch {
   uint64 confirmed_below = 6;
   // Console output (stdout/stderr) since the last batch.
   repeated ConsoleLine console = 7;
+  // Model descriptions to merge into the run's, by model name (JSON object).
+  string models_json = 8;
 }
 
 enum ConsoleStream {

@@ -75,6 +75,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         )
         .route("/runs/{run}", get(read::run_detail))
         .route("/runs/{run}/logs", get(read::run_logs))
+        .route("/runs/{run}/models", get(read::run_models))
         .route("/runs/{run}/logs.txt", get(read::run_logs_file))
         .route("/runs/{run}/files/{name}", get(read::run_file))
         .route("/series", post(read::series))

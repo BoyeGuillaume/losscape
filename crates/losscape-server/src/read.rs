@@ -626,6 +626,23 @@ pub struct DownloadParams {
     ansi: bool,
 }
 
+/// `GET /api/v0/runs/{run}/models`: what the run recorded about its models, by name. Apart
+/// from the run's details since a description can be large and few pages need it.
+pub async fn run_models(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(run): Path<String>,
+) -> Result<Json<serde_json::Value>, UiError> {
+    let run_id = parse_run_id(&run)?;
+    auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+    let models: sqlx::types::Json<serde_json::Value> =
+        sqlx::query_scalar("SELECT models FROM runs WHERE id = $1")
+            .bind(run_id)
+            .fetch_one(state.pg())
+            .await?;
+    Ok(Json(models.0))
+}
+
 /// `GET /api/v0/runs/{run}/logs.txt` (`?ansi=true`): the whole console output as a text
 /// file, streamed page by page.
 pub async fn run_logs_file(

@@ -5,7 +5,7 @@ import type { RunSummary } from '#lib/api/types.js';
 import { flatRun, matches, type Node } from '#lib/filter.js';
 import { formatCompact, timeAgo } from '#lib/format.js';
 import type { ValueMode } from '#lib/metrics/apply.js';
-import type { Meta } from '#lib/metrics/registry.js';
+import { isModelMetric, type Meta } from '#lib/metrics/registry.js';
 import { formatUnit } from '#lib/units.js';
 import { availableKeys, column, compareRuns, defaultColumns, sortValue } from './columns.js';
 
@@ -364,17 +364,25 @@ export type ExplorePlot = {
 	log: boolean;
 };
 
-/** A metric against a config value. A log scale when numbers span two orders of magnitude. */
+/** All positive and over two orders of magnitude: a log scale tells them apart. */
+export function spansOrders(values: number[]): boolean {
+	if (!values.length || values.some((v) => v <= 0)) return false;
+	return Math.max(...values) / Math.min(...values) >= 100;
+}
+
+/** A metric against a config value or another metric. Numbers that span orders of magnitude
+ * get a log scale; among metrics only parameter counts and such, whose size is the point. */
 export function explorePlot(runs: RunSummary[], metric: string, explore: ExploreKey): ExplorePlot {
 	if (explore.kind === 'metric') {
 		const other = choiceMetric(explore);
+		const dots = runs.flatMap((run) => {
+			const [x, y] = [metricValue(run, other), metricValue(run, metric)];
+			return x === null || y === null ? [] : [dot(run, x, y)];
+		});
 		return {
 			categories: null,
-			log: false,
-			dots: runs.flatMap((run) => {
-				const [x, y] = [metricValue(run, other), metricValue(run, metric)];
-				return x === null || y === null ? [] : [dot(run, x, y)];
-			})
+			log: isModelMetric(other) && spansOrders(dots.map((d) => d.x)),
+			dots
 		};
 	}
 	const rows = runs.flatMap((run) => {
@@ -392,11 +400,9 @@ export function explorePlot(runs: RunSummary[], metric: string, explore: Explore
 			dots: rows.map((r) => dot(r.run, categories.indexOf(String(r.value)) + jitter(r.run.id), r.y))
 		};
 	}
-	const xs = rows.map((r) => r.value as number);
-	const positive = xs.length > 0 && xs.every((x) => x > 0);
 	return {
 		categories: null,
-		log: positive && Math.max(...xs) / Math.min(...xs) >= 100,
+		log: spansOrders(rows.map((r) => r.value as number)),
 		dots: rows.map((r) => dot(r.run, r.value as number, r.y))
 	};
 }

@@ -26,6 +26,7 @@
 	import AbortRuns from '#lib/components/app/AbortRuns.svelte';
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
 	import ConsoleLog from '#lib/components/app/ConsoleLog.svelte';
+	import ModelInfo from '#lib/components/app/ModelInfo.svelte';
 	import RunConfig from '#lib/components/app/RunConfig.svelte';
 	import RunEnvironmentCards from '#lib/components/app/RunEnvironmentCards.svelte';
 	import KeyValueList from '#lib/components/app/KeyValueList.svelte';
@@ -219,6 +220,7 @@
 		{ id: 'system', label: 'System' },
 		{ id: 'logs', label: 'Logs' },
 		{ id: 'config', label: 'Config' },
+		{ id: 'model', label: 'Model' },
 		{ id: 'overview', label: 'Overview' }
 	];
 	const TABS = TAB_ITEMS.map((t) => t.id);
@@ -605,6 +607,9 @@
 				<ConsoleLog {project} run={r.id} {running} capture={r.environment.console} />
 			</div>{/if}
 
+		{#if tab === 'model'}<div role="tabpanel" id="panel-model" aria-labelledby="tab-model">
+				<ModelInfo {project} run={r.id} {running} />
+			</div>{/if}
 		{#if tab === 'config'}<div role="tabpanel" id="panel-config" aria-labelledby="tab-config">
 				<RunConfig {project} config={r.config} bind:view={configView} />
 			</div>{/if}

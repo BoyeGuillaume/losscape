@@ -217,3 +217,19 @@ except KeyboardInterrupt:
 """
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
     assert out.stdout.split("\n")[:2] == ["still running", "interrupted"]
+
+
+def test_describe_model_does_not_advance_the_step(tmp_path):
+    from test_model import Linear
+
+    run = losscape.init(project="p", mode="offline", dir=tmp_path, console=False)
+    run.log({"loss": 1.0})
+    assert run.step == 1
+    run.describe_model(Linear(3))
+    run.describe_model(Linear(3), name="head", path="ckpt/best.pt")
+    assert run.step == 1
+    with pytest.raises(TypeError, match="torch.nn.Module"):
+        run.describe_model("a model")
+    with pytest.raises(ValueError, match="name"):
+        run.describe_model(Linear(3), name="")
+    assert run.finish() in ("saved_locally", "uploaded")
