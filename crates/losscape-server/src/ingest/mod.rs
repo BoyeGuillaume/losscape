@@ -3,6 +3,8 @@
 mod flusher;
 pub mod window;
 
+use std::sync::Arc;
+
 use axum::extract::State;
 use losscape_core::proto::v0::{Ack, ConsoleLine, ConsoleStream, LogBatch, ScalarColumns};
 use uuid::Uuid;
@@ -11,6 +13,7 @@ pub use flusher::{IngestQueue, spawn_flusher};
 
 use crate::auth::{self, AuthUser, Role};
 use crate::error::ApiError;
+use crate::live::LiveEvent;
 use crate::proto_body::Proto;
 use crate::state::AppState;
 
@@ -53,6 +56,15 @@ pub async fn ingest(
     let console = validate_console(batch.console)?;
     let project_id = auth::require_run(&state, &user, run_id, Role::Editor).await?;
 
+    // Viewers get console lines now, not after the flush: they replace by line number, so a
+    // retried batch shows nothing twice.
+    if !console.is_empty() && state.live().is_watched(run_id) {
+        state.live().publish(LiveEvent::Console {
+            run_id,
+            lines: Arc::new(console.clone()),
+        });
+    }
+
     let duplicate = state
         .ingest()
         .submit(Batch {
@@ -71,6 +83,7 @@ pub async fn ingest(
         run_id: batch.run_id,
         seq: batch.seq,
         duplicate,
+        abort: false,
     }))
 }
 

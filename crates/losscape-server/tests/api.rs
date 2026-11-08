@@ -392,6 +392,22 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
         detail["last_step"], 1,
         "system metrics don't count as steps"
     );
+
+    // The whole log as a file: plain text, or with its colors.
+    let download = |query: &str| {
+        Request::get(format!("/api/v0/runs/{id}/logs.txt{query}"))
+            .header(header::AUTHORIZATION, server.bearer())
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, plain) = server.call(download("")).await;
+    assert_eq!(status, StatusCode::OK);
+    let plain = String::from_utf8(plain.to_vec()).unwrap();
+    assert!(plain.contains("ERROR: disk almost full\n"), "{plain}");
+    assert!(!plain.contains('\x1b'), "colors removed");
+    assert_eq!(plain.lines().count(), 6, "every line, in order");
+    let (_, colored) = server.call(download("?ansi=true")).await;
+    assert!(String::from_utf8_lossy(&colored).contains("\x1b[31mERROR"));
     server.stop().await;
 }
 
@@ -407,7 +423,7 @@ async fn metric_ranges_names_definitions_and_renames() {
     server.log(b).await;
     server.log(batch(run, 1, 100, 100)).await;
 
-    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
     let r = &runs[0];
     assert_eq!(r["metric_min"]["loss"], 1.0 / 200.0, "across batches");
     assert_eq!(r["metric_max"]["loss"], 1.0);
@@ -429,7 +445,7 @@ async fn metric_ranges_names_definitions_and_renames() {
             .unwrap(),
         1
     );
-    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
     assert_eq!(runs[0]["metric_min"]["loss"], 1.0 / 200.0);
 
     let (_, keys) = get_json(&server, "/api/v0/projects/test/metric-keys").await;
@@ -444,8 +460,41 @@ async fn metric_ranges_names_definitions_and_renames() {
             .body(Body::from(body.to_string()))
             .unwrap()
     };
+    // The board: defaults until it's set; what's set comes back; limits are enforced.
+    let board_uri = "/api/v0/projects/test/board".to_owned();
+    let (_, board) = get_json(&server, &board_uri).await;
+    assert_eq!(
+        board,
+        serde_json::json!({"query": "", "sort": {"id": "created", "desc": true}, "limit": 10})
+    );
+    let board = serde_json::json!({
+        "query": "tag:promising",
+        "sort": {"id": "summary.val/acc", "desc": true},
+        "limit": 20
+    });
+    assert_eq!(
+        server
+            .call(send("PUT", board_uri.clone(), board.clone()))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(get_json(&server, &board_uri).await.1, board);
+    for limit in [0, 41] {
+        let bad = serde_json::json!({"query": "", "sort": {"id": "created", "desc": true}, "limit": limit});
+        assert_eq!(
+            server.call(send("PUT", board_uri.clone(), bad)).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let bad = serde_json::json!({"query": "", "sort": {"id": "", "desc": true}, "limit": 5});
+    assert_eq!(
+        server.call(send("PUT", board_uri.clone(), bad)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+
     let defs = serde_json::json!([
-        {"name": "val/pck@8", "kind": "merge", "spec": {"sources": [{"key": "val/pck-8"}, {"key": "val/pck-8-fine"}]}},
+        {"name": "val/*", "kind": "describe", "spec": {"direction": "max", "important": true}},
         {"name": "val/pck-{k}", "kind": "family", "spec": {"direction": "max", "bounds": [0, 1]}}
     ]);
     let uri = "/api/v0/projects/test/metric-definitions".to_owned();
@@ -460,7 +509,7 @@ async fn metric_ranges_names_definitions_and_renames() {
         server.call(send("PUT", uri.clone(), twice)).await.0,
         StatusCode::BAD_REQUEST
     );
-    let bad_kind = serde_json::json!([{"name": "a", "kind": "sql", "spec": {}}]);
+    let bad_kind = serde_json::json!([{"name": "a", "kind": "merge", "spec": {}}]);
     assert_eq!(
         server.call(send("PUT", uri.clone(), bad_kind)).await.0,
         StatusCode::BAD_REQUEST
@@ -481,8 +530,11 @@ async fn metric_ranges_names_definitions_and_renames() {
     );
     let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
     assert_eq!(
-        detail["renames"],
-        serde_json::json!({"val/pck-8": "val/pck-8px"})
+        (detail["renames"].clone(), detail["rename_scales"].clone()),
+        (
+            serde_json::json!({"val/pck-8": "val/pck-8px"}),
+            serde_json::json!({})
+        )
     );
     assert_eq!(
         server
@@ -498,6 +550,253 @@ async fn metric_ranges_names_definitions_and_renames() {
             .0,
         StatusCode::NOT_FOUND
     );
+
+    // Many runs at once, rescaled; runs of other projects are skipped.
+    let bulk = "/api/v0/projects/test/runs/metric-renames".to_owned();
+    let runs = serde_json::json!([id, RunId::new().to_string()]);
+    let (status, body) = server
+        .call(send(
+            "POST",
+            bulk.clone(),
+            serde_json::json!({"runs": runs, "from": "acc", "to": "val/acc", "scale": 0.01}),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["changed"],
+        1
+    );
+    let (_, keys) = get_json(&server, "/api/v0/projects/test/metric-keys").await;
+    assert_eq!(
+        keys,
+        serde_json::json!(["acc", "loss", "val/acc"]),
+        "names shown by renames too"
+    );
+    let listed = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"][0].clone();
+    assert_eq!(
+        (listed["renames"].clone(), listed["rename_scales"].clone()),
+        (
+            serde_json::json!({"acc": "val/acc"}),
+            serde_json::json!({"acc": 0.01})
+        )
+    );
+    for bad in [
+        serde_json::json!({"runs": runs, "from": "acc", "to": "x", "scale": 0}),
+        serde_json::json!({"runs": runs, "from": "acc", "to": "acc"}),
+    ] {
+        assert_eq!(
+            server.call(send("POST", bulk.clone(), bad)).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (_, body) = server
+        .call(send(
+            "POST",
+            bulk,
+            serde_json::json!({"runs": runs, "from": "acc", "to": null}),
+        ))
+        .await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["changed"],
+        1,
+        "back to the logged name"
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn runs_list_pages_changes_and_tags() {
+    let server = server!();
+    let runs: Vec<RunId> = (0..3).map(|_| RunId::new()).collect();
+    for run in &runs {
+        server.init(*run, false).await;
+    }
+    let names = |page: &serde_json::Value| -> Vec<String> {
+        page["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Pages, newest first, then nothing more.
+    let all = listing(&server, "/api/v0/projects/test/runs").await;
+    assert_eq!(all["next"], serde_json::Value::Null);
+    let first = listing(&server, "/api/v0/projects/test/runs?limit=2").await;
+    let next = first["next"].as_str().unwrap();
+    let second = listing(
+        &server,
+        &format!("/api/v0/projects/test/runs?limit=2&after={next}"),
+    )
+    .await;
+    assert_eq!(second["next"], serde_json::Value::Null);
+    assert_eq!([names(&first), names(&second)].concat(), names(&all));
+    assert_eq!(
+        get_json(&server, "/api/v0/projects/test/runs?after=nope")
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Changes since a listing: none yet (past the overlap), then the runs tagged.
+    let since = all["as_of_ms"].as_i64().unwrap() + 10_000;
+    let changed_since = format!("/api/v0/projects/test/runs?since_ms={since}");
+    assert_eq!(
+        names(&listing(&server, &changed_since).await),
+        Vec::<String>::new()
+    );
+
+    let send = |method: &str, uri: &str, body: serde_json::Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let ids: Vec<String> = runs[..2].iter().map(|r| r.to_string()).collect();
+    let (status, body) = server
+        .call(send(
+            "POST",
+            "/api/v0/projects/test/runs/tags",
+            serde_json::json!({"runs": ids, "add": ["exp/a", "baseline"], "remove": []}),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["changed"], 2);
+    let tagged = listing(&server, &changed_since).await;
+    assert_eq!(tagged["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        tagged["runs"][0]["tags"],
+        serde_json::json!(["baseline", "exp/a"]),
+        "kept first, no duplicates"
+    );
+
+    // Removing, and nothing changes when nothing would.
+    let one = vec![runs[0].to_string()];
+    let (_, body) = server
+        .call(send(
+            "POST",
+            "/api/v0/projects/test/runs/tags",
+            serde_json::json!({"runs": one, "remove": ["baseline"]}),
+        ))
+        .await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["changed"],
+        1
+    );
+    let (_, body) = server
+        .call(send(
+            "POST",
+            "/api/v0/projects/test/runs/tags",
+            serde_json::json!({"runs": one, "remove": ["baseline"]}),
+        ))
+        .await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["changed"],
+        0
+    );
+    assert_eq!(
+        server
+            .call(send(
+                "POST",
+                "/api/v0/projects/test/runs/tags",
+                serde_json::json!({"runs": one, "add": [" padded"]}),
+            ))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Tag colors and descriptions; names may contain slashes.
+    assert_eq!(
+        server
+            .call(send(
+                "PUT",
+                "/api/v0/projects/test/tags/exp/a",
+                serde_json::json!({"color": "blue", "description": "first try"}),
+            ))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        server
+            .call(send(
+                "PUT",
+                "/api/v0/projects/test/tags/exp/a",
+                serde_json::json!({"color": "#ff0000"}),
+            ))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (_, tags) = get_json(&server, "/api/v0/projects/test/tags").await;
+    assert_eq!(
+        tags,
+        serde_json::json!([
+            {"name": "baseline", "color": null, "description": "", "runs": 2},
+            {"name": "exp/a", "color": "blue", "description": "first try", "runs": 2}
+        ])
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn abort_reaches_the_run_through_its_heartbeat() {
+    let server = server!();
+    let run = RunId::new();
+    server.init(run, false).await;
+    let id = run.to_string();
+    let beat = || Heartbeat {
+        run_id: run.as_bytes().to_vec(),
+        client_time_ms: 0,
+    };
+    let abort_asked = |body: axum::body::Bytes| Ack::decode(body).unwrap().abort;
+    let (_, body) = server.send("/api/v0/runs/heartbeat", beat(), false).await;
+    assert!(!abort_asked(body), "nobody asked yet");
+
+    let abort = || {
+        Request::post("/api/v0/projects/test/runs/abort")
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::json!({"runs": [id]}).to_string()))
+            .unwrap()
+    };
+    let changed =
+        |body: &[u8]| serde_json::from_slice::<serde_json::Value>(body).unwrap()["changed"].clone();
+    let (status, body) = server.call(abort()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(changed(&body), 1);
+    let (_, body) = server.call(abort()).await;
+    assert_eq!(changed(&body), 0, "already asked");
+
+    let (_, body) = server.send("/api/v0/runs/heartbeat", beat(), false).await;
+    assert!(abort_asked(body), "the SDK learns about it");
+    let listed = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"][0].clone();
+    assert!(listed["abort_requested_at_ms"].as_i64().is_some());
+
+    // Resuming starts over; a finished run can't be aborted.
+    server.init(run, true).await;
+    let (_, body) = server.send("/api/v0/runs/heartbeat", beat(), false).await;
+    assert!(!abort_asked(body), "resuming clears the request");
+    server
+        .send(
+            "/api/v0/runs/finish",
+            RunFinish {
+                run_id: run.as_bytes().to_vec(),
+                state: RunExitState::Killed as i32,
+                exit_code: 130,
+                ..Default::default()
+            },
+            false,
+        )
+        .await;
+    let (_, body) = server.call(abort()).await;
+    assert_eq!(changed(&body), 0, "not running");
     server.stop().await;
 }
 
@@ -577,6 +876,12 @@ async fn health_and_version() {
     server.stop().await;
 }
 
+async fn listing(server: &TestServer, uri: &str) -> serde_json::Value {
+    let (status, body) = get_json(server, uri).await;
+    assert_eq!(status, StatusCode::OK, "{uri}");
+    body
+}
+
 async fn get_json(server: &TestServer, uri: &str) -> (StatusCode, serde_json::Value) {
     let req = Request::get(uri)
         .header(header::AUTHORIZATION, server.bearer())
@@ -616,7 +921,7 @@ async fn read_api_lists_projects_runs_and_metrics() {
     assert_eq!(projects[0]["name"], "test");
     assert_eq!(projects[0]["runs"], 1);
 
-    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
     assert_eq!(runs[0]["name"], "brave-falcon-1");
     assert_eq!(runs[0]["state"], "running");
     assert_eq!(runs[0]["config"]["lr"], 0.001);
@@ -637,7 +942,7 @@ async fn read_api_lists_projects_runs_and_metrics() {
             .unwrap(),
         1
     );
-    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
     assert_eq!(runs[0]["last_step"], 4999);
     assert!(runs[0]["start_ms"].as_i64().unwrap() > 0);
 
@@ -698,7 +1003,7 @@ async fn read_api_lists_projects_runs_and_metrics() {
             .0,
         StatusCode::NOT_FOUND
     );
-    let (_, runs) = get_json(&server, "/api/v0/projects/test/runs").await;
+    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
     let aliases_of = |runs: &serde_json::Value, id: &str| {
         runs.as_array()
             .unwrap()

@@ -14,7 +14,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{account, avatar, members, oauth};
 use crate::state::AppState;
-use crate::{auth, ingest, live, metric_defs, projects, read, runs};
+use crate::{auth, board, ingest, live, metric_defs, projects, read, runs, tags};
 
 pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) -> Router {
     // Signed-in users: session cookie (web UI) or API key (SDK).
@@ -33,6 +33,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
                 .delete(projects::delete_project),
         )
         .route("/projects/{project}/transfer", post(members::transfer))
+        .route("/projects/{project}/board", get(board::get).put(board::put))
         .route(
             "/projects/{project}/metric-definitions",
             get(metric_defs::list).put(metric_defs::replace),
@@ -50,7 +51,15 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
             "/projects/{project}/runs/restore",
             post(projects::restore_runs),
         )
+        .route("/projects/{project}/runs/abort", post(projects::abort_runs))
         .route("/projects/{project}/runs", get(read::project_runs))
+        .route("/projects/{project}/runs/tags", post(tags::change))
+        .route(
+            "/projects/{project}/runs/metric-renames",
+            post(metric_defs::rename_many),
+        )
+        .route("/projects/{project}/tags", get(tags::list))
+        .route("/projects/{project}/tags/{*name}", put(tags::describe))
         .route("/projects/{project}/members", get(members::list))
         .route(
             "/projects/{project}/members/{username}",
@@ -66,6 +75,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         )
         .route("/runs/{run}", get(read::run_detail))
         .route("/runs/{run}/logs", get(read::run_logs))
+        .route("/runs/{run}/logs.txt", get(read::run_logs_file))
         .route("/runs/{run}/files/{name}", get(read::run_file))
         .route("/series", post(read::series))
         .route("/auth/me", get(account::me))

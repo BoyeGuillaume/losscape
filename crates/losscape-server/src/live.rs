@@ -1,6 +1,7 @@
 //! Live updates for the UI: points of watched runs are pushed over SSE as soon as the
-//! flusher has stored them (after dedup, so a retried batch is never shown twice). One
-//! stream covers many runs, since browsers allow only a few connections per server.
+//! flusher has stored them (after dedup, so a retried batch is never shown twice), console
+//! lines as soon as they arrive. One stream covers many runs, since browsers allow only a
+//! few connections per server.
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;

@@ -209,12 +209,6 @@ fn publish(live: &LiveHub, accepted: &[Accepted]) {
                 scalars: Arc::new(batch.scalars.clone()),
             });
         }
-        if !batch.console.is_empty() {
-            live.publish(LiveEvent::Console {
-                run_id: batch.run_id,
-                lines: Arc::new(batch.console.clone()),
-            });
-        }
     }
 }
 

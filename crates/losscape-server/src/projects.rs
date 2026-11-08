@@ -167,7 +167,7 @@ pub async fn remove_alias(
 }
 
 /// Most runs per archive or restore request.
-const MAX_RUNS_PER_ACTION: usize = 10_000;
+pub(crate) const MAX_RUNS_PER_ACTION: usize = 10_000;
 
 #[derive(Deserialize)]
 pub struct RunIds {
@@ -177,7 +177,7 @@ pub struct RunIds {
 #[derive(Serialize)]
 pub struct Changed {
     /// Runs actually changed (already archived or unknown runs are skipped).
-    changed: u64,
+    pub(crate) changed: u64,
 }
 
 /// `POST /api/v0/projects/{project}/runs/archive` `{"runs": [...]}` (editors): hides the
@@ -199,6 +199,40 @@ pub async fn restore_runs(
     body: Json<RunIds>,
 ) -> Result<Json<Changed>, UiError> {
     set_archived(state, user, project, body, false).await
+}
+
+/// `POST /api/v0/projects/{project}/runs/abort` `{"runs": [...]}` (editors): asks these
+/// running runs to stop. Their SDK learns about it from its next heartbeat and interrupts
+/// the script, so what was logged is kept.
+pub async fn abort_runs(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(project): Path<String>,
+    Json(body): Json<RunIds>,
+) -> Result<Json<Changed>, UiError> {
+    let project_id = members::project_id(&state, &project).await?;
+    auth::require_role(&state, &user, project_id, Role::Editor, unknown_project).await?;
+    if body.runs.len() > MAX_RUNS_PER_ACTION {
+        return Err(
+            ApiError::invalid(format!("at most {MAX_RUNS_PER_ACTION} runs at once")).into(),
+        );
+    }
+    let ids = body
+        .runs
+        .iter()
+        .map(|r| parse_run_id(r))
+        .collect::<Result<Vec<_>, _>>()?;
+    let changed = sqlx::query(
+        "UPDATE runs SET abort_requested_at = now()
+         WHERE project_id = $1 AND id = ANY($2) AND state = 'running'
+           AND abort_requested_at IS NULL",
+    )
+    .bind(project_id)
+    .bind(&ids)
+    .execute(state.pg())
+    .await?
+    .rows_affected();
+    Ok(Json(Changed { changed }))
 }
 
 async fn set_archived(

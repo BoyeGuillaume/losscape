@@ -101,6 +101,8 @@ pub struct RunSummary {
     start_ms: i64,
     /// Archived runs are deleted after the project's `archive_days`.
     archived_at_ms: Option<i64>,
+    /// Someone asked this run to stop (the UI's Abort).
+    abort_requested_at_ms: Option<i64>,
     /// Highest step logged (system metrics aside); null before the first point.
     last_step: Option<i64>,
     /// Lowest and highest value of each metric (system metrics aside).
@@ -108,10 +110,15 @@ pub struct RunSummary {
     metric_max: SqlJson<Value>,
     /// Metrics renamed in this run: logged name -> shown name.
     renames: SqlJson<Value>,
+    /// Factors of renamed metrics, when not 1: logged name -> factor.
+    rename_scales: SqlJson<Value>,
     heartbeat_at_ms: i64,
     finished_at_ms: Option<i64>,
     summary: SqlJson<Value>,
     config: SqlJson<Value>,
+    /// Creation time in microseconds: the run list's page cursor.
+    #[serde(skip)]
+    created_us: i64,
 }
 
 /// Columns shared by run listings: aliases, and timestamps as epoch ms.
@@ -119,48 +126,121 @@ fn run_columns() -> String {
     format!(
         "COALESCE((SELECT array_agg(a.alias ORDER BY a.alias) FROM run_aliases a WHERE a.run_id = r.id), '{{}}') AS aliases,
          {} AS created_at_ms, {} AS start_ms, {} AS heartbeat_at_ms, {} AS finished_at_ms,
-         {} AS archived_at_ms, r.last_step, r.metric_min, r.metric_max,
+         {} AS archived_at_ms, {} AS abort_requested_at_ms, r.last_step, r.metric_min, r.metric_max,
+         (extract(epoch from r.created_at) * 1000000)::bigint AS created_us,
          COALESCE((SELECT jsonb_object_agg(n.from_key, n.to_key) FROM run_metric_renames n
-                   WHERE n.run_id = r.id), '{{}}') AS renames",
+                   WHERE n.run_id = r.id), '{{}}') AS renames,
+         COALESCE((SELECT jsonb_object_agg(n.from_key, n.scale) FROM run_metric_renames n
+                   WHERE n.run_id = r.id AND n.scale <> 1), '{{}}') AS rename_scales",
         ms("r.created_at"),
         ms("COALESCE(r.client_created_at, r.created_at)"),
         ms("r.heartbeat_at"),
         ms("r.finished_at"),
         ms("r.archived_at"),
+        ms("r.abort_requested_at"),
     )
 }
 
 /// Most recent runs listed per project (the UI filters and sorts them itself).
 const MAX_LISTED_RUNS: i64 = 100_000;
+/// Runs changed shortly before `since_ms` are listed again: a change committed after the
+/// previous listing can carry an earlier time.
+const SINCE_OVERLAP_MS: i64 = 10_000;
 
 #[derive(Deserialize)]
 pub struct RunsParams {
     /// true: only archived runs (the others are listed by default).
     #[serde(default)]
     archived: bool,
+    /// Runs per page, newest first (default: all of them).
+    limit: Option<i64>,
+    /// The page after this one: `next` of the previous page.
+    after: Option<String>,
+    /// Only runs changed since this time (`as_of_ms` of an earlier listing), archived or
+    /// not: the UI merges them into the list it has.
+    since_ms: Option<i64>,
 }
 
+#[derive(Serialize)]
+pub struct RunsPage {
+    runs: Vec<RunSummary>,
+    /// Cursor of the next page, if there may be one.
+    next: Option<String>,
+    /// Server time of this listing, for a later `since_ms`.
+    as_of_ms: i64,
+}
+
+/// A page cursor: `<created_at in µs>.<run id>` of the last run listed.
+fn parse_cursor(cursor: &str) -> Result<(i64, Uuid), ApiError> {
+    let invalid = || ApiError::invalid("after: a cursor from a previous page");
+    let (us, id) = cursor.split_once('.').ok_or_else(invalid)?;
+    Ok((
+        us.parse().map_err(|_| invalid())?,
+        id.parse().map_err(|_| invalid())?,
+    ))
+}
+
+/// `GET /api/v0/projects/{project}/runs`: runs, newest first; paged with `limit` and
+/// `after`, or only those changed since `since_ms`.
 pub async fn project_runs(
     State(state): State<AppState>,
     user: AuthUser,
     Path(project): Path<String>,
     Query(params): Query<RunsParams>,
-) -> Result<Json<Vec<RunSummary>>, UiError> {
+) -> Result<Json<RunsPage>, UiError> {
     let project_id = members::project_id(&state, &project).await?;
     auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
-    let sql = format!(
+    // Taken before listing, so the next `since_ms` can't skip a change made meanwhile.
+    let as_of_ms: i64 = sqlx::query_scalar(&format!("SELECT {}", ms("now()")))
+        .fetch_one(state.pg())
+        .await?;
+    let columns = format!(
         "SELECT r.id, r.name, {STATE_SQL} AS state, r.group_name, r.tags, {}, r.summary, r.config
-         FROM runs r WHERE r.project_id = $1 AND (r.archived_at IS NOT NULL) = $3
-         ORDER BY r.created_at DESC LIMIT $2",
+         FROM runs r",
         run_columns()
     );
-    let runs: Vec<RunSummary> = sqlx::query_as(&sql)
+    let runs: Vec<RunSummary> = if let Some(since) = params.since_ms {
+        sqlx::query_as(&format!(
+            "{columns} WHERE r.project_id = $1
+               AND r.updated_at > timestamptz 'epoch' + $2 * interval '1 millisecond'
+             ORDER BY r.created_at DESC LIMIT $3"
+        ))
         .bind(project_id)
+        .bind(since - SINCE_OVERLAP_MS)
         .bind(MAX_LISTED_RUNS)
-        .bind(params.archived)
         .fetch_all(state.pg())
-        .await?;
-    Ok(Json(runs))
+        .await?
+    } else {
+        let limit = params
+            .limit
+            .unwrap_or(MAX_LISTED_RUNS)
+            .clamp(1, MAX_LISTED_RUNS);
+        let after = params.after.as_deref().map(parse_cursor).transpose()?;
+        sqlx::query_as(&format!(
+            "{columns} WHERE r.project_id = $1 AND (r.archived_at IS NOT NULL) = $3
+               AND ($4::bigint IS NULL
+                    OR (r.created_at, r.id) < (timestamptz 'epoch' + $4 * interval '1 microsecond', $5))
+             ORDER BY r.created_at DESC, r.id DESC LIMIT $2"
+        ))
+        .bind(project_id)
+        .bind(limit)
+        .bind(params.archived)
+        .bind(after.map(|(us, _)| us))
+        .bind(after.map(|(_, id)| id))
+        .fetch_all(state.pg())
+        .await?
+    };
+    let next = match runs.last() {
+        Some(last) if params.since_ms.is_none() && params.limit == Some(runs.len() as i64) => {
+            Some(format!("{}.{}", last.created_us, last.id))
+        }
+        _ => None,
+    };
+    Ok(Json(RunsPage {
+        runs,
+        next,
+        as_of_ms,
+    }))
 }
 
 pub(crate) fn unknown_project() -> ApiError {
@@ -181,10 +261,12 @@ pub struct RunDetail {
     created_at_ms: i64,
     start_ms: i64,
     archived_at_ms: Option<i64>,
+    abort_requested_at_ms: Option<i64>,
     last_step: Option<i64>,
     metric_min: SqlJson<Value>,
     metric_max: SqlJson<Value>,
     renames: SqlJson<Value>,
+    rename_scales: SqlJson<Value>,
     heartbeat_at_ms: i64,
     finished_at_ms: Option<i64>,
     summary: SqlJson<Value>,
@@ -532,6 +614,115 @@ pub async fn run_logs(
             })
             .collect(),
     }))
+}
+
+/// Lines per query while downloading a whole log.
+const DOWNLOAD_PAGE: u64 = 20_000;
+
+#[derive(Deserialize)]
+pub struct DownloadParams {
+    /// Keep the ANSI color codes (default: plain text).
+    #[serde(default)]
+    ansi: bool,
+}
+
+/// `GET /api/v0/runs/{run}/logs.txt` (`?ansi=true`): the whole console output as a text
+/// file, streamed page by page.
+pub async fn run_logs_file(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(run): Path<String>,
+    Query(params): Query<DownloadParams>,
+) -> Result<Response, UiError> {
+    let run_id = parse_run_id(&run)?;
+    let project_id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM runs WHERE id = $1")
+        .bind(run_id)
+        .fetch_one(state.pg())
+        .await?;
+    // A file name from the run's name, without anything a header or a path could misread.
+    let mut file: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-_.".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    file.truncate(100);
+    if file.trim_matches(['.', '_']).is_empty() {
+        file = "run".into();
+    }
+
+    let count: u64 = state
+        .ch()
+        .query(
+            "SELECT if(count() = 0, 0, max(line) + 1) FROM console_lines
+             WHERE project_id = ? AND run_id = toUUID(?)",
+        )
+        .bind(project_id as u64)
+        .bind(run_id.to_string())
+        .fetch_one()
+        .await
+        .map_err(ApiError::from)?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    tokio::spawn(async move {
+        let text = if params.ansi {
+            "text"
+        } else {
+            "replaceRegexpAll(text, ?, '')"
+        };
+        for from in (0..count).step_by(DOWNLOAD_PAGE as usize) {
+            let mut query = state.ch().query(&format!(
+                "SELECT line, toUnixTimestamp64Milli(ts) AS ts, toInt8(stream) AS stream, {text} AS text
+                 FROM console_lines FINAL
+                 WHERE project_id = ? AND run_id = toUUID(?) AND line >= ? AND line < ?
+                 ORDER BY line"
+            ));
+            if !params.ansi {
+                query = query.bind(ANSI_PATTERN);
+            }
+            let rows: Vec<ConsoleRow> = match query
+                .bind(project_id as u64)
+                .bind(run_id.to_string())
+                .bind(from)
+                .bind(from + DOWNLOAD_PAGE)
+                .fetch_all()
+                .await
+            {
+                Ok(rows) => rows,
+                Err(err) => {
+                    tracing::warn!(%err, "console download stopped");
+                    let _ = tx
+                        .send(Err(std::io::Error::other("reading the log failed")))
+                        .await;
+                    return;
+                }
+            };
+            let mut chunk = String::new();
+            for row in rows {
+                chunk.push_str(&row.text);
+                chunk.push('\n');
+            }
+            if tx.send(Ok(chunk.into())).await.is_err() {
+                return; // the download was cancelled
+            }
+        }
+    });
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{file}.log\""),
+            ),
+        ],
+        axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+        .into_response())
 }
 
 /// `GET /api/v0/runs/{run}/files/{name}`: a text file captured with the run (`git.diff`).

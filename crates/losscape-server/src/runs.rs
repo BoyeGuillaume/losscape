@@ -135,6 +135,7 @@ pub async fn init(
     }
     sqlx::query(
         "UPDATE runs SET state = 'running', heartbeat_at = now(), finished_at = NULL,
+                         abort_requested_at = NULL,
                          exit_code = NULL, archived_at = NULL, config = config || $2
          WHERE id = $1",
     )
@@ -171,23 +172,24 @@ pub async fn heartbeat(
     sqlx::query("SET LOCAL synchronous_commit = off")
         .execute(&mut *tx)
         .await?;
-    let exists: Option<bool> = sqlx::query_scalar(
+    let abort: Option<bool> = sqlx::query_scalar(
         "WITH touched AS (
              UPDATE runs SET heartbeat_at = now()
              WHERE id = $1 AND heartbeat_at < now() - interval '10 seconds'
              RETURNING id
          )
-         SELECT true FROM touched UNION ALL SELECT true FROM runs WHERE id = $1 LIMIT 1",
+         SELECT abort_requested_at IS NOT NULL FROM runs WHERE id = $1",
     )
     .bind(run_id)
     .fetch_optional(&mut *tx)
     .await?;
     tx.commit().await?;
-    if exists.is_none() {
+    let Some(abort) = abort else {
         return Err(ApiError::unknown_run());
-    }
+    };
     Ok(Proto(Ack {
         run_id: req.run_id,
+        abort,
         ..Default::default()
     }))
 }
@@ -227,6 +229,7 @@ pub async fn finish(
         run_id: req.run_id,
         seq: req.last_seq,
         duplicate: false,
+        abort: false,
     }))
 }
 
@@ -272,7 +275,7 @@ async fn next_console_line(
         .await?)
 }
 
-fn validate_tags(tags: &[String]) -> Result<(), ApiError> {
+pub(crate) fn validate_tags(tags: &[String]) -> Result<(), ApiError> {
     if tags.len() > MAX_TAGS {
         return Err(ApiError::invalid(format!("tags: at most {MAX_TAGS}")));
     }

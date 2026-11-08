@@ -54,6 +54,12 @@ impl<'a> Call<'a> {
             ..Self::new(Method::POST, uri)
         }
     }
+    fn put(uri: impl Into<String>, body: Value) -> Self {
+        Self {
+            body: Some(body),
+            ..Self::new(Method::PUT, uri)
+        }
+    }
     fn cookie(self, cookie: &'a str) -> Self {
         Self {
             cookie: Some(cookie),
@@ -797,7 +803,9 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
         assert_eq!(log_point(&server, &alice, run, 0).await.0, StatusCode::OK);
     }
     let names = |runs: &Value| -> Vec<String> {
-        runs.as_array()
+        runs.get("runs")
+            .unwrap_or(runs)
+            .as_array()
             .unwrap()
             .iter()
             .map(|r| r["id"].as_str().unwrap().replace('-', ""))
@@ -810,10 +818,36 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
         archive_call(bob, "archive", old).send(&server).await.status,
         StatusCode::FORBIDDEN
     );
+    // Nor change tags; they can read them.
+    let tag = |user| {
+        Call::post(
+            "/api/v0/projects/p/runs/tags",
+            json!({"runs": [run_path(old)], "add": ["x"]}),
+        )
+        .bearer(user)
+    };
+    assert_eq!(tag(bob).send(&server).await.status, StatusCode::FORBIDDEN);
+    let rename = Call::post(
+        "/api/v0/projects/p/runs/metric-renames",
+        json!({"runs": [run_path(old)], "from": "loss", "to": "train/loss"}),
+    )
+    .bearer(bob);
+    assert_eq!(rename.send(&server).await.status, StatusCode::FORBIDDEN);
+    let abort = Call::post(
+        "/api/v0/projects/p/runs/abort",
+        json!({"runs": [run_path(old)]}),
+    )
+    .bearer(bob);
+    assert_eq!(abort.send(&server).await.status, StatusCode::FORBIDDEN);
+    let style = Call::put("/api/v0/projects/p/tags/x", json!({"color": "red"})).bearer(bob);
+    assert_eq!(style.send(&server).await.status, StatusCode::FORBIDDEN);
+    let read = Call::get("/api/v0/projects/p/tags").bearer(bob);
+    assert_eq!(read.send(&server).await.status, StatusCode::OK);
+    assert_eq!(tag(alice).send(&server).await.json()["changed"], 1);
     let res = archive_call(alice, "archive", old).send(&server).await;
     assert_eq!(res.json()["changed"], 1);
     assert_eq!(names(&list(false).await.json()), [run_path(keep)]);
-    let archived = list(true).await.json();
+    let archived = list(true).await.json()["runs"].clone();
     assert_eq!(names(&archived), [run_path(old)]);
     assert!(archived[0]["archived_at_ms"].as_i64().is_some());
     let info = Call::get("/api/v0/projects/p")
@@ -1014,7 +1048,7 @@ async fn project_roles_control_access() {
         StatusCode::NOT_FOUND
     );
 
-    // Viewer: reads, can't log, can't manage members.
+    // Viewer: reads, can't log, can't manage members or change the board.
     let set = |who: &str, role: &str| Call {
         body: Some(json!({ "role": role })),
         ..Call::new(
@@ -1029,6 +1063,26 @@ async fn project_roles_control_access() {
             .await
             .status,
         StatusCode::NO_CONTENT
+    );
+    let put_board = || Call {
+        body: Some(json!({"query": "", "sort": {"id": "created", "desc": true}, "limit": 5})),
+        ..Call::new(Method::PUT, "/api/v0/projects/alice-proj/board")
+    };
+    assert_eq!(
+        put_board().bearer(&bob).send(&server).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        put_board().bearer(&alice).send(&server).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        Call::get("/api/v0/projects/alice-proj/board")
+            .bearer(&bob)
+            .send(&server)
+            .await
+            .status,
+        StatusCode::OK
     );
     assert_eq!(
         Call::get("/api/v0/projects/alice-proj/runs")

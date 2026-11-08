@@ -128,6 +128,8 @@ message Ack {
   uint64 seq = 2;
   // true when this seq had already been stored (retry of a duplicate).
   bool duplicate = 3;
+  // Answer to a heartbeat: someone asked for this run to stop (the UI's Abort).
+  bool abort = 4;
 }
 
 message Error {

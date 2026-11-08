@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod auth;
+pub mod board;
 mod clickhouse_store;
 pub mod config;
 pub mod error;
@@ -14,5 +15,6 @@ pub mod purge;
 pub mod read;
 pub mod runs;
 pub mod state;
+pub mod tags;
 #[cfg(feature = "testing")]
 pub mod testing;
