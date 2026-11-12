@@ -42,11 +42,21 @@ export function effectiveSummary(
 	for (const name of registry.computedNames) {
 		const r = metrics.resolve(name);
 		if (r?.kind !== 'formula') continue;
-		const value = evaluate(r.formula, (ref) => {
-			const source = r.refs.get(ref)!;
-			const v = own(run.summary, source.raw);
-			return typeof v === 'number' ? v * source.scale : null;
-		});
+		const value = evaluate(
+			r.formula,
+			(ref) => {
+				const source = r.refs.get(ref)!;
+				const v = own(run.summary, source.raw);
+				return typeof v === 'number' ? v * source.scale : null;
+			},
+			(ref, fn) => {
+				// Mean and median need every point, which charts load and tables don't.
+				if (fn === 'mean' || fn === 'median') return null;
+				const { raw, scale } = r.refs.get(ref)!;
+				const v = extremes(raw, (fn === 'highest') === scale >= 0 ? 'max' : 'min');
+				return typeof v === 'number' ? v * scale : null;
+			}
+		);
 		if (value !== null) out[name] = value;
 	}
 	return out;

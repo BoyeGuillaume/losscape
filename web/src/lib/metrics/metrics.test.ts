@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { effectiveSummary } from './apply.js';
 import { detectFamilies } from './families.js';
-import { evaluate, parseFormula, references } from './formula.js';
+import { aggregated, allReferences, evaluate, parseFormula, references } from './formula.js';
 import { isAccepted, match } from './pattern.js';
 import { Registry, problems, unitOf, type MetricDef } from './registry.js';
 import { formatUnit } from '#lib/units.js';
@@ -112,6 +112,45 @@ describe('formulas', () => {
 	it("don't take an object's built-in names for functions", () => {
 		for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
 			expect(() => parseFormula(`${name}(1)`), name).toThrow('unknown function');
+		}
+	});
+
+	it('aggregate a metric over the whole run', () => {
+		const f = parseFormula('([loss] - lowest([loss])) / (highest([loss]) - median([acc]))');
+		expect([...references(f)], 'step by step').toEqual(['loss']);
+		expect([...aggregated(f)]).toEqual(['loss', 'acc']);
+		expect([...allReferences(f)]).toEqual(['loss', 'acc']);
+		const totals = { lowest: 1, highest: 5, mean: 3, median: 2 };
+		expect(
+			evaluate(
+				f,
+				() => 3,
+				(_key, fn) => totals[fn]
+			)
+		).toBe((3 - 1) / (5 - 2));
+		expect(
+			evaluate(
+				parseFormula('mean([loss])'),
+				() => null,
+				() => 3
+			)
+		).toBe(3);
+		expect(
+			evaluate(f, () => 3),
+			'aggregates not known'
+		).toBeNull();
+	});
+
+	it('take only a metric in an aggregate', () => {
+		for (const bad of [
+			'mean(1)',
+			'mean([a] + 1)',
+			'mean([a], [b])',
+			'mean',
+			'mean()',
+			'mean([a]'
+		]) {
+			expect(() => parseFormula(bad), bad).toThrow('mean takes one metric: mean([val/loss])');
 		}
 	});
 
@@ -271,6 +310,17 @@ describe('value modes', () => {
 	});
 	it('can take the best of all that have a direction', () => {
 		expect(of('best')).toMatchObject({ acc: 0.9, loss: 0.2, plain: 3 });
+	});
+	it('gives lowest and highest over the run to formulas, not mean or median', () => {
+		const computed = new Registry([
+			{ name: 'range', kind: 'formula', spec: { expression: 'highest([loss]) - lowest([loss])' } },
+			{ name: 'flip', kind: 'formula', spec: { expression: 'highest([flipped])' } },
+			{ name: 'centered', kind: 'formula', spec: { expression: '[loss] - mean([loss])' } }
+		]);
+		const summary = effectiveSummary(run, computed);
+		expect(summary.range).toBe(2 - 0.2);
+		expect(summary.flip, 'highest shown is the lowest logged, negated').toBe(-1);
+		expect(summary.centered).toBeUndefined();
 	});
 
 	it('reads the right end through a negative scale', () => {

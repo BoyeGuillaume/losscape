@@ -1,10 +1,14 @@
 // Formulas for virtual metrics: numbers, metrics in brackets ([val/p]), + - * / ^,
-// parentheses, the functions and constants below. Parsed into a tree and
+// parentheses, the functions, aggregates and constants below. Parsed into a tree and
 // evaluated directly: no `eval`, nothing else is reachable.
+
+/** Over every value a run logged of a metric, rather than at one step. */
+export type Aggregate = 'lowest' | 'highest' | 'mean' | 'median';
 
 export type Formula =
 	| { kind: 'num'; value: number }
 	| { kind: 'ref'; key: string }
+	| { kind: 'agg'; fn: Aggregate; key: string }
 	| { kind: 'neg'; arg: Formula }
 	| { kind: 'op'; op: '+' | '-' | '*' | '/' | '^'; left: Formula; right: Formula }
 	| { kind: 'call'; fn: string; args: Formula[] };
@@ -59,16 +63,31 @@ const CONSTANTS: Record<string, { value: number; help: string }> = {
 	e: { value: Math.E, help: '2.71828…' }
 };
 
+const AGGREGATES: Record<Aggregate, string> = {
+	lowest: "a metric's lowest value over the whole run",
+	highest: "a metric's highest value over the whole run",
+	mean: "a metric's mean over the whole run",
+	median: "a metric's median over the whole run"
+};
+
 // Own entries only: `constructor` or `__proto__` are names of every object.
 const isFunction = (name: string) => Object.hasOwn(FUNCTIONS, name);
 const isConstant = (name: string) => Object.hasOwn(CONSTANTS, name);
+const isAggregate = (name: string): name is Aggregate => Object.hasOwn(AGGREGATES, name);
 
 export const FUNCTION_NAMES = Object.keys(FUNCTIONS);
+export const AGGREGATE_NAMES = Object.keys(AGGREGATES) as Aggregate[];
 export const CONSTANT_NAMES = Object.keys(CONSTANTS);
 
-/** What a function or constant gives, for suggestions. */
+/** What a function, aggregate or constant gives, for suggestions. */
 export const helpFor = (name: string): string | undefined =>
-	isFunction(name) ? FUNCTIONS[name].help : isConstant(name) ? CONSTANTS[name].help : undefined;
+	isFunction(name)
+		? FUNCTIONS[name].help
+		: isAggregate(name)
+			? AGGREGATES[name]
+			: isConstant(name)
+				? CONSTANTS[name].help
+				: undefined;
 
 export class FormulaError extends Error {}
 
@@ -159,6 +178,16 @@ export function parseFormula(src: string): Formula {
 		if (tok.t === 'id') {
 			const name = (tok as { v: string }).v;
 			if (peek() !== '(' && isConstant(name)) return { kind: 'num', value: CONSTANTS[name].value };
+			if (isAggregate(name)) {
+				// Of a metric's values, not of an expression: a run has those, step by step.
+				const usage = `${name} takes one metric: ${name}([val/loss])`;
+				if (peek() !== '(') throw new FormulaError(usage);
+				pos++;
+				const metric = tokens[pos];
+				if (metric?.t !== 'ref' || tokens[pos + 1]?.t !== ')') throw new FormulaError(usage);
+				pos += 2;
+				return { kind: 'agg', fn: name, key: (metric as { v: string }).v };
+			}
 			if (!isFunction(name))
 				throw new FormulaError(`unknown function "${name}" (metrics go in brackets: [name])`);
 			expect('(');
@@ -182,7 +211,7 @@ export function parseFormula(src: string): Formula {
 	return tree;
 }
 
-/** Metric names a formula reads. */
+/** Metric names a formula reads step by step (not those it aggregates, see `aggregated`). */
 export function references(f: Formula, out = new Set<string>()): Set<string> {
 	if (f.kind === 'ref') out.add(f.key);
 	else if (f.kind === 'neg') references(f.arg, out);
@@ -193,10 +222,28 @@ export function references(f: Formula, out = new Set<string>()): Set<string> {
 	return out;
 }
 
-/** The value, or null if a metric is missing or the result isn't a finite number. */
+/** Metric names a formula aggregates over the whole run: `mean([val/loss])`. */
+export function aggregated(f: Formula, out = new Set<string>()): Set<string> {
+	if (f.kind === 'agg') out.add(f.key);
+	else if (f.kind === 'neg') aggregated(f.arg, out);
+	else if (f.kind === 'op') {
+		aggregated(f.left, out);
+		aggregated(f.right, out);
+	} else if (f.kind === 'call') f.args.forEach((a) => aggregated(a, out));
+	return out;
+}
+
+/** Every metric name a formula reads, either way. */
+export const allReferences = (f: Formula) => aggregated(f, references(f));
+
+/**
+ * The value, or null if a metric is missing or the result isn't a finite number. `aggregate`
+ * gives a metric's lowest, highest, mean or median over the run (missing: null).
+ */
 export function evaluate(
 	f: Formula,
-	value: (key: string) => number | null | undefined
+	value: (key: string) => number | null | undefined,
+	aggregate?: (key: string, fn: Aggregate) => number | null | undefined
 ): number | null {
 	const go = (n: Formula): number => {
 		switch (n.kind) {
@@ -204,6 +251,8 @@ export function evaluate(
 				return n.value;
 			case 'ref':
 				return value(n.key) ?? NaN;
+			case 'agg':
+				return aggregate?.(n.key, n.fn) ?? NaN;
 			case 'neg':
 				return -go(n.arg);
 			case 'call':

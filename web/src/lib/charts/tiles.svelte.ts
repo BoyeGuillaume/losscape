@@ -112,8 +112,26 @@ function fold(tile: Tile, bucket: number, value: number, time: number) {
 	}
 }
 
+/** A metric over every point a run logged (finite ones): for aggregates in formulas. */
+export type MetricStats = {
+	n: number;
+	min: number | null;
+	max: number | null;
+	mean: number | null;
+	median: number | null;
+};
+/** Items per statistics request (the server's limit). */
+const MAX_STATS_ITEMS = 500;
+/** A live run's statistics are asked again at most this often (ms): the median is costly. */
+const STATS_REFRESH_MS = 15_000;
+
 class TileStore {
 	private tiles = new Map<string, Tile>();
+	/** Statistics per metric: null when the run has no finite value of it. */
+	private statsCache = new Map<string, { stats: MetricStats | null; at: number; stale: boolean }>();
+	private statsQueue = new Map<string, { run: string; key: string }>();
+	private statsInFlight = new Set<string>();
+	private statsTimer: ReturnType<typeof setTimeout> | null = null;
 	/** Levels with cached tiles, per metric (live points are folded into these). */
 	private levels = new Map<string, Set<number>>();
 	private inFlight = new Set<string>();
@@ -241,6 +259,63 @@ class TileStore {
 		}
 	}
 
+	/**
+	 * A metric's statistics over the whole run: undefined until known (then asked for), null if
+	 * it has no value. Out-of-date ones (a live run logged more) are given while asked again.
+	 */
+	stats(run: string, key: string): MetricStats | null | undefined {
+		const id = seriesId(run, key);
+		const cached = this.statsCache.get(id);
+		const due = !cached || (cached.stale && performance.now() - cached.at > STATS_REFRESH_MS);
+		if (due && !this.statsInFlight.has(id)) {
+			this.statsQueue.set(id, { run, key });
+			this.statsTimer ??= setTimeout(() => void this.loadStats(), 0);
+		}
+		return cached?.stats;
+	}
+
+	private async loadStats() {
+		this.statsTimer = null;
+		const all = [...this.statsQueue];
+		this.statsQueue.clear();
+		for (let i = 0; i < all.length; i += MAX_STATS_ITEMS) {
+			const part = all.slice(i, i + MAX_STATS_ITEMS);
+			part.forEach(([id]) => this.statsInFlight.add(id));
+			try {
+				const res = await apiFetch('/metric-stats', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ items: part.map(([, item]) => item) })
+				});
+				const rows: ({ run: string; key: string } & MetricStats)[] = await res.json();
+				const found = new Map(rows.map((r) => [seriesId(r.run, r.key), r]));
+				const at = performance.now();
+				for (const [id] of part) {
+					const r = found.get(id);
+					this.statsCache.set(id, {
+						stats: r ? { n: r.n, min: r.min, max: r.max, mean: r.mean, median: r.median } : null,
+						at,
+						stale: false
+					});
+				}
+			} catch (err) {
+				// Asked again later, like a live run's: not at every redraw.
+				console.warn('losscape: loading metric statistics failed', err);
+				const at = performance.now();
+				for (const [id] of part) {
+					this.statsCache.set(id, {
+						stats: this.statsCache.get(id)?.stats ?? null,
+						at,
+						stale: true
+					});
+				}
+			} finally {
+				part.forEach(([id]) => this.statsInFlight.delete(id));
+			}
+		}
+		this.changed();
+	}
+
 	/** Has charts ask again for what they're missing. */
 	retry() {
 		this.changed();
@@ -254,6 +329,8 @@ class TileStore {
 		tail.push({ step, value, time, at: performance.now() });
 		if (tail.length > LIVE_TAIL) tail.splice(0, tail.length - LIVE_TAIL);
 		this.liveTail.set(series, tail);
+		const stats = this.statsCache.get(series);
+		if (stats) stats.stale = true;
 		for (const level of this.levels.get(series) ?? []) {
 			const tile = this.tiles.get(tileId(series, level, Math.floor(step / tileSpan(level))));
 			if (tile) fold(tile, Math.floor(step / 2 ** level), value, time);
@@ -267,6 +344,7 @@ class TileStore {
 		for (const id of this.tiles.keys()) if (id.startsWith(prefix)) this.tiles.delete(id);
 		for (const id of this.levels.keys()) if (id.startsWith(prefix)) this.levels.delete(id);
 		for (const id of this.liveTail.keys()) if (id.startsWith(prefix)) this.liveTail.delete(id);
+		for (const id of this.statsCache.keys()) if (id.startsWith(prefix)) this.statsCache.delete(id);
 		this.changed();
 	}
 }

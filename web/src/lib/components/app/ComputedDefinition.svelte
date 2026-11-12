@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { Input } from '#lib/components/ui/input/index.js';
-	import { FormulaError, parseFormula, references } from '#lib/metrics/formula.js';
+	import { allReferences, FormulaError, parseFormula } from '#lib/metrics/formula.js';
 	import { isPattern } from '#lib/metrics/pattern.js';
 	import { projectMetrics } from '#lib/metrics/store.svelte.js';
+	import FormulaHelp from './FormulaHelp.svelte';
 	import FormulaInput from './FormulaInput.svelte';
 
 	let {
@@ -58,7 +59,7 @@
 	const checked = $derived.by(() => {
 		if (!formula.trim()) return { error: null, missing: [] as string[] };
 		try {
-			const refs = [...references(parseFormula(formula))];
+			const refs = [...allReferences(parseFormula(formula))];
 			return { error: null, missing: refs.filter((k) => !readable.includes(k)) };
 		} catch (err) {
 			if (!(err instanceof FormulaError)) throw err;
@@ -97,7 +98,7 @@
 		{#if nameIssue}<p class="text-xs text-destructive">{nameIssue}</p>{/if}
 	</div>
 	<div class="pt-1.5 text-sm font-medium">
-		Formula
+		<div class="-mt-1 flex items-center gap-1">Formula <FormulaHelp /></div>
 		<p class="text-xs font-normal text-muted-foreground">
 			Computed step by step from logged metrics
 		</p>
@@ -124,8 +125,8 @@
 					>{checked.missing.join(', ')}</span
 				>
 			{:else}
-				<span class="font-mono">[metric]</span> reads a metric; + - * / ^, pi, and functions such
-				as pow, log, sin or clamp: type a name to see them all.
+				<span class="font-mono">[metric]</span> reads a metric; + - * / ^, functions such as pow,
+				sin or clamp, and mean([metric]) over the whole run. See ? for more.
 			{/if}
 		</p>
 	</FormulaInput>

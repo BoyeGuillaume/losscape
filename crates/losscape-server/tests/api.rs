@@ -1687,3 +1687,60 @@ async fn history_streams_every_point_as_csv() {
     assert_eq!(status, StatusCode::NOT_FOUND, "a run of another project");
     server.stop().await;
 }
+
+#[tokio::test]
+async fn metric_stats_are_over_every_point() {
+    let Some(server) = TestServer::start().await else {
+        return;
+    };
+    let run = RunId::new();
+    server.init(run, false).await;
+    // loss: 1, 1/2, 1/3, 1/4, 1/5; acc: the same, then a NaN, which isn't counted.
+    server.log(batch(run, 0, 0, 5)).await;
+    let mut nan = batch(run, 1, 5, 1);
+    nan.scalars.as_mut().unwrap().value = vec![f64::NAN, f64::NAN];
+    server.log(nan).await;
+    let id = uuid::Uuid::from_bytes(*run.as_bytes());
+    let stats = |items: serde_json::Value| {
+        Request::post("/api/v0/metric-stats")
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "items": items }).to_string(),
+            ))
+            .unwrap()
+    };
+
+    let (status, body) = server
+        .call(stats(serde_json::json!([
+            {"run": id.to_string(), "key": "loss"},
+            {"run": id.simple().to_string(), "key": "loss"},
+            {"run": id.to_string(), "key": "missing"}
+        ])))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "asked twice, and a metric the run hasn't: {rows:?}"
+    );
+    let loss = &rows[0];
+    assert_eq!(loss["run"], id.to_string());
+    assert_eq!(loss["n"], 5, "NaN left out");
+    assert_eq!(loss["min"], 0.2);
+    assert_eq!(loss["max"], 1.0);
+    let mean = (1.0 + 0.5 + 1.0 / 3.0 + 0.25 + 0.2) / 5.0;
+    assert!((loss["mean"].as_f64().unwrap() - mean).abs() < 1e-12);
+    assert!((loss["median"].as_f64().unwrap() - 1.0 / 3.0).abs() < 1e-12);
+
+    let (status, _) = server
+        .call(stats(
+            serde_json::json!([{"run": uuid::Uuid::now_v7().to_string(), "key": "loss"}]),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a run of no project");
+    let (status, _) = server.call(stats(serde_json::json!([]))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    server.stop().await;
+}

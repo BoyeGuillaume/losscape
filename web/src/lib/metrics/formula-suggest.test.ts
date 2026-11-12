@@ -28,6 +28,15 @@ describe('formula suggestions', () => {
 		expect(at('cl|').items[0].detail).toMatch(/between lo and hi/);
 	});
 
+	it('opens aggregates on the metric to aggregate', () => {
+		const typed = at('[loss] / me|');
+		expect(typed.labels[0]).toBe('mean([metric])');
+		expect(typed.items[0].detail).toMatch(/whole run/);
+		const opened = typed.accept();
+		expect(opened).toBe('[loss] / mean([');
+		expect(at(`${opened}|`).labels, 'then metrics').toEqual(KEYS);
+	});
+
 	it('keeps going after the first metric', () => {
 		expect(at('[val/p] * |').labels).toContain('val/r');
 		expect(at('[val/p] * [|').accept(3)).toBe('[val/p] * [val/p]');

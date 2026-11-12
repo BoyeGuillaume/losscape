@@ -15,7 +15,7 @@ import {
 	scaled,
 	type Unit
 } from '#lib/units.js';
-import { FormulaError, parseFormula, references, type Formula } from './formula.js';
+import { allReferences, FormulaError, parseFormula, type Formula } from './formula.js';
 import { compile, isPattern, match } from './pattern.js';
 import { own } from '#lib/group.js';
 
@@ -328,7 +328,7 @@ export class RunMetrics {
 		} else if (this.registry.formula(key)) {
 			const formula = this.registry.formula(key)!;
 			const refs = new Map<string, { raw: string; scale: number }>();
-			for (const ref of references(formula)) {
+			for (const ref of allReferences(formula)) {
 				// A formula reads logged (or renamed) metrics, not other formulas.
 				const inner = this.registry.isComputed(ref) ? null : this.resolve(ref);
 				if (!inner || inner.kind !== 'key') {

@@ -90,6 +90,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/runs/{run}/files/{name}", get(read::run_file))
         .route("/series", post(read::series))
         .route("/projects/{project}/history", get(history::history))
+        .route("/metric-stats", post(history::stats))
         .route("/auth/me", get(account::me))
         .route("/me", patch(account::update_profile))
         .route(

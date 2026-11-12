@@ -1,9 +1,26 @@
 // Reading metrics as shown (renamed, merged, computed by a formula) from the logged ones:
 // charts ask a MetricSource for a run's metric and get downsampled points back.
 
-import { evaluate } from '#lib/metrics/formula.js';
+import { aggregated, evaluate, references, type Aggregate } from '#lib/metrics/formula.js';
 import type { Registry, Resolution, RunMetrics } from '#lib/metrics/registry.js';
-import { seriesInRange, type SeriesPoints } from './tiles.svelte.js';
+import { seriesInRange, tileStore, type MetricStats, type SeriesPoints } from './tiles.svelte.js';
+
+type Refs = Map<string, { raw: string; scale: number }>;
+
+/** An aggregate of a metric shown with a factor (a negative one swaps lowest and highest). */
+function scaledAggregate(stats: MetricStats, fn: Aggregate, scale: number): number | null {
+	const pick =
+		fn === 'lowest'
+			? scale >= 0
+				? stats.min
+				: stats.max
+			: fn === 'highest'
+				? scale >= 0
+					? stats.max
+					: stats.min
+				: stats[fn];
+	return pick === null ? null : pick * scale;
+}
 
 export type Extent = { min: number; max: number };
 
@@ -54,17 +71,28 @@ export class MetricSource {
 		return single.size < refs.size ? single : new Set();
 	}
 
+	/**
+	 * The inputs a formula is drawn along: those it reads step by step. With only aggregates
+	 * (`mean([loss])`), the metrics it aggregates, so that it spans their steps.
+	 */
+	private stepping(r: Extract<Resolution, { kind: 'formula' }>): Refs {
+		const stepped = references(r.formula);
+		const along = new Map([...r.refs].filter(([ref]) => stepped.has(ref)));
+		return along.size ? along : r.refs;
+	}
+
 	/** Steps a run has the metric for (a formula: where all its inputs exist). */
 	extentOf(run: string, key: string): Extent | undefined {
 		const r = this.resolve(run, key);
 		if (!r) return undefined;
 		if (r.kind === 'key') return this.extent(run, r.raw);
-		const constants = this.constants(run, r.refs);
+		for (const { raw } of r.refs.values()) if (!this.extent(run, raw)) return undefined;
+		const along = this.stepping(r);
+		const constants = this.constants(run, along);
 		let out: Extent | undefined;
-		for (const [ref, { raw }] of r.refs) {
-			const e = this.extent(run, raw);
-			if (!e) return undefined;
+		for (const [ref, { raw }] of along) {
 			if (constants.has(ref)) continue;
+			const e = this.extent(run, raw)!;
 			out = out ? { min: Math.max(out.min, e.min), max: Math.min(out.max, e.max) } : e;
 		}
 		return out && out.max >= out.min ? out : undefined;
@@ -76,7 +104,8 @@ export class MetricSource {
 		if (!r) return null;
 		if (r.kind === 'key') return scaledSeries(run, r.raw, r.scale, from, to, width);
 		// A formula, bucket by bucket: the same steps and width give the same buckets.
-		const constants = this.constants(run, r.refs);
+		const along = this.stepping(r);
+		const constants = this.constants(run, along);
 		const fixed = new Map<string, number | null>();
 		let complete = true;
 		for (const ref of constants) {
@@ -86,7 +115,14 @@ export class MetricSource {
 			complete &&= s.complete;
 			fixed.set(ref, s.mean[0] ?? null);
 		}
-		const inputs = [...r.refs]
+		// Over the whole run, from the server: every point, not the ones loaded.
+		const totals = new Map<string, MetricStats | null | undefined>();
+		for (const ref of aggregated(r.formula)) {
+			const stats = tileStore.stats(run, r.refs.get(ref)!.raw);
+			complete &&= stats !== undefined;
+			totals.set(ref, stats);
+		}
+		const inputs = [...along]
 			.filter(([ref]) => !constants.has(ref))
 			.map(([ref, { raw, scale }]) => {
 				const s = scaledSeries(run, raw, scale, from, to, width);
@@ -102,16 +138,23 @@ export class MetricSource {
 			max: [],
 			complete: complete && inputs.every((i) => i.s.complete)
 		};
-		// A constant still loading: nothing to show yet.
-		if ([...fixed.values()].includes(null)) return out;
+		// A constant or an aggregate still loading: nothing to show yet.
+		if ([...fixed.values()].includes(null) || [...totals.values()].includes(undefined)) return out;
 		first.s.x.forEach((x, i) => {
 			const idx = inputs.map((input) => input.at.get(x));
 			if (idx.some((j) => j === undefined)) return;
-			const value = evaluate(r.formula, (ref) => {
-				if (fixed.has(ref)) return fixed.get(ref)!;
-				const k = inputs.findIndex((input) => input.ref === ref);
-				return inputs[k].s.mean[idx[k]!];
-			});
+			const value = evaluate(
+				r.formula,
+				(ref) => {
+					if (fixed.has(ref)) return fixed.get(ref)!;
+					const k = inputs.findIndex((input) => input.ref === ref);
+					return inputs[k].s.mean[idx[k]!];
+				},
+				(ref, fn) => {
+					const stats = totals.get(ref);
+					return stats ? scaledAggregate(stats, fn, r.refs.get(ref)!.scale) : null;
+				}
+			);
 			out.x.push(x);
 			out.n.push(Math.min(...inputs.map((input, k) => input.s.n[idx[k]!])));
 			out.time.push(first.s.time[i]);
