@@ -2,13 +2,16 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as ToggleGroup from '#lib/components/ui/toggle-group/index.js';
 	import {
+		DEFAULT_PREFIXES,
 		LOGGED_AS,
 		UNIT_KINDS,
 		loggedAs,
+		prefixChoices,
 		unitKind,
 		unitLabel,
 		type UnitKind
 	} from '#lib/metrics/labels.js';
+	import type { Prefixes } from '#lib/units.js';
 	import type { UnitSpec } from '#lib/metrics/registry.js';
 
 	let {
@@ -36,7 +39,9 @@
 		const out: UnitSpec = { ...value!, ...fields } as UnitSpec;
 		if (out.scale === 1) delete out.scale;
 		if (out.preset !== 'custom') delete out.suffix;
-		if (out.preset !== 'custom' || !out.compact) delete out.compact;
+		// Prefixes only for units that take them, and only when not their default.
+		if (out.prefixes === DEFAULT_PREFIXES[out.preset]) delete out.prefixes;
+		if (!(out.preset in DEFAULT_PREFIXES)) delete out.prefixes;
 		if (out.decimals === undefined) delete out.decimals;
 		return out;
 	}
@@ -62,7 +67,7 @@
 		}
 		otherFactor = false;
 		const option = LOGGED_AS[kind].find((o) => o.label === label)!;
-		onChange(build({ preset: option.preset, scale: option.scale, compact: option.compact }));
+		onChange(build({ preset: option.preset, scale: option.scale }));
 	}
 
 	function setFactor(text: string) {
@@ -115,11 +120,7 @@
 				aria-label="Logged as"
 			>
 				{#each LOGGED_AS[kind] as option (option.label)}
-					<ToggleGroup.Item value={option.label}
-						>{kind === 'custom' && value.suffix
-							? option.label.replace('px', value.suffix)
-							: option.label}</ToggleGroup.Item
-					>
+					<ToggleGroup.Item value={option.label}>{option.label}</ToggleGroup.Item>
 				{/each}
 				<ToggleGroup.Item value="other" title="Values were logged times another factor"
 					>other ×</ToggleGroup.Item
@@ -137,6 +138,25 @@
 				/>
 			{/if}
 		</div>
+		{#if value.preset in DEFAULT_PREFIXES}
+			<div class="flex flex-wrap items-center gap-2 text-sm">
+				<span class="text-muted-foreground">Prefixes</span>
+				<ToggleGroup.Root
+					type="single"
+					variant="outline"
+					size="sm"
+					class="flex-wrap"
+					value={value.prefixes ?? DEFAULT_PREFIXES[value.preset]}
+					onValueChange={(v) => v && onChange(build({ prefixes: v as Prefixes }))}
+					{disabled}
+					aria-label="Prefixes"
+				>
+					{#each prefixChoices(value.preset === 'watts' ? 'W' : (value.suffix ?? '')) as choice (choice.value)}
+						<ToggleGroup.Item value={choice.value}>{choice.label}</ToggleGroup.Item>
+					{/each}
+				</ToggleGroup.Root>
+			</div>
+		{/if}
 		<div class="flex flex-wrap items-center gap-2 text-sm">
 			<span class="text-muted-foreground">Precision</span>
 			<ToggleGroup.Root

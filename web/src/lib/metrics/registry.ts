@@ -13,6 +13,8 @@ import {
 	PERCENT,
 	SECONDS,
 	scaled,
+	siUnit,
+	type Prefixes,
 	type Unit
 } from '#lib/units.js';
 import { allReferences, FormulaError, parseFormula, type Formula } from './formula.js';
@@ -30,6 +32,7 @@ export type UnitPreset =
 	| 'bytes_per_s'
 	| 'bps'
 	| 'seconds'
+	| 'watts'
 	| 'custom';
 export type UnitSpec = {
 	preset: UnitPreset;
@@ -37,8 +40,8 @@ export type UnitSpec = {
 	scale?: number;
 	/** Custom unit's suffix. */
 	suffix?: string;
-	/** Custom unit: large values with k, M, B (12.3k px). */
-	compact?: boolean;
+	/** Custom unit and watts: SI prefixes, none (950 px), large (12.3 kpx) or all (4.5 mW). */
+	prefixes?: Prefixes;
 	digits?: number;
 	decimals?: number;
 };
@@ -102,41 +105,39 @@ export const BUILTIN: MetricDef[] = [
 	{ name: 'model/*params', kind: 'describe', spec: { unit: { preset: 'count' } } },
 	{ name: 'model/*flops', kind: 'describe', spec: { unit: { preset: 'flops' } } },
 	{ name: 'model/*size_bytes', kind: 'describe', spec: { unit: { preset: 'bytes' } } },
+	// Names say what is measured; the unit is here (see crates/losscape-client/src/system.rs).
 	{
-		name: 'system/*_pct',
+		name: 'system/*util',
 		kind: 'describe',
 		spec: { unit: { preset: 'percent' }, bounds: [0, 100] }
 	},
 	{
-		name: 'system/cpu/process_pct',
+		name: 'system/*usage',
+		kind: 'describe',
+		spec: { unit: { preset: 'percent' }, bounds: [0, 100] }
+	},
+	{
+		name: 'system/cpu/process',
 		kind: 'describe',
 		spec: {
+			unit: { preset: 'percent' },
 			bounds: [0, null],
 			description: 'Across all its threads: 100% is one full core, so it can exceed 100%.'
 		}
 	},
+	{ name: 'system/memory/process', kind: 'describe', spec: { unit: { preset: 'bytes' } } },
+	{ name: 'system/gpu*/memory', kind: 'describe', spec: { unit: { preset: 'bytes' } } },
+	{ name: 'system/gpu*/power', kind: 'describe', spec: { unit: { preset: 'watts' } } },
 	{
-		name: 'system/memory/process_gb',
+		name: 'system/gpu*/temp',
 		kind: 'describe',
-		spec: { unit: { preset: 'bytes', scale: 2 ** 30 } }
-	},
-	{
-		name: 'system/gpu*/memory_gb',
-		kind: 'describe',
-		spec: { unit: { preset: 'bytes', scale: 2 ** 30 } }
+		spec: { unit: { preset: 'custom', suffix: '°C' } }
 	},
 	{ name: 'system/disk/read', kind: 'describe', spec: { unit: { preset: 'bytes_per_s' } } },
 	{ name: 'system/disk/write', kind: 'describe', spec: { unit: { preset: 'bytes_per_s' } } },
 	{ name: 'system/network/recv', kind: 'describe', spec: { unit: { preset: 'bps' } } },
 	{ name: 'system/network/sent', kind: 'describe', spec: { unit: { preset: 'bps' } } }
 ];
-
-/** A custom suffix, alone (950 px) or after k, M, B (12.3k px). */
-function customUnit(suffix: string, compact: boolean): Unit {
-	const after = suffix ? ` ${suffix}` : '';
-	if (!compact) return { steps: [{ factor: 1, suffix }] };
-	return { steps: COUNT.steps.map((s) => ({ ...s, suffix: `${s.suffix}${after}` })), space: false };
-}
 
 export function unitOf(spec: UnitSpec | undefined): Unit | null {
 	if (!spec || spec.preset === 'none') return null;
@@ -149,7 +150,8 @@ export function unitOf(spec: UnitSpec | undefined): Unit | null {
 		flops: FLOPS,
 		bps: BITS_PER_SECOND,
 		seconds: SECONDS,
-		custom: customUnit(spec.suffix ?? '', spec.compact ?? false)
+		watts: siUnit('W', spec.prefixes ?? 'all'),
+		custom: siUnit(spec.suffix ?? '', spec.prefixes ?? 'none')
 	}[spec.preset];
 	let unit = spec.scale ? scaled(base, (base.scale ?? 1) * spec.scale) : base;
 	if (spec.digits !== undefined || spec.decimals !== undefined) {

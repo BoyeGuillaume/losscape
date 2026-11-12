@@ -228,7 +228,7 @@ def test_console_and_system_metrics_are_captured(tmp_path, terminal):
 
     detail = api(f"/runs/{run_id}")
     keys = {m["key"] for m in detail["metrics"]}
-    assert {"system/cpu/util_pct", "system/memory/used_pct", "loss"} <= keys, keys
+    assert {"system/cpu/util", "system/memory/usage", "loss"} <= keys, keys
     assert not any(k.startswith("system/") for k in detail["summary"]), "kept out of summary"
     environment = detail["environment"]
     assert environment["python"]["executable"] == sys.executable

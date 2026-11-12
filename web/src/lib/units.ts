@@ -71,6 +71,34 @@ export const SECONDS: Unit = {
 	]
 };
 
+/** Which SI prefixes a unit may take: none (950 W), large ones (12.3 kW), or small ones too (4.5 mW). */
+export type Prefixes = 'none' | 'large' | 'all';
+
+const SI_PREFIXES: [number, string][] = [
+	[1e-9, 'n'],
+	[1e-6, 'µ'],
+	[1e-3, 'm'],
+	[1, ''],
+	[1e3, 'k'],
+	[1e6, 'M'],
+	[1e9, 'G'],
+	[1e12, 'T']
+];
+
+/** `suffix` with SI prefixes: 4.5 mW, 950 W, 12.3 kW. Without a suffix, just the prefixes. */
+export function siUnit(suffix: string, prefixes: Prefixes): Unit {
+	const kept = SI_PREFIXES.filter(
+		([factor]) => factor === 1 || prefixes === 'all' || (prefixes === 'large' && factor > 1)
+	);
+	return {
+		steps: kept.map(([factor, prefix]) => ({ factor, suffix: `${prefix}${suffix}` })),
+		space: suffix !== ''
+	};
+}
+
+/** Power, in watts: 4.5 mW, 350 W, 1.2 kW. */
+export const WATTS: Unit = siUnit('W', 'all');
+
 /** Values already in percent (0-100): 45.3%. */
 export const PERCENT: Unit = { steps: [{ factor: 1, suffix: '%' }], decimals: 1, space: false };
 
@@ -89,6 +117,12 @@ export function stepFor(value: number, unit: Unit): UnitStep {
 }
 
 function stepIndex(abs: number, unit: Unit): number {
+	// Nothing is 0 W, not 0 nW.
+	if (abs === 0)
+		return Math.max(
+			0,
+			unit.steps.findIndex((s) => s.factor === 1)
+		);
 	let i = 0;
 	while (i + 1 < unit.steps.length && abs >= unit.steps[i + 1].factor) i++;
 	return i;

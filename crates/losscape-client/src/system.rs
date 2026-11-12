@@ -12,7 +12,6 @@ use nvml_wrapper::Nvml;
 use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
 use sysinfo::{Disks, Networks, Pid, ProcessesToUpdate, System};
 
-const GB: f64 = 1024.0 * 1024.0 * 1024.0;
 const FIRST_SAMPLE: Duration = Duration::from_secs(1);
 
 /// NVML, initialized once per process (None without an NVIDIA driver).
@@ -123,18 +122,20 @@ impl Probe {
         let s = &mut self.system;
         s.refresh_cpu_usage();
         s.refresh_memory();
-        put("cpu/util_pct", s.global_cpu_usage() as f64);
+        // Names say what is measured, not in what: units come with the metric's settings
+        // (percent, bytes, watts...), so values can be shown at any scale.
+        put("cpu/util", s.global_cpu_usage() as f64);
         if s.total_memory() > 0 {
             put(
-                "memory/used_pct",
+                "memory/usage",
                 100.0 * s.used_memory() as f64 / s.total_memory() as f64,
             );
         }
         if let Some(pid) = self.pid {
             s.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
             if let Some(p) = s.process(pid) {
-                put("cpu/process_pct", p.cpu_usage() as f64);
-                put("memory/process_gb", p.memory() as f64 / GB);
+                put("cpu/process", p.cpu_usage() as f64);
+                put("memory/process", p.memory() as f64); // bytes
                 let io = p.disk_usage();
                 // Bytes per second (the UI scales them).
                 put("disk/read", io.read_bytes as f64 / seconds);
@@ -149,7 +150,7 @@ impl Probe {
         {
             let used = disk.total_space() - disk.available_space();
             put(
-                "disk/used_pct",
+                "disk/usage",
                 100.0 * used as f64 / disk.total_space() as f64,
             );
         }
@@ -172,22 +173,22 @@ impl Probe {
                     continue;
                 };
                 if let Ok(u) = gpu.utilization_rates() {
-                    put(&format!("gpu{i}/util_pct"), u.gpu as f64);
+                    put(&format!("gpu{i}/util"), u.gpu as f64);
                 }
                 if let Ok(m) = gpu.memory_info()
                     && m.total > 0
                 {
                     put(
-                        &format!("gpu{i}/memory_pct"),
+                        &format!("gpu{i}/memory_usage"),
                         100.0 * m.used as f64 / m.total as f64,
                     );
-                    put(&format!("gpu{i}/memory_gb"), m.used as f64 / GB);
+                    put(&format!("gpu{i}/memory"), m.used as f64); // bytes
                 }
                 if let Ok(mw) = gpu.power_usage() {
-                    put(&format!("gpu{i}/power_w"), mw as f64 / 1000.0);
+                    put(&format!("gpu{i}/power"), mw as f64 / 1000.0); // watts
                 }
                 if let Ok(c) = gpu.temperature(TemperatureSensor::Gpu) {
-                    put(&format!("gpu{i}/temp_c"), c as f64);
+                    put(&format!("gpu{i}/temp"), c as f64); // °C
                 }
             }
         }
@@ -215,16 +216,16 @@ mod tests {
         let points = probe.sample();
         let keys: Vec<&str> = points.iter().map(|(k, _)| k.as_str()).collect();
         for key in [
-            "system/cpu/util_pct",
-            "system/memory/used_pct",
-            "system/memory/process_gb",
+            "system/cpu/util",
+            "system/memory/usage",
+            "system/memory/process",
             "system/network/recv",
         ] {
             assert!(keys.contains(&key), "{key} missing from {keys:?}");
         }
         let memory = points
             .iter()
-            .find(|(k, _)| k == "system/memory/used_pct")
+            .find(|(k, _)| k == "system/memory/usage")
             .unwrap()
             .1;
         assert!((0.0..=100.0).contains(&memory));

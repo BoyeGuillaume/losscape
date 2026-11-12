@@ -193,8 +193,9 @@ describe('registry', () => {
 		expect(registry.describe('val/pck-16').bounds).toEqual([0, 1]);
 		expect(registry.describe('val/loss').direction, 'own beats the pattern').toBe('min');
 		expect(registry.describe('val/f1').summary).toBe('last');
-		expect(registry.describe('system/cpu/util_pct').bounds).toEqual([0, 100]);
-		const process = registry.describe('system/cpu/process_pct');
+		expect(registry.describe('system/cpu/util').bounds).toEqual([0, 100]);
+		expect(registry.describe('system/gpu1/memory_usage').bounds).toEqual([0, 100]);
+		const process = registry.describe('system/cpu/process');
 		expect(process.bounds, 'many threads: above 100%').toEqual([0, null]);
 		expect(process.unit?.steps[0].suffix).toBe('%');
 		const read = registry.describe('system/disk/read').unit!;
@@ -275,13 +276,39 @@ describe('family detection', () => {
 });
 
 describe('custom units', () => {
-	it('show a suffix, alone or after k, M, B, times a factor', () => {
-		expect(formatUnit(950, unitOf({ preset: 'custom', suffix: 'px' })!)).toBe('950 px');
-		const compact = unitOf({ preset: 'custom', suffix: 'px', compact: true })!;
-		expect(formatUnit(12_345, compact)).toBe('12.3k px');
-		expect(formatUnit(950, compact)).toBe('950 px');
-		const scaled = unitOf({ preset: 'custom', suffix: 'tok', compact: true, scale: 1000 })!;
-		expect(formatUnit(1.5, scaled), 'logged in thousands').toBe('1.5k tok');
+	it('show a suffix, with SI prefixes if asked, times a factor', () => {
+		expect(formatUnit(12_345, unitOf({ preset: 'custom', suffix: 'px' })!)).toBe('12300 px');
+		const large = unitOf({ preset: 'custom', suffix: 'Hz', prefixes: 'large' })!;
+		expect([950, 12_345, 2.4e9, 0.002].map((v) => formatUnit(v, large))).toEqual([
+			'950 Hz',
+			'12.3 kHz',
+			'2.4 GHz',
+			'0.002 Hz'
+		]);
+		const all = unitOf({ preset: 'custom', suffix: 'V', prefixes: 'all' })!;
+		expect([0.0045, 3.3e-7, 0].map((v) => formatUnit(v, all))).toEqual(['4.5 mV', '330 nV', '0 V']);
+		const scaled = unitOf({ preset: 'custom', suffix: 'tok', prefixes: 'large', scale: 1000 })!;
+		expect(formatUnit(1.5, scaled), 'logged in thousands').toBe('1.5 ktok');
+		expect(formatUnit(12_345, unitOf({ preset: 'custom', prefixes: 'large' })!), 'no suffix').toBe(
+			'12.3k'
+		);
+	});
+
+	it('include watts, with every prefix unless told otherwise', () => {
+		const watts = unitOf({ preset: 'watts' })!;
+		expect([0.0000045, 0.25, 350, 1200, 0, 3.5e9].map((v) => formatUnit(v, watts))).toEqual([
+			'4.5 µW',
+			'250 mW',
+			'350 W',
+			'1.2 kW',
+			'0 W',
+			'3.5 GW'
+		]);
+		expect(formatUnit(0.9999, watts), 'rounding up to the next prefix').toBe('1 W');
+		expect(formatUnit(0.25, unitOf({ preset: 'watts', prefixes: 'large' })!)).toBe('0.25 W');
+		expect(formatUnit(1.2, unitOf({ preset: 'watts', scale: 1e3 })!), 'logged in kW').toBe(
+			'1.2 kW'
+		);
 	});
 });
 

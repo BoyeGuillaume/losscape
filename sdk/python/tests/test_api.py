@@ -18,7 +18,7 @@ RUN = "01a1a361-acce-72d1-ada3-ac673877effb"
 POINTS = {
     "train/loss": [(0, 2.0), (1, 1.5), (2, float("nan")), (3, 1.0)],
     "val/acc": [(1, 0.5), (3, 0.7)],
-    "system/cpu/util_pct": [(0, 40.0)],
+    "system/cpu/util": [(0, 40.0)],
 }
 RUN_JSON = {
     "id": RUN,
@@ -130,7 +130,7 @@ def test_history_as_a_table(api):
     assert list(df.columns) == ["step", "train/loss", "val/acc"], "system metrics left out"
     assert df["step"].tolist() == [0, 1, 2, 3]
     assert df["val/acc"].isna().tolist() == [True, False, True, False]
-    assert "system/cpu/util_pct" in run.history(system=True).columns
+    assert "system/cpu/util" in run.history(system=True).columns
     long = run.history("val/acc", wide=False)
     assert list(long.columns) == ["metric", "step", "time", "value"]
     assert long["value"].tolist() == [0.5, 0.7]

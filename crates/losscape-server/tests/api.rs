@@ -321,7 +321,7 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
         .as_mut()
         .unwrap()
         .keys
-        .push("system/cpu/util_pct".into());
+        .push("system/cpu/util".into());
     let s = second.scalars.as_mut().unwrap();
     s.key_idx.push(2);
     s.step.push(1_700_000_000);

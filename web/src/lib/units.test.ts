@@ -57,9 +57,13 @@ describe('formatUnit', () => {
 
 describe('metric units', () => {
 	it('applies to the system metrics listed, and nothing else', () => {
-		expect(unitFor('system/cpu/util_pct')).toEqual(PERCENT);
-		expect(formatMetric('system/memory/process_gb', 1.25)).toBe('1.25 GiB');
-		expect(formatMetric('system/gpu0/memory_gb', 0.25)).toBe('256 MiB');
+		expect(unitFor('system/cpu/util')).toEqual(PERCENT);
+		expect(unitFor('system/disk/usage')).toEqual(PERCENT);
+		expect(formatMetric('system/memory/process', 1.25 * 2 ** 30)).toBe('1.25 GiB');
+		expect(formatMetric('system/gpu0/memory', 2 ** 28)).toBe('256 MiB');
+		expect(formatMetric('system/gpu0/power', 312.5)).toBe('313 W');
+		expect(formatMetric('system/gpu0/temp', 67)).toBe('67 °C');
+		expect(unitFor('system/cpu/util_pct'), 'old names: plain').toBeNull();
 		expect(formatMetric('system/network/recv', 12_500_000)).toBe('12.5 Mbps');
 		expect(formatUnit(800, BITS_PER_SECOND)).toBe('800 bps');
 		expect(unitFor('system/network/recv_mbps'), 'old key: plain').toBeNull();
