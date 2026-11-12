@@ -4,7 +4,7 @@
 	import { mode } from 'mode-watcher';
 
 	import { distinctTicks, isFlat, type ChartSeries } from '#lib/charts/settings.js';
-	import { chartSize } from '#lib/charts/size.svelte.js';
+	import { appearance, CHART_SIZES } from '#lib/appearance.svelte.js';
 	import { formatMetric, metricAxis } from '#lib/metric-units.js';
 	import { compile, match } from '#lib/metrics/pattern.js';
 	import type { MetricDef } from '#lib/metrics/registry.js';
@@ -107,7 +107,7 @@
 			{meta.summary === 'best' ? 'best' : 'last'} value by {param}
 		</span>
 	</header>
-	<div class={['w-full', chartSize.height]}>
+	<div class={['w-full', CHART_SIZES[appearance.current.chartSize].height]}>
 		{#if all.length}
 			<Chart
 				data={all}

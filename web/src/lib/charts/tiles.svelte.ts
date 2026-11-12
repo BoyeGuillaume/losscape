@@ -120,6 +120,11 @@ export type MetricStats = {
 	mean: number | null;
 	median: number | null;
 };
+/** The nearest finite point beyond a step (see `TileStore.neighbor`). */
+export type NeighborPoint = { step: number; value: number; time: number };
+/** Lookups per neighbors request (the server's limit). */
+const MAX_NEIGHBOR_ITEMS = 200;
+
 /** Items per statistics request (the server's limit). */
 const MAX_STATS_ITEMS = 500;
 /** A live run's statistics are asked again at most this often (ms): the median is costly. */
@@ -132,6 +137,14 @@ class TileStore {
 	private statsQueue = new Map<string, { run: string; key: string }>();
 	private statsInFlight = new Set<string>();
 	private statsTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Nearest points beyond a step, per metric, side and step: null when there's none. */
+	private neighborCache = new Map<string, NeighborPoint | null>();
+	private neighborQueue = new Map<
+		string,
+		{ run: string; key: string; step: number; side: 'before' | 'after' }
+	>();
+	private neighborInFlight = new Set<string>();
+	private neighborTimer: ReturnType<typeof setTimeout> | null = null;
 	/** Levels with cached tiles, per metric (live points are folded into these). */
 	private levels = new Map<string, Set<number>>();
 	private inFlight = new Set<string>();
@@ -316,6 +329,56 @@ class TileStore {
 		this.changed();
 	}
 
+	/**
+	 * The last finite point before `step`, or the first after it, however far: what a line
+	 * crossing a view between two points is drawn to. Undefined until known (then asked for).
+	 */
+	neighbor(
+		run: string,
+		key: string,
+		step: number,
+		side: 'before' | 'after'
+	): NeighborPoint | null | undefined {
+		const id = `${seriesId(run, key)}${SEP}${side}${SEP}${step}`;
+		if (this.neighborCache.has(id)) return this.neighborCache.get(id);
+		if (!this.neighborInFlight.has(id)) {
+			this.neighborQueue.set(id, { run, key, step, side });
+			this.neighborTimer ??= setTimeout(() => void this.loadNeighbors(), 0);
+		}
+		return undefined;
+	}
+
+	private async loadNeighbors() {
+		this.neighborTimer = null;
+		const all = [...this.neighborQueue];
+		this.neighborQueue.clear();
+		for (let i = 0; i < all.length; i += MAX_NEIGHBOR_ITEMS) {
+			const part = all.slice(i, i + MAX_NEIGHBOR_ITEMS);
+			part.forEach(([id]) => this.neighborInFlight.add(id));
+			try {
+				const res = await apiFetch('/neighbors', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ items: part.map(([, item]) => item) })
+				});
+				const found: { item: number; step: number; value: number; time_ms: number }[] =
+					await res.json();
+				const byItem = new Map(found.map((n) => [n.item, n]));
+				part.forEach(([id], k) => {
+					const n = byItem.get(k);
+					this.neighborCache.set(id, n ? { step: n.step, value: n.value, time: n.time_ms } : null);
+				});
+			} catch (err) {
+				// Drawn without: the view still shows what it has.
+				console.warn('losscape: loading neighbouring points failed', err);
+				part.forEach(([id]) => this.neighborCache.set(id, null));
+			} finally {
+				part.forEach(([id]) => this.neighborInFlight.delete(id));
+			}
+		}
+		this.changed();
+	}
+
 	/** Has charts ask again for what they're missing. */
 	retry() {
 		this.changed();
@@ -331,6 +394,10 @@ class TileStore {
 		this.liveTail.set(series, tail);
 		const stats = this.statsCache.get(series);
 		if (stats) stats.stale = true;
+		// A new point can be the nearest one after a step (not before: it's the latest).
+		const after = `${series}${SEP}after${SEP}`;
+		for (const id of this.neighborCache.keys())
+			if (id.startsWith(after)) this.neighborCache.delete(id);
 		for (const level of this.levels.get(series) ?? []) {
 			const tile = this.tiles.get(tileId(series, level, Math.floor(step / tileSpan(level))));
 			if (tile) fold(tile, Math.floor(step / 2 ** level), value, time);
@@ -345,6 +412,8 @@ class TileStore {
 		for (const id of this.levels.keys()) if (id.startsWith(prefix)) this.levels.delete(id);
 		for (const id of this.liveTail.keys()) if (id.startsWith(prefix)) this.liveTail.delete(id);
 		for (const id of this.statsCache.keys()) if (id.startsWith(prefix)) this.statsCache.delete(id);
+		for (const id of this.neighborCache.keys())
+			if (id.startsWith(prefix)) this.neighborCache.delete(id);
 		this.changed();
 	}
 }

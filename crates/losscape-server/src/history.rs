@@ -184,3 +184,88 @@ pub async fn stats(
     }
     Ok(Json(query.fetch_all().await.map_err(ApiError::from)?))
 }
+
+/// Lookups per neighbors request.
+pub const MAX_NEIGHBOR_ITEMS: usize = 200;
+
+#[derive(Deserialize)]
+pub struct NeighborsRequest {
+    items: Vec<NeighborItem>,
+}
+
+#[derive(Deserialize)]
+pub struct NeighborItem {
+    run: String,
+    key: String,
+    /// The last point before this step (`before`), or the first after it (`after`).
+    step: u64,
+    side: Side,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Before,
+    After,
+}
+
+#[derive(Serialize, Deserialize, clickhouse::Row)]
+pub struct Neighbor {
+    /// Index of the item asked for.
+    item: u32,
+    step: u64,
+    value: f64,
+    /// Epoch ms, client clock.
+    time_ms: i64,
+}
+
+/// `POST /api/v0/neighbors` `{"items": [{"run", "key", "step", "side"}]}`: the nearest finite
+/// point before or after a step, for each. Lets a chart draw the line through a view that
+/// falls between two logged points. Items with none are left out.
+pub async fn neighbors(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<NeighborsRequest>,
+) -> Result<Json<Vec<Neighbor>>, UiError> {
+    if req.items.is_empty() || req.items.len() > MAX_NEIGHBOR_ITEMS {
+        return Err(ApiError::invalid(format!("1-{MAX_NEIGHBOR_ITEMS} items per request")).into());
+    }
+    let mut projects: BTreeMap<Uuid, i64> = BTreeMap::new();
+    let mut parts = Vec::with_capacity(req.items.len());
+    let mut binds = Vec::with_capacity(req.items.len());
+    for (i, item) in req.items.iter().enumerate() {
+        let run_id = parse_run_id(&item.run)?;
+        let project_id = match projects.get(&run_id) {
+            Some(&id) => id,
+            None => {
+                let id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+                projects.insert(run_id, id);
+                id
+            }
+        };
+        // Read in the table's order, from the step outwards: one point, whatever the gap.
+        let (op, order) = match item.side {
+            Side::Before => ("<", "DESC"),
+            Side::After => (">", "ASC"),
+        };
+        parts.push(format!(
+            "SELECT * FROM (
+                SELECT toUInt32({i}) AS item, step, value, toUnixTimestamp64Milli(ts) AS time_ms
+                FROM metrics
+                WHERE project_id = ? AND run_id = toUUID(?) AND key = ? AND step {op} ?
+                  AND isFinite(value)
+                ORDER BY step {order} LIMIT 1)"
+        ));
+        binds.push((
+            project_id as u64,
+            run_id.to_string(),
+            item.key.as_str(),
+            item.step,
+        ));
+    }
+    let mut query = state.ch_read().query(&parts.join(" UNION ALL "));
+    for (project_id, run, key, step) in binds {
+        query = query.bind(project_id).bind(run).bind(key).bind(step);
+    }
+    Ok(Json(query.fetch_all().await.map_err(ApiError::from)?))
+}

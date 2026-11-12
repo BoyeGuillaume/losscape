@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 
+	import { appearance, CHART_COLUMNS } from '#lib/appearance.svelte.js';
 	import { apiJson } from '#lib/api/client.js';
 	import type { RunMetricInfo, RunSummary } from '#lib/api/types.js';
 	import { phasePath } from '#lib/charts/phase.js';
@@ -116,7 +117,7 @@
 	const xName = $derived(registry.describe(xKey).label || xKey);
 </script>
 
-<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+<div class={['grid gap-4', CHART_COLUMNS[appearance.current.columns].grid]}>
 	{#each plots as p (p.key)}
 		<DotChart
 			metric={p.key}

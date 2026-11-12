@@ -3,7 +3,14 @@
 
 import { aggregated, evaluate, references, type Aggregate } from '#lib/metrics/formula.js';
 import type { Registry, Resolution, RunMetrics } from '#lib/metrics/registry.js';
-import { seriesInRange, tileStore, type MetricStats, type SeriesPoints } from './tiles.svelte.js';
+import {
+	levelFor,
+	seriesInRange,
+	tileSpan,
+	tileStore,
+	type MetricStats,
+	type SeriesPoints
+} from './tiles.svelte.js';
 
 type Refs = Map<string, { raw: string; scale: number }>;
 
@@ -37,6 +44,58 @@ function scaledSeries(
 	const times = (v: number | null) => (v === null ? null : v * scale);
 	const [min, max] = scale < 0 ? [s.max, s.min] : [s.min, s.max];
 	return { ...s, mean: s.mean.map(times), min: min.map(times), max: max.map(times) };
+}
+
+/**
+ * `s` with the nearest point on each side beyond the tiles it was read from, where it has
+ * none beyond the view and the run logged some: zoomed in between two points, the line
+ * between them still crosses the view.
+ */
+function withNeighbors(
+	run: string,
+	raw: string,
+	scale: number,
+	from: number,
+	to: number,
+	width: number,
+	extent: Extent | undefined,
+	s: SeriesPoints
+): SeriesPoints {
+	if (!s.complete || !extent) return s;
+	const span = tileSpan(levelFor(to - from + 1, width));
+	const before =
+		extent.min < from && !(s.x.length && s.x[0] < from)
+			? tileStore.neighbor(run, raw, Math.floor(from / span) * span, 'before')
+			: null;
+	const after =
+		extent.max > to && !(s.x.length && s.x[s.x.length - 1] > to)
+			? tileStore.neighbor(run, raw, (Math.floor(to / span) + 1) * span - 1, 'after')
+			: null;
+	if (!before && !after) {
+		return before === undefined || after === undefined ? { ...s, complete: false } : s;
+	}
+	const out: SeriesPoints = {
+		x: [...s.x],
+		n: [...s.n],
+		time: [...s.time],
+		mean: [...s.mean],
+		min: [...s.min],
+		max: [...s.max],
+		complete: before !== undefined && after !== undefined
+	};
+	const add = (p: { step: number; value: number; time: number }, at: 'start' | 'end') => {
+		const v = p.value * scale;
+		const put = at === 'start' ? 'unshift' : 'push';
+		out.x[put](p.step);
+		out.n[put](1);
+		out.time[put](p.time);
+		out.mean[put](v);
+		out.min[put](v);
+		out.max[put](v);
+	};
+	if (before) add(before, 'start');
+	if (after) add(after, 'end');
+	return out;
 }
 
 export class MetricSource {
@@ -102,7 +161,10 @@ export class MetricSource {
 	points(run: string, key: string, from: number, to: number, width: number): SeriesPoints | null {
 		const r = this.resolve(run, key);
 		if (!r) return null;
-		if (r.kind === 'key') return scaledSeries(run, r.raw, r.scale, from, to, width);
+		if (r.kind === 'key') {
+			const s = scaledSeries(run, r.raw, r.scale, from, to, width);
+			return withNeighbors(run, r.raw, r.scale, from, to, width, this.extent(run, r.raw), s);
+		}
 		// A formula, bucket by bucket: the same steps and width give the same buckets.
 		const along = this.stepping(r);
 		const constants = this.constants(run, along);

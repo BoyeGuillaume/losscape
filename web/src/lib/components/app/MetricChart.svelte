@@ -41,7 +41,8 @@
 	import { isolatedPoints } from '#lib/charts/isolated.js';
 	import { levelFor, tileStore, type SeriesPoints } from '#lib/charts/tiles.svelte.js';
 	import { formatMetric, metricAxis, unitFor, unitTicks } from '#lib/metric-units.js';
-	import { chartSize } from '#lib/charts/size.svelte.js';
+	import { appearance, CHART_SIZES, DOTS_BELOW } from '#lib/appearance.svelte.js';
+	import { crossing } from '#lib/charts/crossing.js';
 	import { nav } from '#lib/nav.svelte.js';
 	import { notifyError } from '#lib/notify.js';
 
@@ -381,6 +382,25 @@
 	});
 
 	/** y range of what is visible, band and unsmoothed lines included when drawn. */
+	/**
+	 * Points drawn as dots, per line: all those in view when there are few (and the appearance
+	 * settings want them), else only those with no neighbour to draw a line to.
+	 */
+	const dots = $derived(
+		Object.fromEntries(
+			lines.map((line) => {
+				const inView = line.rows.filter(
+					(r) => r.x >= xDomain[0] && r.x <= xDomain[1] && definedY(r)
+				);
+				const all = appearance.current.dots && inView.length < DOTS_BELOW;
+				return [
+					line.series.id,
+					{ all, rows: all ? inView : isolatedPoints(line.rows, definedY) }
+				];
+			})
+		)
+	);
+
 	const yDomain = $derived.by((): [number, number] | undefined => {
 		// A zoomed range reaching 0 or below has no place on a log scale.
 		if (yView && !(useLog && yView[0] <= 0)) return yView;
@@ -402,6 +422,15 @@
 					take(r.min);
 					take(r.max);
 				}
+			}
+			// Where lines cross the edges of the view: zoomed in between two points, that's
+			// all there is of them to see.
+			if (!line.ascending) continue;
+			for (const edge of xDomain) {
+				const at = crossing(line.rows, edge, (r) => r.y, useLog);
+				take(at);
+				if (at !== null) values.push(at);
+				if (settings.smoothing > 0) take(crossing(line.rows, edge, (r) => r.raw, useLog));
 			}
 		}
 		if (!Number.isFinite(lo)) return undefined;
@@ -455,9 +484,12 @@
 	const single = $derived(
 		series.length === 1 && series[0].runs.length === 1 ? lines[0] : undefined
 	);
+	/** The last value up to the right of the view (rows can go past it, to draw the line). */
 	const latest = $derived.by(() => {
 		const rows = single?.rows ?? [];
-		for (let i = rows.length - 1; i >= 0; i--) if (rows[i].y !== null) return rows[i];
+		for (let i = rows.length - 1; i >= 0; i--) {
+			if (rows[i].y !== null && rows[i].x <= xDomain[1]) return rows[i];
+		}
 		return null;
 	});
 
@@ -617,7 +649,8 @@
 				name: l.series.name,
 				color: colors[l.series.id],
 				group: l.series.runs.length > 1,
-				rows: l.rows
+				rows: l.rows,
+				dots: dots[l.series.id].all
 			})),
 			show: {
 				band: settings.band,
@@ -837,7 +870,7 @@
 	</header>
 
 	<div
-		class={['w-full', chartSize.height]}
+		class={['w-full', CHART_SIZES[appearance.current.chartSize].height]}
 		bind:clientWidth={width}
 		ondblclickcapture={(e) => {
 			// Before the brush, which would take it as "select everything".
@@ -943,10 +976,10 @@
 							fill="none"
 						/>
 						<Points
-							data={isolatedPoints(line.rows, definedY)}
+							data={dots[line.series.id].rows}
 							x="x"
 							y="y"
-							r={3}
+							r={dots[line.series.id].all ? 2.5 : 3}
 							fill={colors[line.series.id]}
 							opacity={highlight && highlight !== line.series.id ? 0.15 : 1}
 						/>

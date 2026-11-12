@@ -1744,3 +1744,100 @@ async fn metric_stats_are_over_every_point() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     server.stop().await;
 }
+
+#[tokio::test]
+async fn neighbors_reach_across_gaps_and_skip_nan() {
+    let Some(server) = TestServer::start().await else {
+        return;
+    };
+    let run = RunId::new();
+    server.init(run, false).await;
+    server.log(batch(run, 0, 0, 3)).await; // steps 0-2
+    let mut nan = batch(run, 1, 5, 1);
+    nan.scalars.as_mut().unwrap().value = vec![f64::NAN, f64::NAN];
+    server.log(nan).await; // step 5: NaN, skipped
+    server.log(batch(run, 2, 1000, 2)).await; // steps 1000-1001
+    let id = uuid::Uuid::from_bytes(*run.as_bytes()).to_string();
+    let ask = |items: serde_json::Value| {
+        Request::post("/api/v0/neighbors")
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "items": items }).to_string(),
+            ))
+            .unwrap()
+    };
+
+    let (status, body) = server
+        .call(ask(serde_json::json!([
+            {"run": id, "key": "loss", "step": 500, "side": "before"},
+            {"run": id, "key": "loss", "step": 500, "side": "after"},
+            {"run": id, "key": "loss", "step": 0, "side": "before"},
+            {"run": id, "key": "loss", "step": 1001, "side": "after"},
+            {"run": id, "key": "acc", "step": 3, "side": "after"}
+        ])))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
+    let mut found: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    found.sort_by_key(|n| n["item"].as_u64());
+    let got: Vec<(u64, u64)> = found
+        .iter()
+        .map(|n| (n["item"].as_u64().unwrap(), n["step"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(
+        got,
+        [(0, 2), (1, 1000), (4, 1000)],
+        "across the gap, past the NaN; nothing before the first or after the last"
+    );
+    assert_eq!(found[0]["value"], 1.0 / 3.0);
+    assert_eq!(found[0]["time_ms"], 1_700_000_000_002i64);
+
+    let (status, _) = server
+        .call(ask(serde_json::json!([
+            {"run": uuid::Uuid::now_v7().to_string(), "key": "loss", "step": 1, "side": "before"}
+        ])))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = server
+        .call(ask(
+            serde_json::json!([{"run": id, "key": "loss", "step": 1, "side": "around"}]),
+        ))
+        .await;
+    assert!(status.is_client_error());
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn preferences_follow_the_user() {
+    let Some(server) = TestServer::start().await else {
+        return;
+    };
+    let put = |body: String| {
+        Request::put("/api/v0/me/preferences")
+            .header(header::AUTHORIZATION, server.bearer())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let (_, me) = get_json(&server, "/api/v0/auth/me").await;
+    assert_eq!(
+        me["preferences"],
+        serde_json::json!({}),
+        "none to start with"
+    );
+
+    let saved = serde_json::json!({"appearance": {"theme": "dark", "columns": 2}});
+    let (status, body) = server.call(put(saved.to_string())).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{}", error_of(&body));
+    let (_, me) = get_json(&server, "/api/v0/auth/me").await;
+    assert_eq!(me["preferences"], saved);
+
+    let (status, _) = server.call(put("[1, 2]".into())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "an object only");
+    let big = serde_json::json!({ "x": "y".repeat(10_000) });
+    let (status, _) = server.call(put(big.to_string())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "bounded");
+    let (_, me) = get_json(&server, "/api/v0/auth/me").await;
+    assert_eq!(me["preferences"], saved, "refusals change nothing");
+    server.stop().await;
+}

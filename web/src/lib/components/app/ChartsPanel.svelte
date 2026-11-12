@@ -7,6 +7,7 @@
 	import { ChartGroup } from 'layerchart';
 	import { untrack, type Component } from 'svelte';
 
+	import { appearance, CHART_COLUMNS } from '#lib/appearance.svelte.js';
 	import { apiJson } from '#lib/api/client.js';
 	import { subscribeLive } from '#lib/api/live.js';
 	import type { RunMetricInfo } from '#lib/api/types.js';
@@ -32,7 +33,6 @@
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
 	import FamilyChart from './FamilyChart.svelte';
-	import ChartSizeSelect from './ChartSizeSelect.svelte';
 	import MetricChart from './MetricChart.svelte';
 
 	type Extent = { min: number; max: number };
@@ -338,7 +338,6 @@
 				{/each}
 			</Select.Content>
 		</Select.Root>
-		<ChartSizeSelect />
 		<label class="flex h-8 items-center gap-2 rounded-md border px-2.5 text-sm">
 			<span class="text-muted-foreground">Smoothing</span>
 			<input
@@ -425,7 +424,7 @@
 				<span class="text-xs tabular-nums">{sectionKeys.length}</span>
 			</button>
 			{#if open}
-				<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+				<div class={['grid gap-4', CHART_COLUMNS[appearance.current.columns].grid]}>
 					{#each sectionKeys as key (key)}
 						<MetricChart
 							{highlight}
@@ -468,7 +467,7 @@
 						<span class="text-xs tabular-nums">{families.length}</span>
 					</button>
 					{#if open}
-						<div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+						<div class={['grid gap-4', CHART_COLUMNS[appearance.current.columns].grid]}>
 							{#each families as f (f.def.name)}
 								<FamilyChart def={f.def} members={f.members} {series} {summaryOf} />
 							{/each}

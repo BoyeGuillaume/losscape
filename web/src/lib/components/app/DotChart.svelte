@@ -6,7 +6,7 @@
 	import { page } from '$app/state';
 
 	import { distinctTicks, isFlat, logTicks } from '#lib/charts/settings.js';
-	import { chartSize } from '#lib/charts/size.svelte.js';
+	import { appearance, CHART_SIZES } from '#lib/appearance.svelte.js';
 	import { formatMetric, metricAxis } from '#lib/metric-units.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
@@ -184,7 +184,7 @@
 		</h3>
 		{#if note}<span class="ml-auto shrink-0 text-xs text-muted-foreground">{note}</span>{/if}
 	</header>
-	<div class={['w-full', chartSize.height]}>
+	<div class={['w-full', CHART_SIZES[appearance.current.chartSize].height]}>
 		{#if dots.length}
 			<Chart
 				data={dots}

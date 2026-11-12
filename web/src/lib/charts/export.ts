@@ -180,6 +180,8 @@ export type SvgParts = {
 		color: string;
 		/** A group of runs, drawn thicker. */
 		group: boolean;
+		/** Every point in view as a dot (few of them), not only those standing alone. */
+		dots?: boolean;
 		rows: {
 			x: number;
 			y: number | null;
@@ -361,8 +363,13 @@ export function chartSvg(p: SvgParts): string {
 		}
 		const d = path(l.rows, (r) => r.y);
 		if (d) out.push(`<path d="${d}" stroke="${color}" stroke-width="${l.group ? 2 : 1.5}"/>`);
-		for (const pt of isolatedPoints(l.rows, (r) => usable(r.y))) {
-			out.push(`<circle cx="${num(x(pt.x))}" cy="${num(y(pt.y!))}" r="3" fill="${color}"/>`);
+		const inView = (r: (typeof l.rows)[number]) =>
+			usable(r.y) && r.x >= p.xDomain[0] && r.x <= p.xDomain[1];
+		const shown = l.dots ? l.rows.filter(inView) : isolatedPoints(l.rows, (r) => usable(r.y));
+		for (const pt of shown) {
+			out.push(
+				`<circle cx="${num(x(pt.x))}" cy="${num(y(pt.y!))}" r="${l.dots ? 2.5 : 3}" fill="${color}"/>`
+			);
 		}
 	}
 	out.push('</g></g></svg>');

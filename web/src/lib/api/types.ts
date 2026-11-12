@@ -114,6 +114,8 @@ export type Me = {
 	avatar_url: string | null;
 	is_admin: boolean;
 	has_password: boolean;
+	/** The user's own settings, saved as a whole (appearance...). Checked when read. */
+	preferences: Record<string, unknown>;
 	identities: string[];
 };
 

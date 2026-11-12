@@ -1,12 +1,14 @@
 <script lang="ts">
 	import './layout.css';
 	import favicon from '#lib/assets/favicon.svg';
-	import { ModeWatcher } from 'mode-watcher';
+	import { ModeWatcher, setMode } from 'mode-watcher';
+	import { untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import type { LayoutProps } from './$types';
 
 	import { app, loadApp } from '#lib/app.svelte.js';
+	import { appearance } from '#lib/appearance.svelte.js';
 	import { auth, loadMe } from '#lib/auth.svelte.js';
 	import AuthScreen from '#lib/components/app/AuthScreen.svelte';
 	import AppSidebar from '#lib/components/app/AppSidebar.svelte';
@@ -49,6 +51,9 @@
 			return [{ label: page.status === 404 ? 'Page not found' : 'Something went wrong' }];
 		}
 		if (page.route.id === '/settings') return [{ label: 'Settings' }];
+		if (page.route.id === '/settings/appearance') {
+			return [{ label: 'Settings', href: resolve('/settings') }, { label: 'Appearance' }];
+		}
 		if (page.route.id === '/about') return [{ label: 'About' }];
 		const trail: { label: string; href?: string }[] = [
 			{ label: 'Projects', href: resolve('/') }
@@ -66,6 +71,15 @@
 		}
 		if (run) trail.push({ label: nav.runName ?? run.slice(0, 8) });
 		return trail;
+	});
+
+	// The theme in use: this browser's, else the account's, else the system's. Untracked:
+	// mode-watcher reads its own state while setting it.
+	$effect(() => {
+		// Not before the account's settings are known: they'd flash from the defaults to them.
+		if (auth.user === undefined) return;
+		const theme = appearance.current.theme;
+		untrack(() => setMode(theme));
 	});
 </script>
 

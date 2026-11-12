@@ -330,6 +330,8 @@ pub struct Me {
     avatar_url: Option<String>,
     is_admin: bool,
     has_password: bool,
+    /// Settings of the user's own, saved by the UI (see `save_preferences`).
+    preferences: sqlx::types::Json<serde_json::Value>,
     /// External providers linked to this account.
     #[sqlx(skip)]
     identities: Vec<String>,
@@ -338,7 +340,7 @@ pub struct Me {
 async fn me_for(state: &AppState, user_id: i64) -> Result<Me, ApiError> {
     let sql = format!(
         "SELECT u.id, u.username, u.display_name, u.email, {AVATAR_URL_SQL} AS avatar_url, u.is_admin,
-                u.password_hash IS NOT NULL AS has_password
+                u.password_hash IS NOT NULL AS has_password, u.preferences
          FROM users u LEFT JOIN user_avatars a ON a.user_id = u.id WHERE u.id = $1"
     );
     let mut me: Me = sqlx::query_as(&sql)
@@ -380,6 +382,33 @@ pub async fn update_profile(
 /// `GET /api/v0/auth/me`.
 pub async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me>, UiError> {
     Ok(Json(me_for(&state, user.id).await?))
+}
+
+/// Most a user's preferences may take, as JSON.
+pub const MAX_PREFERENCES_BYTES: usize = 8 * 1024;
+
+/// `PUT /api/v0/me/preferences`: replaces the user's preferences with a JSON object. What's
+/// in it is the UI's business (it checks each value when reading them); here, only its size.
+pub async fn save_preferences(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(preferences): Json<serde_json::Value>,
+) -> Result<StatusCode, UiError> {
+    if !preferences.is_object() {
+        return Err(ApiError::invalid("preferences: a JSON object").into());
+    }
+    if preferences.to_string().len() > MAX_PREFERENCES_BYTES {
+        return Err(ApiError::invalid(format!(
+            "preferences: at most {MAX_PREFERENCES_BYTES} bytes"
+        ))
+        .into());
+    }
+    sqlx::query("UPDATE users SET preferences = $2 WHERE id = $1")
+        .bind(user.id)
+        .bind(sqlx::types::Json(&preferences))
+        .execute(state.pg())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

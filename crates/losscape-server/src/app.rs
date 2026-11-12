@@ -91,6 +91,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/series", post(read::series))
         .route("/projects/{project}/history", get(history::history))
         .route("/metric-stats", post(history::stats))
+        .route("/neighbors", post(history::neighbors))
         .route("/auth/me", get(account::me))
         .route("/me", patch(account::update_profile))
         .route(
@@ -101,6 +102,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         )
         .route("/users/{username}/avatar", get(avatar::serve))
         .route("/me/password", post(account::change_password))
+        .route("/me/preferences", put(account::save_preferences))
         .route(
             "/me/api-keys",
             get(account::list_api_keys).post(account::create_api_key),

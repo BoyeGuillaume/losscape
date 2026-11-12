@@ -4,14 +4,16 @@
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import Plus from '@lucide/svelte/icons/plus';
 	import Moon from '@lucide/svelte/icons/moon';
+	import Palette from '@lucide/svelte/icons/palette';
 	import Info from '@lucide/svelte/icons/info';
 	import Settings from '@lucide/svelte/icons/settings';
 	import Sun from '@lucide/svelte/icons/sun';
-	import { toggleMode } from 'mode-watcher';
+	import { mode } from 'mode-watcher';
 	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 
+	import { appearance } from '#lib/appearance.svelte.js';
 	import { apiJson } from '#lib/api/client.js';
 	import type { ProjectSummary } from '#lib/api/types.js';
 	import { auth, signOut } from '#lib/auth.svelte.js';
@@ -133,7 +135,17 @@
 						<DropdownMenu.Item onSelect={() => goto(resolve('/about'))}>
 							<Info /> About
 						</DropdownMenu.Item>
-						<DropdownMenu.Item onSelect={toggleMode}>
+						<DropdownMenu.Item onSelect={() => goto(resolve('/settings/appearance'))}>
+							<Palette /> Appearance
+						</DropdownMenu.Item>
+						<DropdownMenu.Item
+							onSelect={() =>
+								// For this browser: the account's theme stays as it is elsewhere.
+								appearance.setBrowser(
+									'theme',
+									mode.current === 'dark' ? 'light' : 'dark'
+								)}
+						>
 							<Sun class="dark:hidden" /><Moon class="hidden dark:block" /> Toggle theme
 						</DropdownMenu.Item>
 						<DropdownMenu.Separator />
