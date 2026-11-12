@@ -214,6 +214,7 @@ else on this page applies.
 tag `server-v<version>` is pushed. It refuses a tag that doesn't match `version` in `Cargo.toml`, and
 tags nothing unless both images run and report that version. Run by hand from the Actions tab, it
 does all of that and publishes nothing.
+Set a new version with `make bump VERSION=x.y.z` (see [Publishing a release](#publishing-a-release)).
 
 It needs setting up once:
 
@@ -300,8 +301,9 @@ The SDK needs `LOSSCAPE_SERVER` (default `http://localhost:8080`) and `LOSSCAPE_
 
 `.github/workflows/publish-sdk.yml` builds the wheels and publishes them when a tag `sdk-v<version>`
 is pushed. It refuses a tag that doesn't match `version` in `Cargo.toml`, and PyPI never accepts the
-same version twice, so bump the version first. Run by hand from the Actions tab, it builds and checks
-the wheels without publishing, which is a good first test.
+same version twice, so bump the version first: `make bump VERSION=x.y.z` sets it everywhere it's
+written (`scripts/bump_version.py`, which can also commit it with `--commit`). Run by hand from the
+Actions tab, the workflow builds and checks the wheels without publishing, which is a good first test.
 
 It stores no password: PyPI trusts this workflow directly. That needs setting up once, on
 [PyPI's publishing page](https://pypi.org/manage/account/publishing/), as a pending publisher:

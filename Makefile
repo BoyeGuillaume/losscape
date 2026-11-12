@@ -1,7 +1,7 @@
 COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 PY := cd sdk/python && uv run
 
-.PHONY: help dev-db dev-db-down dev-server dev-web build test lint fmt bench crash-test up down deploy-test wheel notices server-notices
+.PHONY: help dev-db dev-db-down dev-server dev-web build test lint fmt bench crash-test up down deploy-test wheel notices server-notices bump
 
 help: ## Show targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -73,3 +73,7 @@ notices: ## Write the SDK's license notices, and check every crate's license is 
 crash-test: ## SIGKILL the server mid-load, restart, check no point is lost
 	cargo build --release -p losscape-server -p losscape-loadgen
 	python3 scripts/crash_test.py
+
+bump: ## Set a new version everywhere it's written: make bump VERSION=0.1.5
+	@test -n "$(VERSION)" || { echo "make bump VERSION=x.y.z"; exit 2; }
+	python3 scripts/bump_version.py "$(VERSION)"
