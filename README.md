@@ -7,6 +7,13 @@ and follow and compare your runs in a web interface on your own server.
 [![PyPI](https://img.shields.io/pypi/v/losscape-sdk)](https://pypi.org/project/losscape-sdk/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
+<a href="docs/media/demo.mp4"><img src="docs/media/demo.png" width="100%"
+  alt="losscape: the runs of a project, three of them selected and charted together"></a>
+
+<p align="center"><a href="docs/media/demo.mp4">▶ Watch a one-minute tour</a>: runs tables, a run's
+charts, system metrics, logs and model, comparing runs, the project overview and settings
+(made-up demo data).</p>
+
 - [Quick start](#quick-start)
 - [Using the SDK](#using-the-sdk)
 - [Connecting the SDK to a server](#connecting-the-sdk-to-a-server)
