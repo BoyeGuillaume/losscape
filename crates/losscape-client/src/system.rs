@@ -239,10 +239,16 @@ mod tests {
             sink.lock().unwrap().push((points.len(), step));
         })
         .unwrap();
-        std::thread::sleep(Duration::from_millis(220));
+        // Waiting for samples, not for a set time: starting (listing processes, disks,
+        // networks, loading NVML) can take longer than a few intervals on a busy machine.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while got.lock().unwrap().len() < 2 {
+            let samples = got.lock().unwrap().len();
+            assert!(Instant::now() < deadline, "{samples} samples after 10 s");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         sampler.stop();
         let samples = got.lock().unwrap().len();
-        assert!(samples >= 2, "{samples} samples");
         std::thread::sleep(Duration::from_millis(120));
         assert_eq!(got.lock().unwrap().len(), samples, "stopped");
     }
