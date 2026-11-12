@@ -162,4 +162,15 @@ describe('chartSvg', () => {
 		expect(svg).toMatch(/<path d="M[^"]*Z" fill="#2563eb" fill-opacity="0.16"/);
 		expect(svg).toContain('stroke-opacity="0.25"');
 	});
+	it('curves through every point when asked, without moving them', () => {
+		const rows = [row(0, 3), row(5, 1), row(10, 2)];
+		const svg = chartSvg(parts({ lines: [{ ...parts().lines[0], rows, curved: true }] }));
+		const d = paths(svg)[0];
+		expect(d).toMatch(/C/);
+		const straight = paths(chartSvg(parts({ lines: [{ ...parts().lines[0], rows }] })))[0];
+		const points = (path: string) =>
+			[...path.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map((m) => m[0].slice(1));
+		const ends = [...d.matchAll(/(?:^M|C(?:[\d.,-]+,){4})([\d.]+,[\d.]+)/g)].map((m) => m[1]);
+		expect(ends, 'the curve ends each piece on a point').toEqual(points(straight));
+	});
 });

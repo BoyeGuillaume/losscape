@@ -8,7 +8,7 @@
 	import type { LayoutProps } from './$types';
 
 	import { app, loadApp } from '#lib/app.svelte.js';
-	import { appearance } from '#lib/appearance.svelte.js';
+	import { appearance, PALETTE_KEY } from '#lib/appearance.svelte.js';
 	import { auth, loadMe } from '#lib/auth.svelte.js';
 	import AuthScreen from '#lib/components/app/AuthScreen.svelte';
 	import AppSidebar from '#lib/components/app/AppSidebar.svelte';
@@ -80,6 +80,17 @@
 		if (auth.user === undefined) return;
 		const theme = appearance.current.theme;
 		untrack(() => setMode(theme));
+	});
+	// Its colours: remembered for the next visit to have them from the start (src/app.html).
+	$effect(() => {
+		if (auth.user === undefined) return;
+		const palette = appearance.current.palette;
+		document.documentElement.dataset.palette = palette;
+		try {
+			localStorage.setItem(PALETTE_KEY, palette);
+		} catch {
+			// The next visit starts with the default colours, for a moment.
+		}
 	});
 </script>
 

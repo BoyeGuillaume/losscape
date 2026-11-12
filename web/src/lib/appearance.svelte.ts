@@ -7,6 +7,18 @@ import { auth } from '#lib/auth.svelte.js';
 import { notifyError } from '#lib/notify.js';
 
 export const THEMES = { system: 'System', light: 'Light', dark: 'Dark' } as const;
+/** Colours of the interface, in light and dark (src/routes/layout.css, `data-palette`). */
+export const PALETTES = {
+	neutral: 'Neutral',
+	slate: 'Slate',
+	stone: 'Stone',
+	ocean: 'Ocean',
+	forest: 'Forest',
+	rose: 'Rose',
+	violet: 'Violet'
+} as const;
+/** Lines between points: straight, or curves through every point (not smoothing them). */
+export const CURVES = { straight: 'Straight', smooth: 'Curved' } as const;
 export const CHART_SIZES = {
 	small: { label: 'Small', height: 'h-44' },
 	medium: { label: 'Medium', height: 'h-56' },
@@ -23,6 +35,8 @@ export const CHART_COLUMNS = {
 
 export type Appearance = {
 	theme: keyof typeof THEMES;
+	palette: keyof typeof PALETTES;
+	curve: keyof typeof CURVES;
 	chartSize: keyof typeof CHART_SIZES;
 	columns: keyof typeof CHART_COLUMNS;
 	/** Points drawn as dots when a line has few of them in view. */
@@ -31,6 +45,8 @@ export type Appearance = {
 
 export const DEFAULTS: Appearance = {
 	theme: 'system',
+	palette: 'neutral',
+	curve: 'straight',
 	chartSize: 'medium',
 	columns: 'auto',
 	dots: false
@@ -40,6 +56,8 @@ export const DEFAULTS: Appearance = {
 export const DOTS_BELOW = 100;
 
 const STORAGE_KEY = 'losscape:appearance';
+/** The palette last in use, for src/app.html to apply before the page draws. */
+export const PALETTE_KEY = 'losscape:palette';
 
 /** The valid settings in `raw`; the rest is left out: storage and the server hold anything. */
 export function parseAppearance(raw: unknown): Partial<Appearance> {
@@ -50,6 +68,10 @@ export function parseAppearance(raw: unknown): Partial<Appearance> {
 		typeof v === 'string' && Object.hasOwn(choices, v) ? (v as keyof T & string) : undefined;
 	const theme = pick(THEMES, r.theme);
 	if (theme) out.theme = theme;
+	const palette = pick(PALETTES, r.palette);
+	if (palette) out.palette = palette;
+	const curve = pick(CURVES, r.curve);
+	if (curve) out.curve = curve;
 	const chartSize = pick(CHART_SIZES, r.chartSize);
 	if (chartSize) out.chartSize = chartSize;
 	const columns = pick(CHART_COLUMNS, r.columns);

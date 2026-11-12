@@ -76,6 +76,7 @@
 	let themeTick = $state(0);
 	$effect(() => {
 		void mode.current;
+		void appearance.current.palette;
 		const frame = requestAnimationFrame(() => themeTick++);
 		return () => cancelAnimationFrame(frame);
 	});

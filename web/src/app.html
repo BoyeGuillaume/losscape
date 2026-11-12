@@ -4,6 +4,13 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<script>
+			// The colour theme in use last time, before the page draws (src/lib/appearance.svelte.ts).
+			try {
+				var palette = localStorage.getItem('losscape:palette');
+				if (palette && /^[a-z]+$/.test(palette)) document.documentElement.dataset.palette = palette;
+			} catch (e) {}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

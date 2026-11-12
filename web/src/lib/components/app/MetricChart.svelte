@@ -2,6 +2,7 @@
 	import { Area, Chart, Points, Spline } from 'layerchart/canvas';
 	import { Tooltip, type BrushContext } from 'layerchart';
 	import { scaleLog } from 'd3-scale';
+	import { curveMonotoneX } from 'd3-shape';
 	import type { ComponentProps } from 'svelte';
 	import Download from '@lucide/svelte/icons/download';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
@@ -383,6 +384,12 @@
 
 	/** y range of what is visible, band and unsmoothed lines included when drawn. */
 	/**
+	 * Curves through every point, not smoothing them (that's the smoothing setting): monotone,
+	 * so they never overshoot a point. For lines going left to right only.
+	 */
+	const curve = $derived(appearance.current.curve === 'smooth' ? curveMonotoneX : undefined);
+
+	/**
 	 * Points drawn as dots, per line: all those in view when there are few (and the appearance
 	 * settings want them), else only those with no neighbour to draw a line to.
 	 */
@@ -505,6 +512,7 @@
 	let themeTick = $state(0);
 	$effect(() => {
 		void mode.current;
+		void appearance.current.palette;
 		const frame = requestAnimationFrame(() => themeTick++);
 		return () => cancelAnimationFrame(frame);
 	});
@@ -650,7 +658,8 @@
 				color: colors[l.series.id],
 				group: l.series.runs.length > 1,
 				rows: l.rows,
-				dots: dots[l.series.id].all
+				dots: dots[l.series.id].all,
+				curved: !!curve && l.ascending
 			})),
 			show: {
 				band: settings.band,
@@ -915,6 +924,7 @@
 						{#each lines as line (line.series.id)}
 							<Area
 								data={line.rows}
+								curve={line.ascending ? curve : undefined}
 								x="x"
 								y0="min"
 								y1="max"
@@ -933,6 +943,7 @@
 						{#each lines as line (line.series.id)}
 							<Spline
 								data={line.rows}
+								curve={line.ascending ? curve : undefined}
 								x="x"
 								y="raw"
 								defined={definedRaw}
@@ -949,6 +960,7 @@
 						{#each lines as line (line.series.id)}
 							<Spline
 								data={line.rows}
+								curve={line.ascending ? curve : undefined}
 								x="x"
 								y="best"
 								defined={(d: Row) => d.best !== null}
@@ -963,6 +975,7 @@
 					{#each lines as line (line.series.id)}
 						<Spline
 							data={line.rows}
+							curve={line.ascending ? curve : undefined}
 							x="x"
 							y="y"
 							defined={definedY}

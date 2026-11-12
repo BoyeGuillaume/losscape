@@ -1,6 +1,7 @@
 // Saving a chart: as an image, as the points it shows, or every point its runs logged.
 
 import { scaleLinear, scaleLog } from 'd3-scale';
+import { area, curveLinear, curveMonotoneX, line } from 'd3-shape';
 
 import { isolatedPoints } from './isolated.js';
 import type { XAxis } from './settings.js';
@@ -182,6 +183,8 @@ export type SvgParts = {
 		group: boolean;
 		/** Every point in view as a dot (few of them), not only those standing alone. */
 		dots?: boolean;
+		/** Curves through the points rather than straight lines between them. */
+		curved?: boolean;
 		rows: {
 			x: number;
 			y: number | null;
@@ -230,43 +233,24 @@ export function chartSvg(p: SvgParts): string {
 	const usable = (v: number | null): v is number =>
 		v !== null && Number.isFinite(v) && (!p.log || v > 0);
 
+	type Rows = SvgParts['lines'][number]['rows'];
 	/** A path through the points where `value` is usable, broken at gaps. */
-	const path = (
-		rows: SvgParts['lines'][number]['rows'],
-		value: (r: SvgParts['lines'][number]['rows'][number]) => number | null
-	) => {
-		let d = '';
-		let drawing = false;
-		for (const r of rows) {
-			const v = value(r);
-			if (!usable(v)) {
-				drawing = false;
-				continue;
-			}
-			d += `${drawing ? 'L' : 'M'}${num(x(r.x))},${num(y(v))}`;
-			drawing = true;
-		}
-		return d;
-	};
+	const path = (rows: Rows, value: (r: Rows[number]) => number | null, curved = false) =>
+		line<Rows[number]>()
+			.defined((r) => usable(value(r)))
+			.x((r) => x(r.x))
+			.y((r) => y(value(r)!))
+			.curve(curved ? curveMonotoneX : curveLinear)
+			.digits(2)(rows) ?? '';
 	/** Areas between `min` and `max`, one per stretch where both are usable. */
-	const band = (rows: SvgParts['lines'][number]['rows']) => {
-		const parts: string[] = [];
-		let stretch: typeof rows = [];
-		const flush = () => {
-			if (stretch.length > 1) {
-				const upper = stretch.map((r) => `${num(x(r.x))},${num(y(r.max!))}`);
-				const lower = stretch.map((r) => `${num(x(r.x))},${num(y(r.min!))}`).reverse();
-				parts.push(`M${upper.join('L')}L${lower.join('L')}Z`);
-			}
-			stretch = [];
-		};
-		for (const r of rows) {
-			if (usable(r.min) && usable(r.max)) stretch.push(r);
-			else flush();
-		}
-		flush();
-		return parts.join('');
-	};
+	const band = (rows: Rows, curved = false) =>
+		area<Rows[number]>()
+			.defined((r) => usable(r.min) && usable(r.max))
+			.x((r) => x(r.x))
+			.y0((r) => y(r.min!))
+			.y1((r) => y(r.max!))
+			.curve(curved ? curveMonotoneX : curveLinear)
+			.digits(2)(rows) ?? '';
 
 	// Header: title, what the chart shows, and a legend in rows (text widths estimated).
 	const pad = 16;
@@ -342,26 +326,26 @@ export function chartSvg(p: SvgParts): string {
 	for (const l of p.lines) {
 		const color = xml(l.color);
 		if (p.show.band) {
-			const d = band(l.rows);
+			const d = band(l.rows, l.curved);
 			const opacity = l.group ? 0.2 : p.lines.length > 1 ? 0.1 : 0.16;
 			if (d) out.push(`<path d="${d}" fill="${color}" fill-opacity="${opacity}" stroke="none"/>`);
 		}
 		if (p.show.raw) {
-			const d = path(l.rows, (r) => r.raw);
+			const d = path(l.rows, (r) => r.raw, l.curved);
 			if (d) out.push(`<path d="${d}" stroke="${color}" stroke-width="1" stroke-opacity="0.25"/>`);
 		}
 	}
 	for (const l of p.lines) {
 		const color = xml(l.color);
 		if (p.show.best) {
-			const d = path(l.rows, (r) => r.best);
+			const d = path(l.rows, (r) => r.best, l.curved);
 			if (d) {
 				out.push(
 					`<path d="${d}" stroke="${color}" stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.8"/>`
 				);
 			}
 		}
-		const d = path(l.rows, (r) => r.y);
+		const d = path(l.rows, (r) => r.y, l.curved);
 		if (d) out.push(`<path d="${d}" stroke="${color}" stroke-width="${l.group ? 2 : 1.5}"/>`);
 		const inView = (r: (typeof l.rows)[number]) =>
 			usable(r.y) && r.x >= p.xDomain[0] && r.x <= p.xDomain[1];

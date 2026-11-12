@@ -4,7 +4,14 @@ import { parseAppearance } from './appearance.svelte.js';
 
 describe('parseAppearance', () => {
 	it('keeps valid settings', () => {
-		const all = { theme: 'dark', chartSize: 'large', columns: '3', dots: false };
+		const all = {
+			theme: 'dark',
+			palette: 'ocean',
+			curve: 'smooth',
+			chartSize: 'large',
+			columns: '3',
+			dots: false
+		};
 		expect(parseAppearance(all)).toEqual(all);
 	});
 
@@ -12,6 +19,8 @@ describe('parseAppearance', () => {
 		expect(
 			parseAppearance({
 				theme: 'neon',
+				palette: 'toString',
+				curve: 'bezier',
 				chartSize: 'constructor',
 				columns: 3,
 				dots: 'yes',
