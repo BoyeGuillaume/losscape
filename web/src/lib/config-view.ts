@@ -92,6 +92,17 @@ export function splitMatches(s: string, query: string): { text: string; match: b
 }
 
 /**
+ * What to mark in a text form of a filtered config (YAML) for `query`: the query itself, or
+ * for a path not written that way (`optimizer.lr` is `optimizer:` then `lr:`), its parts.
+ */
+export function matchTerms(text: string, query: string): string[] {
+	const q = query.trim().toLowerCase();
+	if (!q) return [];
+	if (!q.includes('.') || text.toLowerCase().includes(q)) return [q];
+	return q.split('.').filter(Boolean);
+}
+
+/**
  * Splits the last key of `path` around the parts of it that `query` matches in the dotted
  * path: matches inside the path, and a match that starts here and goes on into a child
  * (`data` for `data.key`).

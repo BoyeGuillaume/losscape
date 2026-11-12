@@ -32,12 +32,12 @@
 	import type { MetricSource } from '#lib/charts/source.js';
 	import {
 		chartImage,
-		fileName,
+		chartSvg,
 		historyUrl,
 		MAX_EXPORT_RUNS,
-		save,
 		shownCsv
 	} from '#lib/charts/export.js';
+	import { fileName, save } from '#lib/download.js';
 	import { isolatedPoints } from '#lib/charts/isolated.js';
 	import { levelFor, tileStore, type SeriesPoints } from '#lib/charts/tiles.svelte.js';
 	import { formatMetric, metricAxis, unitFor, unitTicks } from '#lib/metric-units.js';
@@ -566,28 +566,66 @@
 		};
 	});
 
-	async function saveImage() {
-		const plot = card.querySelector('canvas');
-		if (!plot) return;
+	/** What a saved image has besides the plot: title, what it shows, colors. */
+	function imageHeader() {
 		const style = getComputedStyle(card);
 		const shows = [
 			xLabel(settings.x),
 			settings.smoothing > 0 && `smoothing ${settings.smoothing}`,
 			useLog && 'log scale'
 		];
+		return {
+			title: meta.label ?? title,
+			subtitle: shows.filter(Boolean).join(' · '),
+			colors: { background: style.backgroundColor, text: style.color, muted: label, grid },
+			font: style.fontFamily
+		};
+	}
+
+	async function saveImage() {
+		const plot = card.querySelector('canvas');
+		if (!plot) return;
 		try {
 			const image = await chartImage({
 				plot,
-				title: meta.label ?? title,
-				subtitle: shows.filter(Boolean).join(' · '),
-				legend: lines.map((l) => ({ name: l.series.name, color: resolve(l.series.color) })),
-				colors: { background: style.backgroundColor, text: style.color, muted: label },
-				font: style.fontFamily
+				...imageHeader(),
+				legend: lines.map((l) => ({ name: l.series.name, color: colors[l.series.id] }))
 			});
 			save(image, fileName(title, 'png'));
 		} catch (err) {
 			notifyError(err, "Couldn't save the image");
 		}
+	}
+
+	function saveSvg() {
+		const box = card.querySelector('canvas')?.getBoundingClientRect();
+		if (!box) return;
+		const svg = chartSvg({
+			...imageHeader(),
+			width: box.width,
+			height: box.height,
+			padding: { top: 6, right: 6, bottom: 20, left: padLeft },
+			xDomain,
+			yDomain: yDomain ?? [0, 1],
+			log: useLog,
+			nice: !yView && !ignoreOutliers,
+			xTicks,
+			yTicks,
+			formatX,
+			formatY,
+			lines: lines.map((l) => ({
+				name: l.series.name,
+				color: colors[l.series.id],
+				group: l.series.runs.length > 1,
+				rows: l.rows
+			})),
+			show: {
+				band: settings.band,
+				raw: settings.smoothing > 0,
+				best: settings.best && !!meta.direction
+			}
+		});
+		save(new Blob([svg], { type: 'image/svg+xml' }), fileName(title, 'svg'));
 	}
 
 	function saveShown() {
@@ -683,6 +721,12 @@
 				<DropdownMenu.Content align="end" class="w-64">
 					<DropdownMenu.Label>Save this chart</DropdownMenu.Label>
 					<DropdownMenu.Item onSelect={saveImage}>Image (PNG)</DropdownMenu.Item>
+					<DropdownMenu.Item onSelect={saveSvg} class="flex-col items-start gap-0">
+						Vector image (SVG)
+						<span class="text-xs text-muted-foreground">
+							Sharp at any size, editable in a vector editor
+						</span>
+					</DropdownMenu.Item>
 					<DropdownMenu.Item onSelect={saveShown} class="flex-col items-start gap-0">
 						Data as shown (CSV)
 						<span class="text-xs text-muted-foreground">

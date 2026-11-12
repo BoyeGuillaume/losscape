@@ -1,5 +1,8 @@
 // Saving a chart: as an image, as the points it shows, or every point its runs logged.
 
+import { scaleLinear, scaleLog } from 'd3-scale';
+
+import { isolatedPoints } from './isolated.js';
 import type { XAxis } from './settings.js';
 import { xMetric } from './settings.js';
 
@@ -7,12 +10,6 @@ import { xMetric } from './settings.js';
 export const MAX_EXPORT_RUNS = 500;
 /** Longer URLs are refused by some servers and proxies. */
 const MAX_URL_LENGTH = 8000;
-
-/** A name that works as a file name everywhere: train/loss -> train_loss. */
-export function fileName(name: string, extension: string): string {
-	const base = name.replace(/[^\w.-]+/g, '_').replace(/^[._]+|[._]+$/g, '');
-	return `${base || 'chart'}.${extension}`;
-}
 
 /** One CSV field: quoted when it has to be, empty for nothing. */
 export function csvField(value: string | number | null | undefined): string {
@@ -79,16 +76,6 @@ export function historyUrl(project: string, runs: string[], keys: string[]): str
 	for (const key of keys) query.append('key', key);
 	const url = `/api/v0/projects/${encodeURIComponent(project)}/history?${query}`;
 	return url.length <= MAX_URL_LENGTH ? url : null;
-}
-
-/** Has the browser save `what` (a URL, or data) as `name`. */
-export function save(what: Blob | string, name: string) {
-	const url = typeof what === 'string' ? what : URL.createObjectURL(what);
-	const a = document.createElement('a');
-	a.href = url;
-	a.download = name;
-	a.click();
-	if (typeof what !== 'string') setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export type ImageParts = {
@@ -169,4 +156,215 @@ export function chartImage({ plot, title, subtitle, legend, colors, font }: Imag
 	return new Promise<Blob>((resolve, reject) =>
 		out.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('no image'))), 'image/png')
 	);
+}
+
+/** Ticks as a chart gives them: values, how many, or a function of the scale. */
+export type TickSpec = number | number[] | ((scale: never) => number[]);
+
+export type SvgParts = {
+	/** The plot's box, axes included, and the room the axes take in it. */
+	width: number;
+	height: number;
+	padding: { top: number; right: number; bottom: number; left: number };
+	xDomain: [number, number];
+	yDomain: [number, number];
+	log: boolean;
+	/** Round the y range to ticks, as the chart does. */
+	nice: boolean;
+	xTicks: TickSpec;
+	yTicks: TickSpec;
+	formatX: (value: number) => string;
+	formatY: (value: number) => string;
+	lines: {
+		name: string;
+		color: string;
+		/** A group of runs, drawn thicker. */
+		group: boolean;
+		rows: {
+			x: number;
+			y: number | null;
+			raw: number | null;
+			min: number | null;
+			max: number | null;
+			best: number | null;
+		}[];
+	}[];
+	show: { band: boolean; raw: boolean; best: boolean };
+	title: string;
+	subtitle: string;
+	colors: { background: string; text: string; muted: string; grid: string };
+	font: string;
+};
+
+/** Text and attribute values as XML: names are whatever runs and metrics were called. */
+export const xml = (text: string) =>
+	text.replace(
+		/[&<>"']/g,
+		(c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!
+	);
+
+const num = (v: number) => String(Math.round(v * 100) / 100);
+
+/**
+ * The chart as SVG, drawn from its data rather than copied from the screen: scalable, and
+ * editable in a vector editor. Same marks, scales and ticks as the chart; no tooltip or
+ * fading of other lines.
+ */
+export function chartSvg(p: SvgParts): string {
+	const { top, right, bottom, left } = p.padding;
+	const x = scaleLinear()
+		.domain(p.xDomain)
+		.range([left, p.width - right]);
+	const y = (p.log ? scaleLog() : scaleLinear()).domain(p.yDomain).range([p.height - bottom, top]);
+	if (p.nice) y.nice();
+	const ticksOf = (spec: TickSpec, scale: { ticks: (count?: number) => number[] }) =>
+		Array.isArray(spec)
+			? spec
+			: typeof spec === 'function'
+				? (spec as (scale: unknown) => number[])(scale)
+				: scale.ticks(spec);
+	const [x0, x1] = x.range();
+	const [y0, y1] = y.range();
+	const usable = (v: number | null): v is number =>
+		v !== null && Number.isFinite(v) && (!p.log || v > 0);
+
+	/** A path through the points where `value` is usable, broken at gaps. */
+	const path = (
+		rows: SvgParts['lines'][number]['rows'],
+		value: (r: SvgParts['lines'][number]['rows'][number]) => number | null
+	) => {
+		let d = '';
+		let drawing = false;
+		for (const r of rows) {
+			const v = value(r);
+			if (!usable(v)) {
+				drawing = false;
+				continue;
+			}
+			d += `${drawing ? 'L' : 'M'}${num(x(r.x))},${num(y(v))}`;
+			drawing = true;
+		}
+		return d;
+	};
+	/** Areas between `min` and `max`, one per stretch where both are usable. */
+	const band = (rows: SvgParts['lines'][number]['rows']) => {
+		const parts: string[] = [];
+		let stretch: typeof rows = [];
+		const flush = () => {
+			if (stretch.length > 1) {
+				const upper = stretch.map((r) => `${num(x(r.x))},${num(y(r.max!))}`);
+				const lower = stretch.map((r) => `${num(x(r.x))},${num(y(r.min!))}`).reverse();
+				parts.push(`M${upper.join('L')}L${lower.join('L')}Z`);
+			}
+			stretch = [];
+		};
+		for (const r of rows) {
+			if (usable(r.min) && usable(r.max)) stretch.push(r);
+			else flush();
+		}
+		flush();
+		return parts.join('');
+	};
+
+	// Header: title, what the chart shows, and a legend in rows (text widths estimated).
+	const pad = 16;
+	const charWidth = 6.6;
+	const entries: { at: number; row: number; color: string; label: string }[] = [];
+	let [at, row] = [0, 0];
+	const shownLines = p.lines.slice(0, MAX_LEGEND);
+	const labels = shownLines.map((l) => ({ color: l.color, label: l.name }));
+	if (p.lines.length > MAX_LEGEND) {
+		labels.push({ color: '', label: `and ${p.lines.length - MAX_LEGEND} more` });
+	}
+	for (const e of labels) {
+		const w = (e.color ? 14 : 0) + e.label.length * charWidth + 16;
+		if (at > 0 && at + w > p.width) [at, row] = [0, row + 1];
+		entries.push({ at, row, ...e });
+		at += w;
+	}
+	const titleH = 22;
+	const subtitleH = p.subtitle ? 18 : 0;
+	const legendTop = pad + titleH + subtitleH;
+	const plotTop = legendTop + (entries.length ? (row + 1) * 18 + 6 : 0);
+	const width = p.width + 2 * pad;
+	const height = plotTop + p.height + pad;
+
+	const out: string[] = [
+		`<svg xmlns="http://www.w3.org/2000/svg" width="${num(width)}" height="${num(height)}" viewBox="0 0 ${num(width)} ${num(height)}" font-family="${xml(p.font)}">`,
+		`<rect width="100%" height="100%" fill="${xml(p.colors.background)}"/>`,
+		`<text x="${pad}" y="${pad + 12}" font-size="15" font-weight="600" fill="${xml(p.colors.text)}">${xml(p.title)}</text>`
+	];
+	if (p.subtitle) {
+		out.push(
+			`<text x="${pad}" y="${pad + titleH + 10}" font-size="12" fill="${xml(p.colors.muted)}">${xml(p.subtitle)}</text>`
+		);
+	}
+	for (const e of entries) {
+		const ey = legendTop + e.row * 18;
+		const ex = pad + e.at;
+		if (e.color) {
+			out.push(
+				`<rect x="${num(ex)}" y="${num(ey + 3)}" width="10" height="3" fill="${xml(e.color)}"/>`
+			);
+		}
+		out.push(
+			`<text x="${num(ex + (e.color ? 14 : 0))}" y="${num(ey + 10)}" font-size="12" fill="${xml(e.color ? p.colors.text : p.colors.muted)}">${xml(e.label)}</text>`
+		);
+	}
+
+	out.push(`<g transform="translate(${pad},${num(plotTop)})">`);
+	out.push(
+		`<defs><clipPath id="plot"><rect x="${num(x0)}" y="${num(y1)}" width="${num(x1 - x0)}" height="${num(y0 - y1)}"/></clipPath></defs>`
+	);
+	const label = `font-size="10" fill="${xml(p.colors.muted)}"`;
+	for (const t of ticksOf(p.yTicks, y as never)) {
+		const ty = y(t);
+		if (!(ty >= y1 - 0.5 && ty <= y0 + 0.5)) continue;
+		out.push(
+			`<line x1="${num(x0)}" x2="${num(x1)}" y1="${num(ty)}" y2="${num(ty)}" stroke="${xml(p.colors.grid)}"/>`,
+			`<text x="${num(x0 - 4)}" y="${num(ty)}" text-anchor="end" dominant-baseline="middle" ${label}>${xml(p.formatY(t))}</text>`
+		);
+	}
+	out.push(
+		`<line x1="${num(x0)}" x2="${num(x1)}" y1="${num(y0)}" y2="${num(y0)}" stroke="${xml(p.colors.muted)}" stroke-opacity="0.6"/>`
+	);
+	for (const t of ticksOf(p.xTicks, x as never)) {
+		const tx = x(t);
+		if (!(tx >= x0 - 0.5 && tx <= x1 + 0.5)) continue;
+		out.push(
+			`<text x="${num(tx)}" y="${num(y0 + 14)}" text-anchor="middle" ${label}>${xml(p.formatX(t))}</text>`
+		);
+	}
+
+	out.push('<g clip-path="url(#plot)" fill="none">');
+	for (const l of p.lines) {
+		const color = xml(l.color);
+		if (p.show.band) {
+			const d = band(l.rows);
+			const opacity = l.group ? 0.2 : p.lines.length > 1 ? 0.1 : 0.16;
+			if (d) out.push(`<path d="${d}" fill="${color}" fill-opacity="${opacity}" stroke="none"/>`);
+		}
+		if (p.show.raw) {
+			const d = path(l.rows, (r) => r.raw);
+			if (d) out.push(`<path d="${d}" stroke="${color}" stroke-width="1" stroke-opacity="0.25"/>`);
+		}
+	}
+	for (const l of p.lines) {
+		const color = xml(l.color);
+		if (p.show.best) {
+			const d = path(l.rows, (r) => r.best);
+			if (d) {
+				out.push(
+					`<path d="${d}" stroke="${color}" stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.8"/>`
+				);
+			}
+		}
+		const d = path(l.rows, (r) => r.y);
+		if (d) out.push(`<path d="${d}" stroke="${color}" stroke-width="${l.group ? 2 : 1.5}"/>`);
+		for (const pt of isolatedPoints(l.rows, (r) => usable(r.y))) {
+			out.push(`<circle cx="${num(x(pt.x))}" cy="${num(y(pt.y!))}" r="3" fill="${color}"/>`);
+		}
+	}
+	out.push('</g></g></svg>');
+	return out.join('\n') + '\n';
 }

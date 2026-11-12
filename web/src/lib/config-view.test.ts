@@ -5,9 +5,10 @@ import {
 	compact,
 	countLeaves,
 	filterConfig,
+	type Json,
+	matchTerms,
 	splitKeyMatches,
-	splitMatches,
-	type Json
+	splitMatches
 } from './config-view.js';
 
 const config: Json = {
@@ -84,5 +85,19 @@ describe('helpers', () => {
 	it('writes YAML that keeps ambiguous strings as strings', () => {
 		const yaml = stringify({ a: 'true', b: '1e-3', c: 'x: y', d: true, e: 0.001 });
 		expect(yaml).toBe('a: "true"\nb: "1e-3"\nc: "x: y"\nd: true\ne: 0.001\n');
+	});
+});
+
+describe('matchTerms', () => {
+	const yaml = 'optimizer:\n  lr: 0.001\n  name: adam\n';
+
+	it('marks what was typed', () => {
+		expect(matchTerms(yaml, ' Adam ')).toEqual(['adam']);
+		expect(matchTerms(yaml, '0.001'), 'a number with a dot is as written').toEqual(['0.001']);
+		expect(matchTerms(yaml, '')).toEqual([]);
+	});
+
+	it('marks the parts of a path, written as nested keys', () => {
+		expect(matchTerms(yaml, 'optimizer.lr')).toEqual(['optimizer', 'lr']);
 	});
 });

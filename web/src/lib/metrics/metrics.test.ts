@@ -87,6 +87,39 @@ describe('formulas', () => {
 			expect(() => parseFormula(bad), bad).toThrow();
 		}
 	});
+
+	it('have math functions and constants', () => {
+		const value = (src: string, x = 0) => evaluate(parseFormula(src), () => x);
+		expect(value('pow([x], 3)', 2)).toBe(8);
+		expect(value('sin(pi / 2)')).toBeCloseTo(1);
+		expect(value('cos(0) + tan(0)')).toBe(1);
+		expect(value('atan2(1, 1) * 4')).toBeCloseTo(Math.PI);
+		expect(value('log(e)')).toBeCloseTo(1);
+		expect(value('log2(8) + log1p(0)')).toBe(3);
+		expect(value('clamp([x], 0, 1)', 7)).toBe(1);
+		expect(value('round(2.5) + floor(-0.5) + ceil(0.2) + sign(-3)')).toBe(3 - 1 + 1 - 1);
+		expect(value('tanh(0) + hypot(3, 4)')).toBe(5);
+		expect(value('asin(2)'), 'not finite').toBeNull();
+	});
+
+	it('check how many values a function takes', () => {
+		expect(() => parseFormula('pow(2)')).toThrow('pow takes 2 values');
+		expect(() => parseFormula('sin(1, 2)')).toThrow('sin takes 1 value');
+		expect(() => parseFormula('clamp(1, 2)')).toThrow('clamp takes 3 values');
+		expect(evaluate(parseFormula('max(1, 2, 3, 4)'), () => 0)).toBe(4);
+	});
+
+	it("don't take an object's built-in names for functions", () => {
+		for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+			expect(() => parseFormula(`${name}(1)`), name).toThrow('unknown function');
+		}
+	});
+
+	it('take a constant only where it has no call', () => {
+		expect(evaluate(parseFormula('2 * pi'), () => 0)).toBeCloseTo(2 * Math.PI);
+		expect(() => parseFormula('pi(1)')).toThrow('unknown function');
+		expect(evaluate(parseFormula('1e3 + e'), () => 0)).toBeCloseTo(1000 + Math.E);
+	});
 });
 
 const defs: MetricDef[] = [
@@ -239,6 +272,7 @@ describe('value modes', () => {
 	it('can take the best of all that have a direction', () => {
 		expect(of('best')).toMatchObject({ acc: 0.9, loss: 0.2, plain: 3 });
 	});
+
 	it('reads the right end through a negative scale', () => {
 		expect(of('best').flipped).toBe(-1);
 		expect(of('last').flipped).toBe(-2);

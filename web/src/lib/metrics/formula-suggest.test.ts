@@ -21,6 +21,13 @@ describe('formula suggestions', () => {
 		expect(labels).toContain('sqrt(…)');
 	});
 
+	it('offers the math functions and constants by name', () => {
+		expect(at('si|').labels).toEqual(['sign(…)', 'sin(…)', 'sinh(…)']);
+		expect(at('p|').labels).toEqual(expect.arrayContaining(['pow(…)', 'pi']));
+		expect(at('2 * p|').accept(at('2 * p|').labels.indexOf('pi'))).toBe('2 * pi');
+		expect(at('cl|').items[0].detail).toMatch(/between lo and hi/);
+	});
+
 	it('keeps going after the first metric', () => {
 		expect(at('[val/p] * |').labels).toContain('val/r');
 		expect(at('[val/p] * [|').accept(3)).toBe('[val/p] * [val/p]');

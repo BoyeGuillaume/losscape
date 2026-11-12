@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { tokenize } from './highlight.js';
+import { markMatches, tokenize, type Token } from './highlight.js';
 
 describe('tokenize', () => {
 	it('colors Python for both themes and keeps the text', async () => {
@@ -21,5 +21,32 @@ describe('tokenize', () => {
 			'shellscript'
 		))!;
 		expect(lines[1].map((t) => t.content).join('')).toBe('export LOSSCAPE_API_KEY=df_x');
+	});
+});
+
+describe('markMatches', () => {
+	const line = (...parts: string[]): Token[] => parts.map((content) => ({ content, light: 'c' }));
+	const show = (lines: ReturnType<typeof markMatches>) =>
+		lines.map((l) => l.map((t) => (t.match ? `[${t.content}]` : t.content)).join('|'));
+
+	it('marks matches inside tokens, keeping their colors', () => {
+		const out = markMatches([line('optimizer', ':', ' adam')], ['tim']);
+		expect(show(out)).toEqual(['op|[tim]|izer|:| adam']);
+		expect(out[0][1]).toEqual({ content: 'tim', light: 'c', match: true });
+	});
+
+	it('marks matches across tokens, ignoring case', () => {
+		expect(show(markMatches([line('LR', ':', ' 0.1')], ['r: 0']))).toEqual(['L|[R]|[:]|[ 0]|.1']);
+	});
+
+	it('marks every term, on every line', () => {
+		const out = markMatches([line('lr: 1'), line('other'), line('lr2: lr')], ['lr']);
+		expect(show(out)).toEqual(['[lr]|: 1', 'other', '[lr]|2: |[lr]']);
+	});
+
+	it('leaves lines alone without terms', () => {
+		const lines = [line('a')];
+		expect(markMatches(lines, [])).toBe(lines);
+		expect(markMatches(lines, [''])).toBe(lines);
 	});
 });

@@ -2,6 +2,7 @@
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
+	import Download from '@lucide/svelte/icons/download';
 	import Search from '@lucide/svelte/icons/search';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -14,10 +15,14 @@
 		countLeaves,
 		filterConfig,
 		isNode,
+		matchTerms,
 		splitKeyMatches,
 		splitMatches,
 		type Json
 	} from '#lib/config-view.js';
+	import { fileName, save } from '#lib/download.js';
+	import { notifyError } from '#lib/notify.js';
+
 	import CodeBlock from './CodeBlock.svelte';
 	import EmptyCard from './EmptyCard.svelte';
 
@@ -26,10 +31,13 @@
 
 	let {
 		project,
+		name,
 		config,
 		view = $bindable('tree')
 	}: {
 		project: string;
+		/** The run's, for the downloaded file. */
+		name: string;
 		config: Record<string, unknown>;
 		/** A collapsible tree, or YAML. */
 		view?: 'tree' | 'yaml';
@@ -75,6 +83,20 @@
 		});
 		return () => (current = false);
 	});
+
+	/** The whole config, whatever is searched. */
+	async function downloadYaml() {
+		try {
+			const { stringify } = await import('yaml');
+			const text = stringify(compact(config as Json), { lineWidth: 0 });
+			save(
+				new Blob([text], { type: 'application/yaml' }),
+				fileName(`${name}-config`, 'yaml')
+			);
+		} catch (err) {
+			notifyError(err, "Couldn't save the config");
+		}
+	}
 
 	/** Entries with their keys or indices (filtered lists have holes: they are skipped). */
 	const entriesOf = (value: Record<string, Json> | Json[]): [string, Json][] =>
@@ -188,6 +210,15 @@
 					<ChevronsDownUp /> Collapse
 				</Button>
 			{/if}
+			<Button
+				variant="ghost"
+				size="sm"
+				onclick={downloadYaml}
+				aria-label="Download the config as YAML"
+				title="Download the whole config as a YAML file"
+			>
+				<Download /> Download
+			</Button>
 			<ToggleGroup.Root
 				type="single"
 				variant="outline"
@@ -215,7 +246,12 @@
 	<p class="text-sm text-muted-foreground">No key or value matches “{query.trim()}”.</p>
 {:else if view === 'yaml'}
 	{#if yaml !== null}
-		<CodeBlock lang="yaml" title="config.yaml" code={yaml.trimEnd()} />
+		<CodeBlock
+			lang="yaml"
+			title="config.yaml"
+			code={yaml.trimEnd()}
+			highlight={matchTerms(yaml, query)}
+		/>
 	{/if}
 {:else}
 	<div

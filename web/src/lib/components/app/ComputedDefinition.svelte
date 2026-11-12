@@ -124,8 +124,8 @@
 					>{checked.missing.join(', ')}</span
 				>
 			{:else}
-				<span class="font-mono">[metric]</span> reads a metric; + - * / ^, min, max, abs, sqrt,
-				log, log10, exp.
+				<span class="font-mono">[metric]</span> reads a metric; + - * / ^, pi, and functions such
+				as pow, log, sin or clamp: type a name to see them all.
 			{/if}
 		</p>
 	</FormulaInput>

@@ -3,19 +3,9 @@
 // can start (after an operator, say).
 
 import type { Suggestion, Suggestions } from '#lib/filter-suggest.js';
-import { FUNCTION_NAMES } from './formula.js';
+import { CONSTANT_NAMES, FUNCTION_NAMES, helpFor } from './formula.js';
 
 const MAX_METRICS = 50;
-
-const FUNCTION_HELP: Record<string, string> = {
-	min: 'smallest of its values',
-	max: 'largest of its values',
-	abs: 'absolute value',
-	sqrt: 'square root',
-	log: 'natural logarithm',
-	log10: 'base 10 logarithm',
-	exp: 'e to the power'
-};
 
 /** Metrics having `query`: first at the start of the name, then of a part, then anywhere. */
 function matchingMetrics(keys: string[], query: string): string[] {
@@ -37,12 +27,21 @@ function matchingMetrics(keys: string[], query: string): string[] {
 
 const metric = (key: string, insert: string): Suggestion => ({ insert, label: key });
 
+/** Functions and constants starting with `query`. */
 function functions(query: string): Suggestion[] {
-	return FUNCTION_NAMES.filter((name) => name.startsWith(query.toLowerCase())).map((name) => ({
-		insert: `${name}(`,
-		label: `${name}(…)`,
-		detail: FUNCTION_HELP[name]
-	}));
+	const q = query.toLowerCase();
+	return [
+		...FUNCTION_NAMES.filter((name) => name.startsWith(q)).map((name) => ({
+			insert: `${name}(`,
+			label: `${name}(…)`,
+			detail: helpFor(name)
+		})),
+		...CONSTANT_NAMES.filter((name) => name.startsWith(q)).map((name) => ({
+			insert: name,
+			label: name,
+			detail: helpFor(name)
+		}))
+	];
 }
 
 export function formulaSuggestions(text: string, caret: number, keys: string[]): Suggestions {

@@ -4,17 +4,20 @@
 	import FileCode from '@lucide/svelte/icons/file-code';
 	import SquareTerminal from '@lucide/svelte/icons/square-terminal';
 
-	import { tokenize, type Lang, type Token } from '#lib/highlight.js';
+	import { markMatches, tokenize, type Lang, type Token } from '#lib/highlight.js';
 
 	let {
 		code,
 		lang,
-		title
+		title,
+		highlight = []
 	}: {
 		code: string;
 		lang: Lang;
 		/** Shown in the header: a file name, or "Terminal". Defaults to the language. */
 		title?: string;
+		/** Text to mark wherever it is, ignoring case (search matches). */
+		highlight?: string[];
 	} = $props();
 
 	// Plain text until the highlighter has loaded (it loads on first use).
@@ -28,7 +31,7 @@
 	const plain = $derived(code.split('\n').map((line) => [{ content: line } as Token]));
 	/** Lines with their newline as a last token (whitespace inside <pre> is shown). */
 	const shown = $derived(
-		(lines ?? plain).map((line, i, all) =>
+		markMatches(lines ?? plain, highlight).map((line, i, all) =>
 			i < all.length - 1 ? [...line, { content: '\n' }] : line
 		)
 	);
@@ -62,9 +65,12 @@
 	</figcaption>
 	<!-- One line on purpose: whitespace inside <pre> is shown. -->
 	<pre class="overflow-x-auto p-3.5 font-mono text-[13px] leading-6"><code
-			>{#each shown as line, i (i)}{#each line as t, j (j)}<span
-						style:--light={t.light}
-						style:--dark={t.dark}>{t.content}</span
-					>{/each}{/each}</code
+			>{#each shown as line, i (i)}{#each line as t, j (j)}{#if t.match}<mark
+							class="rounded-sm bg-yellow-300/60 dark:bg-yellow-500/35"
+							><span style:--light={t.light} style:--dark={t.dark}>{t.content}</span
+							></mark
+						>{:else}<span style:--light={t.light} style:--dark={t.dark}
+							>{t.content}</span
+						>{/if}{/each}{/each}</code
 		></pre>
 </figure>

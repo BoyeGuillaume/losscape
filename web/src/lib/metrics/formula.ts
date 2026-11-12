@@ -1,5 +1,5 @@
 // Formulas for virtual metrics: numbers, metrics in brackets ([val/p]), + - * / ^,
-// parentheses, and min, max, abs, sqrt, log, log10, exp. Parsed into a tree and
+// parentheses, the functions and constants below. Parsed into a tree and
 // evaluated directly: no `eval`, nothing else is reachable.
 
 export type Formula =
@@ -9,17 +9,66 @@ export type Formula =
 	| { kind: 'op'; op: '+' | '-' | '*' | '/' | '^'; left: Formula; right: Formula }
 	| { kind: 'call'; fn: string; args: Formula[] };
 
-const FUNCTIONS: Record<string, (...args: number[]) => number> = {
-	min: Math.min,
-	max: Math.max,
-	abs: Math.abs,
-	sqrt: Math.sqrt,
-	log: Math.log,
-	log10: Math.log10,
-	exp: Math.exp
+type Fn = {
+	fn: (...args: number[]) => number;
+	/** How many values it takes: exactly `args`, or at least 1 (`'any'`). */
+	args: number | 'any';
+	/** What it gives, for suggestions; with its arguments when there are several. */
+	help: string;
 };
 
+const FUNCTIONS: Record<string, Fn> = {
+	min: { fn: Math.min, args: 'any', help: 'smallest of its values' },
+	max: { fn: Math.max, args: 'any', help: 'largest of its values' },
+	abs: { fn: Math.abs, args: 1, help: 'absolute value' },
+	sign: { fn: Math.sign, args: 1, help: '-1, 0 or 1' },
+	clamp: {
+		fn: (x, lo, hi) => Math.min(Math.max(x, lo), hi),
+		args: 3,
+		help: 'clamp(x, lo, hi): x kept between lo and hi'
+	},
+	round: { fn: Math.round, args: 1, help: 'nearest integer' },
+	floor: { fn: Math.floor, args: 1, help: 'integer below' },
+	ceil: { fn: Math.ceil, args: 1, help: 'integer above' },
+	trunc: { fn: Math.trunc, args: 1, help: 'integer part' },
+	pow: { fn: Math.pow, args: 2, help: 'pow(x, y): x to the power y, as x ^ y' },
+	sqrt: { fn: Math.sqrt, args: 1, help: 'square root' },
+	cbrt: { fn: Math.cbrt, args: 1, help: 'cube root' },
+	hypot: { fn: Math.hypot, args: 'any', help: 'square root of the sum of squares' },
+	exp: { fn: Math.exp, args: 1, help: 'e to the power' },
+	expm1: { fn: Math.expm1, args: 1, help: 'exp(x) - 1, precise near 0' },
+	log: { fn: Math.log, args: 1, help: 'natural logarithm' },
+	log2: { fn: Math.log2, args: 1, help: 'base 2 logarithm' },
+	log10: { fn: Math.log10, args: 1, help: 'base 10 logarithm' },
+	log1p: { fn: Math.log1p, args: 1, help: 'log(1 + x), precise near 0' },
+	sin: { fn: Math.sin, args: 1, help: 'sine (radians)' },
+	cos: { fn: Math.cos, args: 1, help: 'cosine (radians)' },
+	tan: { fn: Math.tan, args: 1, help: 'tangent (radians)' },
+	asin: { fn: Math.asin, args: 1, help: 'arcsine, in radians' },
+	acos: { fn: Math.acos, args: 1, help: 'arccosine, in radians' },
+	atan: { fn: Math.atan, args: 1, help: 'arctangent, in radians' },
+	atan2: { fn: Math.atan2, args: 2, help: 'atan2(y, x): angle of the point (x, y)' },
+	sinh: { fn: Math.sinh, args: 1, help: 'hyperbolic sine' },
+	cosh: { fn: Math.cosh, args: 1, help: 'hyperbolic cosine' },
+	tanh: { fn: Math.tanh, args: 1, help: 'hyperbolic tangent' }
+};
+
+/** Named numbers, written bare: `2 * pi`. */
+const CONSTANTS: Record<string, { value: number; help: string }> = {
+	pi: { value: Math.PI, help: '3.14159…' },
+	e: { value: Math.E, help: '2.71828…' }
+};
+
+// Own entries only: `constructor` or `__proto__` are names of every object.
+const isFunction = (name: string) => Object.hasOwn(FUNCTIONS, name);
+const isConstant = (name: string) => Object.hasOwn(CONSTANTS, name);
+
 export const FUNCTION_NAMES = Object.keys(FUNCTIONS);
+export const CONSTANT_NAMES = Object.keys(CONSTANTS);
+
+/** What a function or constant gives, for suggestions. */
+export const helpFor = (name: string): string | undefined =>
+	isFunction(name) ? FUNCTIONS[name].help : isConstant(name) ? CONSTANTS[name].help : undefined;
 
 export class FormulaError extends Error {}
 
@@ -108,9 +157,10 @@ export function parseFormula(src: string): Formula {
 			return inner;
 		}
 		if (tok.t === 'id') {
-			const fn = (tok as { v: string }).v;
-			if (!FUNCTIONS[fn])
-				throw new FormulaError(`unknown function "${fn}" (metrics go in brackets: [name])`);
+			const name = (tok as { v: string }).v;
+			if (peek() !== '(' && isConstant(name)) return { kind: 'num', value: CONSTANTS[name].value };
+			if (!isFunction(name))
+				throw new FormulaError(`unknown function "${name}" (metrics go in brackets: [name])`);
 			expect('(');
 			const args = [sum()];
 			while (peek() === ',') {
@@ -118,7 +168,11 @@ export function parseFormula(src: string): Formula {
 				args.push(sum());
 			}
 			expect(')');
-			return { kind: 'call', fn, args };
+			const wanted = FUNCTIONS[name].args;
+			if (wanted !== 'any' && args.length !== wanted) {
+				throw new FormulaError(`${name} takes ${wanted} value${wanted === 1 ? '' : 's'}`);
+			}
+			return { kind: 'call', fn: name, args };
 		}
 		throw new FormulaError(`unexpected "${tok.t}"`);
 	}
@@ -153,7 +207,7 @@ export function evaluate(
 			case 'neg':
 				return -go(n.arg);
 			case 'call':
-				return FUNCTIONS[n.fn](...n.args.map(go));
+				return isFunction(n.fn) ? FUNCTIONS[n.fn].fn(...n.args.map(go)) : NaN;
 			case 'op': {
 				const [a, b] = [go(n.left), go(n.right)];
 				return n.op === '+'

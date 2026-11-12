@@ -618,7 +618,7 @@
 				<ModelInfo {project} run={r.id} {running} />
 			</div>{/if}
 		{#if tab === 'config'}<div role="tabpanel" id="panel-config" aria-labelledby="tab-config">
-				<RunConfig {project} config={r.config} bind:view={configView} />
+				<RunConfig {project} name={r.name} config={r.config} bind:view={configView} />
 			</div>{/if}
 
 		{#if tab === 'overview'}<div

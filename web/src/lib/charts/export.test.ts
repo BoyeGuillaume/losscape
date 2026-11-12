@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_EXPORT_RUNS, csvField, fileName, historyUrl, shownCsv } from './export.js';
-
-describe('fileName', () => {
-	it('works as a file name', () => {
-		expect(fileName('train/loss', 'png')).toBe('train_loss.png');
-		expect(fileName('val acc (top-5)', 'csv')).toBe('val_acc_top-5.csv');
-		expect(fileName('../..', 'csv')).toBe('chart.csv');
-	});
-});
+import {
+	MAX_EXPORT_RUNS,
+	chartSvg,
+	csvField,
+	historyUrl,
+	shownCsv,
+	type SvgParts
+} from './export.js';
 
 describe('csvField', () => {
 	it('quotes only when it has to', () => {
@@ -70,5 +69,97 @@ describe('historyUrl', () => {
 		const many = Array.from({ length: MAX_EXPORT_RUNS + 1 }, (_, i) => `r${i}`);
 		expect(historyUrl('mnist', many, ['loss'])).toBe(null);
 		expect(historyUrl('mnist', ['r'], ['x'.repeat(9000)])).toBe(null);
+	});
+});
+
+describe('chartSvg', () => {
+	const row = (x: number, y: number | null, band = 0.5) => ({
+		x,
+		y,
+		raw: y,
+		min: y === null ? null : y - band,
+		max: y === null ? null : y + band,
+		best: null
+	});
+	const parts = (over: Partial<SvgParts> = {}): SvgParts => ({
+		width: 400,
+		height: 200,
+		padding: { top: 6, right: 6, bottom: 20, left: 40 },
+		xDomain: [0, 10],
+		yDomain: [0, 4],
+		log: false,
+		nice: true,
+		xTicks: 5,
+		yTicks: 4,
+		formatX: String,
+		formatY: String,
+		lines: [
+			{ name: 'run-1', color: '#2563eb', group: false, rows: [row(0, 3), row(5, 2), row(10, 1)] }
+		],
+		show: { band: false, raw: false, best: false },
+		title: 'train/loss',
+		subtitle: 'Step',
+		colors: { background: '#fff', text: '#111', muted: '#666', grid: '#eee' },
+		font: 'Inter, sans-serif',
+		...over
+	});
+	const paths = (svg: string) => [...svg.matchAll(/<path d="([^"]*)" stroke=/g)].map((m) => m[1]);
+
+	it('is an SVG document with the title, legend, axes and line', () => {
+		const svg = chartSvg(parts());
+		expect(svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg"')).toBe(true);
+		expect(svg).toContain('>train/loss</text>');
+		expect(svg).toContain('>run-1</text>');
+		expect(svg).toContain('>Step</text>');
+		expect(paths(svg)).toHaveLength(1);
+		expect(paths(svg)[0].match(/[ML]/g)).toEqual(['M', 'L', 'L']);
+		expect([...svg.matchAll(/text-anchor="middle"/g)].length).toBeGreaterThan(2);
+	});
+
+	it('escapes names, which can be anything', () => {
+		const svg = chartSvg(
+			parts({
+				title: '<script>alert(1)</script>',
+				lines: [{ ...parts().lines[0], name: 'a & "b"', color: '"/><script>' }]
+			})
+		);
+		expect(svg).not.toContain('<script');
+		expect(svg).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+		expect(svg).toContain('a &amp; &quot;b&quot;');
+	});
+
+	it('breaks lines at gaps, and draws points standing alone as dots', () => {
+		const rows = [
+			row(0, 3),
+			row(1, 2),
+			row(2, null),
+			row(3, 1),
+			row(4, null),
+			row(5, 2),
+			row(6, 1)
+		];
+		const svg = chartSvg(parts({ lines: [{ ...parts().lines[0], rows }] }));
+		expect(paths(svg)[0].match(/M/g)).toHaveLength(3);
+		expect([...svg.matchAll(/<circle /g)]).toHaveLength(1);
+	});
+
+	it('leaves out what a log scale can’t show', () => {
+		const rows = [row(0, 10), row(1, 0), row(2, 1)];
+		const svg = chartSvg(
+			parts({
+				log: true,
+				yDomain: [0.5, 20],
+				yTicks: [1, 10],
+				lines: [{ ...parts().lines[0], rows }]
+			})
+		);
+		expect(paths(svg)[0]).not.toContain('NaN');
+		expect(paths(svg)[0].match(/M/g)).toHaveLength(2);
+	});
+
+	it('draws the band, unsmoothed and best lines when shown', () => {
+		const svg = chartSvg(parts({ show: { band: true, raw: true, best: false } }));
+		expect(svg).toMatch(/<path d="M[^"]*Z" fill="#2563eb" fill-opacity="0.16"/);
+		expect(svg).toContain('stroke-opacity="0.25"');
 	});
 });
