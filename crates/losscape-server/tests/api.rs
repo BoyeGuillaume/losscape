@@ -1616,3 +1616,74 @@ async fn a_tag_given_twice_is_one_tag() {
     assert_eq!(tags, ["a", "b"]);
     server.stop().await;
 }
+
+#[tokio::test]
+async fn history_streams_every_point_as_csv() {
+    let Some(server) = TestServer::start().await else {
+        return;
+    };
+    let run = RunId::new();
+    server.init(run, false).await;
+    server.log(batch(run, 0, 0, 5)).await;
+    let id = uuid::Uuid::from_bytes(*run.as_bytes());
+    let get = |query: String| {
+        Request::get(format!("/api/v0/projects/test/history?{query}"))
+            .header(header::AUTHORIZATION, server.bearer())
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (status, csv) = server
+        .call(get(format!("run={id}&key=loss&key=acc&key=missing")))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{}", error_of(&csv));
+    let csv = String::from_utf8(csv.to_vec()).unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(
+        lines[0],
+        r#""run","run_id","metric","step","time_utc","value""#
+    );
+    assert_eq!(
+        lines.len(),
+        1 + 2 * 5,
+        "every point of both metrics:\n{csv}"
+    );
+    assert_eq!(
+        lines[1],
+        format!(r#""brave-falcon-1","{id}","acc",0,"2023-11-14 22:13:20.000",1"#),
+        "by metric, then step"
+    );
+    assert!(lines[10].starts_with(&format!(r#""brave-falcon-1","{id}","loss",4,"#)));
+
+    let (_, some) = server
+        .call(get(format!("run={id}&key=loss&min_step=1&max_step=2")))
+        .await;
+    let some = String::from_utf8(some.to_vec()).unwrap();
+    let steps: Vec<&str> = some
+        .lines()
+        .skip(1)
+        .map(|l| l.split(',').nth(3).unwrap())
+        .collect();
+    assert_eq!(steps, ["1", "2"], "{some}");
+
+    // Asking is checked: names, run ids, and the project they're in.
+    let (status, body) = server.call(get(format!("run={id}"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", error_of(&body));
+    let (status, _) = server.call(get("key=loss".into())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = server
+        .call(get(format!("run={}&key=loss", uuid::Uuid::now_v7())))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a run of no project");
+    assert_eq!(server.create_project("other").await, StatusCode::CREATED);
+    let (status, _) = server
+        .call(
+            Request::get(format!("/api/v0/projects/other/history?run={id}&key=loss"))
+                .header(header::AUTHORIZATION, server.bearer())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a run of another project");
+    server.stop().await;
+}

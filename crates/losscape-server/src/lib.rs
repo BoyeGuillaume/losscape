@@ -6,6 +6,7 @@ pub mod board;
 mod clickhouse_store;
 pub mod config;
 pub mod error;
+pub mod history;
 pub mod ingest;
 pub mod live;
 pub mod metric_defs;

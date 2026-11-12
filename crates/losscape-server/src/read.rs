@@ -489,9 +489,19 @@ pub async fn series(
             .into());
         }
     };
+    let body = stream_query(query, format, "series").await?;
+    Ok(([(header::CONTENT_TYPE, content_type)], body).into_response())
+}
+
+/// A ClickHouse query's output in `format`, passed on as it comes rather than held here.
+/// Waits for the start of it, so that a query that fails right away still gets a proper
+/// answer.
+pub(crate) async fn stream_query(
+    query: clickhouse::query::Query,
+    format: &str,
+    what: &'static str,
+) -> Result<axum::body::Body, ApiError> {
     let mut cursor = query.fetch_bytes(format).map_err(ApiError::from)?;
-    // Passed on as it comes rather than held here. Waiting for the start of it, so that
-    // a query that fails right away still gets a proper answer.
     let first = cursor.next().await.map_err(ApiError::from)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
     tokio::spawn(async move {
@@ -503,18 +513,16 @@ pub async fn series(
             next = match cursor.next().await {
                 Ok(next) => next,
                 Err(err) => {
-                    tracing::warn!(%err, "series query stopped");
+                    tracing::warn!(%err, "{what} query stopped");
                     let _ = tx.send(Err(std::io::Error::other("query failed"))).await;
                     return;
                 }
             };
         }
     });
-    Ok((
-        [(header::CONTENT_TYPE, content_type)],
-        axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
-    )
-        .into_response())
+    Ok(axum::body::Body::from_stream(
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+    ))
 }
 
 /// A console line as the UI gets it (logs endpoint and live `console` events).

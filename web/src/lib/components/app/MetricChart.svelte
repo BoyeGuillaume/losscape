@@ -3,6 +3,7 @@
 	import { Tooltip, type BrushContext } from 'layerchart';
 	import { scaleLog } from 'd3-scale';
 	import type { ComponentProps } from 'svelte';
+	import Download from '@lucide/svelte/icons/download';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import { mode } from 'mode-watcher';
 	import { page } from '$app/state';
@@ -29,11 +30,20 @@
 		type XAxis
 	} from '#lib/charts/settings.js';
 	import type { MetricSource } from '#lib/charts/source.js';
+	import {
+		chartImage,
+		fileName,
+		historyUrl,
+		MAX_EXPORT_RUNS,
+		save,
+		shownCsv
+	} from '#lib/charts/export.js';
 	import { isolatedPoints } from '#lib/charts/isolated.js';
 	import { levelFor, tileStore, type SeriesPoints } from '#lib/charts/tiles.svelte.js';
 	import { formatMetric, metricAxis, unitFor, unitTicks } from '#lib/metric-units.js';
 	import { chartSize } from '#lib/charts/size.svelte.js';
 	import { nav } from '#lib/nav.svelte.js';
+	import { notifyError } from '#lib/notify.js';
 
 	import ChartToolbar from './ChartToolbar.svelte';
 
@@ -528,6 +538,68 @@
 	const brushAxis = $derived<'x' | 'both'>(boxZoom || shiftDrag ? 'both' : 'x');
 
 	/** Sets one setting for this chart; the page's value again drops the override. */
+	// Saving the chart: what it shows, or every point its runs logged (from the server).
+	const fullData = $derived.by((): { url: string } | { reason: string } => {
+		const runs: string[] = [];
+		const keys: string[] = [];
+		for (const s of series) {
+			for (const r of s.runs) {
+				if (!source.extentOf(r.id, metric)) continue;
+				const logged = source.logged(r.id, metric);
+				if (!logged)
+					return { reason: 'A computed metric: save what the chart shows instead.' };
+				if (logged.scale !== 1) {
+					return {
+						reason: 'Renamed with a factor: logged values differ from those shown.'
+					};
+				}
+				runs.push(r.id);
+				if (!keys.includes(logged.raw)) keys.push(logged.raw);
+			}
+		}
+		const url = historyUrl(page.params.project ?? '', runs, keys);
+		if (url) return { url };
+		return {
+			reason: runs.length
+				? `More than ${MAX_EXPORT_RUNS} runs: select fewer to save all their points.`
+				: 'Nothing logged yet.'
+		};
+	});
+
+	async function saveImage() {
+		const plot = card.querySelector('canvas');
+		if (!plot) return;
+		const style = getComputedStyle(card);
+		const shows = [
+			xLabel(settings.x),
+			settings.smoothing > 0 && `smoothing ${settings.smoothing}`,
+			useLog && 'log scale'
+		];
+		try {
+			const image = await chartImage({
+				plot,
+				title: meta.label ?? title,
+				subtitle: shows.filter(Boolean).join(' · '),
+				legend: lines.map((l) => ({ name: l.series.name, color: resolve(l.series.color) })),
+				colors: { background: style.backgroundColor, text: style.color, muted: label },
+				font: style.fontFamily
+			});
+			save(image, fileName(title, 'png'));
+		} catch (err) {
+			notifyError(err, "Couldn't save the image");
+		}
+	}
+
+	function saveShown() {
+		const csv = shownCsv(
+			lines.map((l) => ({ name: l.series.name, rows: l.rows })),
+			settings.x,
+			xDomain,
+			{ smoothed: settings.smoothing > 0, band: settings.band }
+		);
+		save(new Blob([csv], { type: 'text/csv' }), fileName(title, 'csv'));
+	}
+
 	function change<K extends keyof ChartOverride>(key: K, value: ChartOverride[K]) {
 		const next: ChartOverride = { ...override, [key]: value };
 		if (pageSettings[key] === value) delete next[key];
@@ -600,6 +672,40 @@
 			zoomed={view !== null || yView !== null}
 			onReset={resetZoom}
 		>
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger
+					class="relative rounded-md p-1 text-muted-foreground opacity-0 group-hover/chart:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(hover:none)]:opacity-100"
+					aria-label={`Save the ${title} chart`}
+					title="Save this chart"
+				>
+					<Download class="size-3.5" />
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-64">
+					<DropdownMenu.Label>Save this chart</DropdownMenu.Label>
+					<DropdownMenu.Item onSelect={saveImage}>Image (PNG)</DropdownMenu.Item>
+					<DropdownMenu.Item onSelect={saveShown} class="flex-col items-start gap-0">
+						Data as shown (CSV)
+						<span class="text-xs text-muted-foreground">
+							Downsampled points in view, as drawn
+						</span>
+					</DropdownMenu.Item>
+					<DropdownMenu.Item
+						disabled={'reason' in fullData}
+						onSelect={() => {
+							if ('url' in fullData)
+								save(fullData.url, fileName(`${title}-all`, 'csv'));
+						}}
+						class="flex-col items-start gap-0"
+					>
+						Every logged point (CSV)
+						<span class="text-xs text-muted-foreground">
+							{'reason' in fullData
+								? fullData.reason
+								: 'All steps of these runs, as logged'}
+						</span>
+					</DropdownMenu.Item>
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
 			{#if onOverride}
 				<DropdownMenu.Root>
 					<DropdownMenu.Trigger

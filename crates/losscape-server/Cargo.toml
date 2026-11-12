@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 argon2 = "0.6.0"
 axum = "0.8.9"
-axum-extra = { version = "0.12.6", features = ["cookie"] }
+axum-extra = { version = "0.12.6", features = ["cookie", "query"] }
 base64 = "0.23.1"
 bytes = "1.12.1"
 clickhouse = { version = "0.13.3", features = ["uuid"] }

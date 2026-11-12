@@ -10,6 +10,7 @@ defaults match deploy/docker-compose.dev.yml).
 
 import base64
 import json
+import math
 import os
 import signal
 import subprocess
@@ -72,6 +73,34 @@ def test_online_run_is_uploaded(tmp_path):
     assert run.finish() == "uploaded"
     assert stored(run.id) == (4000, 1999)
     assert not run.dir.exists(), "local log deleted once uploaded"
+
+
+def test_a_run_reads_back_as_logged(tmp_path):
+    run = lsc.init(
+        project="pytest-e2e",
+        mode="online",
+        server=SERVER,
+        dir=tmp_path,
+        config={"optimizer": {"lr": 3e-4}},
+        system_metrics=False,
+    )
+    for i in range(500):
+        run.log({"loss": 1 / (i + 1), "acc": i / 500})
+    run.log({"loss": float("nan")})
+    assert run.finish() == "uploaded"
+
+    api = lsc.Api(SERVER)
+    back = api.run(run.id)
+    assert back.name == run.name and back.state == "finished"
+    assert back.config == {"optimizer": {"lr": 3e-4}}
+    assert any(r.id == run.id for r in api.runs("pytest-e2e"))
+    points = list(back.scan_history("loss"))
+    assert [p.step for p in points] == list(range(501))
+    assert points[9].value == 0.1
+    assert math.isnan(points[-1].value)
+    assert back.history(min_step=10, max_step=19)["acc"].tolist() == [
+        i / 500 for i in range(10, 20)
+    ]
 
 
 CHILD = """

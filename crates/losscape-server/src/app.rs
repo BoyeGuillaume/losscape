@@ -19,7 +19,7 @@ use crate::config::BrandingImage;
 use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
-use crate::{auth, board, ingest, live, metric_defs, projects, read, runs, tags};
+use crate::{auth, board, history, ingest, live, metric_defs, projects, read, runs, tags};
 
 /// Between two parts of a request's body. Responses have no such limit: live streams never end.
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -89,6 +89,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/runs/{run}/logs.txt", get(read::run_logs_file))
         .route("/runs/{run}/files/{name}", get(read::run_file))
         .route("/series", post(read::series))
+        .route("/projects/{project}/history", get(history::history))
         .route("/auth/me", get(account::me))
         .route("/me", patch(account::update_profile))
         .route(

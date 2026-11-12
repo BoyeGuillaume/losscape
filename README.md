@@ -101,6 +101,9 @@ run.finish()                           # waits for the upload; `with` does this 
   and FLOPs of a `torch.nn.Module`, for the run's Model tab.
 - **Resuming:** `lsc.init(id=run_id, resume=True)` continues a run where it stopped.
 - **Speed:** `log()` never touches the network, so it doesn't slow down training.
+- **Reading runs back:** `lsc.Api().runs("my-project")` lists runs with their config and
+  summary, and `run.history(["loss"])` gives every logged point as a pandas DataFrame. See
+  [Reading runs back](sdk/python/README.md#reading-runs-back).
 
 More options and details are in the [SDK's documentation](sdk/python/README.md).
 

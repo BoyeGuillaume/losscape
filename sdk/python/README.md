@@ -22,6 +22,34 @@ The project must exist: create it in the web UI (New project) and be its owner o
 A run logged to an unknown project is refused by the server; its data stays in the local log,
 so `losscape sync` uploads it once the project is created.
 
+## Reading runs back
+
+`lsc.Api()` reads what the server stored, for analysis in scripts and notebooks. It connects
+like `lsc.init()` does: `LOSSCAPE_SERVER` and `LOSSCAPE_API_KEY`, or `lsc.Api(server, api_key)`.
+
+```python
+import lsc
+
+api = lsc.Api()
+runs = api.runs("mnist")  # newest first; api.runs(..., archived=True)
+best = max(runs, key=lambda r: r.summary.get("val/acc", 0))
+print(best.name, best.config["lr"], best.state)
+
+table = runs.to_pandas()  # one row per run: config.* and summary.* columns
+df = best.history(["train/loss", "val/acc"])  # step column, one column per metric
+for point in best.scan_history("train/loss"):  # streamed: metric, step, time, value
+    ...
+```
+
+- `history()` and `to_pandas()` need pandas: `pip install 'losscape-sdk[pandas]'`. The rest
+  needs nothing beyond Python.
+- History has every logged point, not the downsampled ones the charts draw. Steps where a
+  metric wasn't logged are NaN; `history(..., wide=False)` gives one row per point instead.
+- Without `keys`, history has every metric of the run except system metrics
+  (`system=True` adds them). `min_step` and `max_step` limit the steps.
+- `api.run(run_id)` gets one run; ids are the ones `lsc.init()` gives (`run.id`).
+- Metrics as logged: renames and computed metrics of the web UI aren't applied.
+
 ## How it works
 
 - `log()` appends to an in-memory buffer (~1 µs for 20 metrics) and never touches the network.

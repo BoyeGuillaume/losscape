@@ -41,15 +41,30 @@ export class MetricSource {
 		return [...all].sort();
 	}
 
+	/**
+	 * A formula's inputs logged at a single step (a model's size): constants, which hold at every
+	 * step. Unless all of them are: then the formula is itself a single point.
+	 */
+	private constants(run: string, refs: Map<string, { raw: string }>): Set<string> {
+		const single = new Set<string>();
+		for (const [ref, { raw }] of refs) {
+			const e = this.extent(run, raw);
+			if (e && e.min === e.max) single.add(ref);
+		}
+		return single.size < refs.size ? single : new Set();
+	}
+
 	/** Steps a run has the metric for (a formula: where all its inputs exist). */
 	extentOf(run: string, key: string): Extent | undefined {
 		const r = this.resolve(run, key);
 		if (!r) return undefined;
 		if (r.kind === 'key') return this.extent(run, r.raw);
+		const constants = this.constants(run, r.refs);
 		let out: Extent | undefined;
-		for (const { raw } of r.refs.values()) {
+		for (const [ref, { raw }] of r.refs) {
 			const e = this.extent(run, raw);
 			if (!e) return undefined;
+			if (constants.has(ref)) continue;
 			out = out ? { min: Math.max(out.min, e.min), max: Math.min(out.max, e.max) } : e;
 		}
 		return out && out.max >= out.min ? out : undefined;
@@ -61,10 +76,22 @@ export class MetricSource {
 		if (!r) return null;
 		if (r.kind === 'key') return scaledSeries(run, r.raw, r.scale, from, to, width);
 		// A formula, bucket by bucket: the same steps and width give the same buckets.
-		const inputs = [...r.refs].map(([ref, { raw, scale }]) => {
-			const s = scaledSeries(run, raw, scale, from, to, width);
-			return { ref, s, at: new Map(s.x.map((x, i) => [x, i])) };
-		});
+		const constants = this.constants(run, r.refs);
+		const fixed = new Map<string, number | null>();
+		let complete = true;
+		for (const ref of constants) {
+			const { raw, scale } = r.refs.get(ref)!;
+			const at = this.extent(run, raw)!.min;
+			const s = scaledSeries(run, raw, scale, at, at, width);
+			complete &&= s.complete;
+			fixed.set(ref, s.mean[0] ?? null);
+		}
+		const inputs = [...r.refs]
+			.filter(([ref]) => !constants.has(ref))
+			.map(([ref, { raw, scale }]) => {
+				const s = scaledSeries(run, raw, scale, from, to, width);
+				return { ref, s, at: new Map(s.x.map((x, i) => [x, i])) };
+			});
 		const [first] = inputs;
 		const out: SeriesPoints = {
 			x: [],
@@ -73,12 +100,15 @@ export class MetricSource {
 			mean: [],
 			min: [],
 			max: [],
-			complete: inputs.every((i) => i.s.complete)
+			complete: complete && inputs.every((i) => i.s.complete)
 		};
+		// A constant still loading: nothing to show yet.
+		if ([...fixed.values()].includes(null)) return out;
 		first.s.x.forEach((x, i) => {
 			const idx = inputs.map((input) => input.at.get(x));
 			if (idx.some((j) => j === undefined)) return;
 			const value = evaluate(r.formula, (ref) => {
+				if (fixed.has(ref)) return fixed.get(ref)!;
 				const k = inputs.findIndex((input) => input.ref === ref);
 				return inputs[k].s.mean[idx[k]!];
 			});
@@ -90,6 +120,12 @@ export class MetricSource {
 			out.max.push(value);
 		});
 		return out;
+	}
+
+	/** The logged metric a shown one reads, and by what factor; null for a computed one. */
+	logged(run: string, key: string): { raw: string; scale: number } | null {
+		const r = this.resolve(run, key);
+		return r?.kind === 'key' ? { raw: r.raw, scale: r.scale } : null;
 	}
 
 	/** The logged metric a shown one reads, when it isn't itself (for hints). */

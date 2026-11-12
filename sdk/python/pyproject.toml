@@ -16,6 +16,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.optional-dependencies]
+# DataFrames from the query API (lsc.Api): Run.history(), Runs.to_pandas().
+pandas = ["pandas>=1.5"]
+
 [project.urls]
 Repository = "https://github.com/BoyeGuillaume/losscape"
 
@@ -23,7 +27,7 @@ Repository = "https://github.com/BoyeGuillaume/losscape"
 losscape = "lsc.cli:main"
 
 [dependency-groups]
-dev = ["maturin>=1.9,<2", "pytest>=8", "ruff>=0.12"]
+dev = ["maturin>=1.9,<2", "pandas>=1.5", "pytest>=8", "ruff>=0.12"]
 
 [tool.maturin]
 manifest-path = "../../crates/losscape-py/Cargo.toml"
