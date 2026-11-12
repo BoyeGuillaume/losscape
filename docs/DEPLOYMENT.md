@@ -197,7 +197,7 @@ in progress lose nothing while it's down, whether it's restarting or being upgra
 Instead of building, you can run the [image from Docker Hub](https://hub.docker.com/r/madproton/losscape). In `.env`, with the version you want:
 
 ```sh
-LOSSCAPE_IMAGE=madproton/losscape:0.1.3
+LOSSCAPE_IMAGE=madproton/losscape:0.1.4
 ```
 
 ```sh
@@ -225,8 +225,8 @@ It needs setting up once:
    `madproton/losscape`.
 
 ```sh
-git tag server-v0.1.3
-git push origin server-v0.1.3
+git tag server-v0.1.4
+git push origin server-v0.1.4
 ```
 
 ### Upgrading
@@ -320,8 +320,8 @@ Also create the `pypi` environment under the repository's Settings → Environme
 reviewer there means every release waits for your approval.
 
 ```sh
-git tag sdk-v0.1.3
-git push origin sdk-v0.1.3
+git tag sdk-v0.1.4
+git push origin sdk-v0.1.4
 ```
 
 ## Troubleshooting
