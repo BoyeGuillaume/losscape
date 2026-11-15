@@ -114,6 +114,9 @@ pub struct RunSummary {
     renames: SqlJson<Value>,
     /// Factors of renamed metrics, when not 1: logged name -> factor.
     rename_scales: SqlJson<Value>,
+    /// Checkpoints uploaded, and their size in bytes (as saved, before compression).
+    checkpoints: i64,
+    checkpoint_bytes: i64,
     heartbeat_at_ms: i64,
     finished_at_ms: Option<i64>,
     summary: SqlJson<Value>,
@@ -123,7 +126,7 @@ pub struct RunSummary {
     created_us: i64,
 }
 
-/// Columns shared by run listings: aliases, and timestamps as epoch ms.
+/// Columns shared by run listings: aliases, checkpoints, and timestamps as epoch ms.
 fn run_columns() -> String {
     format!(
         "COALESCE((SELECT array_agg(a.alias ORDER BY a.alias) FROM run_aliases a WHERE a.run_id = r.id), '{{}}') AS aliases,
@@ -133,7 +136,11 @@ fn run_columns() -> String {
          COALESCE((SELECT jsonb_object_agg(n.from_key, n.to_key) FROM run_metric_renames n
                    WHERE n.run_id = r.id), '{{}}') AS renames,
          COALESCE((SELECT jsonb_object_agg(n.from_key, n.scale) FROM run_metric_renames n
-                   WHERE n.run_id = r.id AND n.scale <> 1), '{{}}') AS rename_scales",
+                   WHERE n.run_id = r.id AND n.scale <> 1), '{{}}') AS rename_scales,
+         (SELECT count(*) FROM checkpoints c WHERE c.run_id = r.id AND c.state = 'committed')
+           AS checkpoints,
+         (SELECT COALESCE(sum(c.size), 0)::bigint FROM checkpoints c
+           WHERE c.run_id = r.id AND c.state = 'committed') AS checkpoint_bytes",
         ms("r.created_at"),
         ms("COALESCE(r.client_created_at, r.created_at)"),
         ms("r.heartbeat_at"),
@@ -269,6 +276,8 @@ pub struct RunDetail {
     metric_max: SqlJson<Value>,
     renames: SqlJson<Value>,
     rename_scales: SqlJson<Value>,
+    checkpoints: i64,
+    checkpoint_bytes: i64,
     heartbeat_at_ms: i64,
     finished_at_ms: Option<i64>,
     summary: SqlJson<Value>,

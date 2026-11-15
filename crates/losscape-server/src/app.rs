@@ -109,6 +109,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         )
         .route("/checkpoints/{id}/commit", post(checkpoints::commit))
         .route("/checkpoints/{id}/files/{file}", get(checkpoints::download))
+        .route("/checkpoints/{id}/archive", get(checkpoints::archive))
         .route("/auth/me", get(account::me))
         .route("/me", patch(account::update_profile))
         .route(
@@ -320,6 +321,8 @@ struct AppInfo {
     protocol: u32,
     favicon: Option<String>,
     auth_background: Option<String>,
+    /// Checkpoints can be uploaded (storage is configured).
+    checkpoints: bool,
 }
 
 async fn app_info(State(state): State<AppState>) -> Json<AppInfo> {
@@ -335,6 +338,7 @@ async fn app_info(State(state): State<AppState>) -> Json<AppInfo> {
         protocol: losscape_core::PROTOCOL_VERSION,
         favicon: url("favicon", &branding.favicon),
         auth_background: url("auth-background", &branding.auth_background),
+        checkpoints: state.storage().is_some(),
     })
 }
 

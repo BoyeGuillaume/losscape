@@ -9,7 +9,8 @@
 	}: {
 		label: string;
 		/** With `href`: links; without: tabs (`onSelect`, panels `id="panel-<id>"`). */
-		items: { id: string; label: string; href?: string }[];
+		/** `count`: shown beside the label (of tabs), when there's some. */
+		items: { id: string; label: string; href?: string; count?: number }[];
 		current: string;
 		onSelect?: (id: string) => void;
 		class?: string;
@@ -52,7 +53,11 @@
 				aria-controls={`panel-${item.id}`}
 				tabindex={current === item.id ? 0 : -1}
 				class={linkClass(current === item.id)}
-				onclick={() => onSelect(item.id)}>{item.label}</button
+				onclick={() => onSelect(item.id)}
+				>{item.label}{#if item.count}<span
+						class="ml-1.5 rounded-full bg-muted px-1.5 py-px text-xs text-muted-foreground tabular-nums"
+						>{item.count}</span
+					>{/if}</button
 			>
 		{/each}
 	</div>

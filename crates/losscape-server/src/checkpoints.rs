@@ -11,6 +11,8 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
+use futures_util::stream::{self, BoxStream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -20,6 +22,7 @@ use crate::error::ApiError;
 use crate::read::{UiError, parse_run_id};
 use crate::state::AppState;
 use crate::storage::Storage;
+use crate::tar;
 
 /// Bytes of a file per part, before compression.
 pub const PART_SIZE: u64 = losscape_core::CHECKPOINT_PART_SIZE;
@@ -615,13 +618,12 @@ pub async fn download(
     .await?;
     let (path, size, sha256, compression, parts) =
         row.ok_or_else(|| ApiError::invalid(format!("file {file}: not in this checkpoint")))?;
-    let keys = (0..parts)
-        .map(|p| part_key(&found.prefix, file, p))
-        .collect();
-    let stream = storage.read(keys);
     let compression = Compression::parse(&compression);
 
     let (body, length) = if params.stored || compression == Compression::None {
+        let keys = (0..parts)
+            .map(|p| part_key(&found.prefix, file, p))
+            .collect();
         let stored: i64 = sqlx::query_scalar(
             "SELECT COALESCE(sum(size), 0)::bigint FROM checkpoint_parts
              WHERE checkpoint_id = $1 AND file_index = $2",
@@ -630,16 +632,10 @@ pub async fn download(
         .bind(file)
         .fetch_one(state.pg())
         .await?;
-        (Body::from_stream(stream), stored)
+        (Body::from_stream(storage.read(keys)), stored)
     } else {
-        // Each part is a zstd frame: together, one zstd stream.
-        let reader = tokio_util::io::StreamReader::new(stream);
-        let mut decoder = async_compression::tokio::bufread::ZstdDecoder::new(reader);
-        decoder.multiple_members(true);
-        (
-            Body::from_stream(tokio_util::io::ReaderStream::new(decoder)),
-            size,
-        )
+        let content = original(storage, &found.prefix, file, parts, compression);
+        (Body::from_stream(content), size)
     };
     let name = download_name(&path);
     let mut response = (
@@ -664,6 +660,82 @@ pub async fn download(
         );
     }
     Ok(response)
+}
+
+/// A file's content as it was uploaded: its parts, one after the other, decompressed.
+fn original(
+    storage: &Storage,
+    prefix: &str,
+    file: i32,
+    parts: i32,
+    compression: Compression,
+) -> BoxStream<'static, std::io::Result<Bytes>> {
+    let stream = storage.read((0..parts).map(|p| part_key(prefix, file, p)).collect());
+    match compression {
+        Compression::None => stream,
+        Compression::Zstd => {
+            // Each part is a zstd frame: together, one zstd stream.
+            let reader = tokio_util::io::StreamReader::new(stream);
+            let mut decoder = async_compression::tokio::bufread::ZstdDecoder::new(reader);
+            decoder.multiple_members(true);
+            tokio_util::io::ReaderStream::new(decoder).boxed()
+        }
+    }
+}
+
+/// `GET /api/v0/checkpoints/{id}/archive`: all of its files in one tar archive, as they were
+/// uploaded, streamed as a download (`<run>-step-<step>.tar`).
+pub async fn archive(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Response, UiError> {
+    let storage = storage(&state)?;
+    let found = find(&state, &user, id, Role::Viewer).await?;
+    if found.state != "committed" {
+        return Err(conflict("pending", "this checkpoint is still being uploaded").into());
+    }
+    let (run_name, step, mtime): (String, i64, i64) = sqlx::query_as(
+        "SELECT r.name, c.step, extract(epoch from COALESCE(c.committed_at, c.created_at))::bigint
+         FROM checkpoints c JOIN runs r ON r.id = c.run_id WHERE c.id = $1",
+    )
+    .bind(id)
+    .fetch_one(state.pg())
+    .await?;
+    let files: Vec<(i32, String, i64, String, i32)> = sqlx::query_as(
+        "SELECT file_index, path, size, compression, parts FROM checkpoint_files
+         WHERE checkpoint_id = $1 ORDER BY file_index",
+    )
+    .bind(id)
+    .fetch_all(state.pg())
+    .await?;
+
+    let length = tar::archive_len(files.iter().map(|f| (f.1.as_str(), f.2 as u64)));
+    let mut pieces: Vec<BoxStream<'static, std::io::Result<Bytes>>> = Vec::new();
+    let bytes = |b: Vec<u8>| stream::once(async move { Ok(Bytes::from(b)) }).boxed();
+    for (i, (index, path, size, compression, parts)) in files.into_iter().enumerate() {
+        let size = size as u64;
+        pieces.push(bytes(tar::file_header(i, &path, size, mtime.max(0) as u64)));
+        let compression = Compression::parse(&compression);
+        pieces.push(original(storage, &found.prefix, index, parts, compression));
+        pieces.push(bytes(vec![0; tar::padding(size)]));
+    }
+    pieces.push(bytes(tar::END.to_vec()));
+
+    let name = download_name(&format!("{run_name}-step-{step}"));
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/x-tar".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}.tar\""),
+            ),
+            (header::CONTENT_LENGTH, length.to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        Body::from_stream(stream::iter(pieces).flatten()),
+    )
+        .into_response())
 }
 
 /// The file's name, without anything a header could misread.

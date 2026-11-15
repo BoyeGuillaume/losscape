@@ -20,5 +20,6 @@ pub mod serve;
 pub mod state;
 pub mod storage;
 pub mod tags;
+mod tar;
 #[cfg(feature = "testing")]
 pub mod testing;

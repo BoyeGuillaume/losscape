@@ -1,8 +1,8 @@
 # Checkpoints (design)
 
 What training runs save every so many steps, uploaded to the server with the run, so a run can be
-resumed from anywhere and its weights downloaded later. The server and the SDK are built; the
-web UI is next. General artifacts (datasets, models with
+resumed from anywhere and its weights downloaded later. The server, the SDK and the web UI are
+built. General artifacts (datasets, models with
 versions and lineage) and logged media come later, on the same storage.
 
 ## Using them
@@ -27,6 +27,8 @@ lsc.Api().run(run_id).checkpoints[-1].download(files="model.pt")
 - The upload runs in the background, on its own queue: metrics never wait behind a checkpoint.
   `run.finish()` waits for it as long as it progresses; an interrupted upload resumes, also
   with `losscape sync`. The local copy is deleted once the server has it all.
+- A run's Checkpoints tab lists them (step, time, files, size), downloads one file or all of them
+  as a tar archive, and deletes them; the runs table has a Checkpoints column (count and size).
 - Checkpoints are deleted by hand, on the run's Checkpoints tab or with `.delete()`. Rules to keep
   only some (the last few, the best by a metric) come later.
 
@@ -70,7 +72,9 @@ server, which checks who asks: clients never reach the storage, or its credentia
 Reading: `GET /api/v0/runs/{run}/checkpoints` (committed ones, by step; `?pending=true` for the
 others), `GET /api/v0/checkpoints/{id}` (with its files), and
 `GET /api/v0/checkpoints/{id}/files/{file}`: decompressed, or as stored with `?stored=true`,
-always as a download. `DELETE /api/v0/checkpoints/{id}` (editors).
+always as a download; `GET /api/v0/checkpoints/{id}/archive`: all of its files, decompressed, as
+one tar archive (pax headers: long paths and files over 8 GiB), streamed with its length known
+up front. `DELETE /api/v0/checkpoints/{id}` (editors).
 
 ## Data (Postgres)
 
@@ -102,10 +106,11 @@ trigger; the server deletes those files within a minute.
    (a local copy, linked, or a download), and the query API (`checkpoints`, `download`,
    `delete`). Tested end to end in crates/losscape-client/tests/e2e.rs (a run cut short
    mid-upload, offline, refused) and sdk/python/tests.
-3. **Web UI:** a Checkpoints tab on the run page (step, time, size, files, status; download and
-   delete), checkpoint count and size in the runs table.
-4. **Docs:** the SDK README, storage in docs/DEPLOYMENT.md (the volume or S3 settings, backing it
-   up with the databases, sizing the disk).
+3. **Web UI (done):** a Checkpoints tab on the run page (step, time, files, size, uploads in
+   progress; a file or all of them as a tar archive; delete), checkpoint count and size in the
+   runs table (a column, shown by default when a run has some).
+4. **Docs (done):** the SDK README, storage in docs/DEPLOYMENT.md (the volume or S3 settings,
+   backing it up with the databases, sizing the disk).
 
 Later: markers at checkpoint steps on charts with that step's metrics, rules for which to keep,
 shards uploaded from every GPU, general artifacts with versions and lineage, logged images and

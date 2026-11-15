@@ -28,6 +28,7 @@
 	import ChartsPanel from '#lib/components/app/ChartsPanel.svelte';
 	import ConsoleLog from '#lib/components/app/ConsoleLog.svelte';
 	import ModelInfo from '#lib/components/app/ModelInfo.svelte';
+	import RunCheckpoints from '#lib/components/app/RunCheckpoints.svelte';
 	import RunConfig from '#lib/components/app/RunConfig.svelte';
 	import RunEnvironmentCards from '#lib/components/app/RunEnvironmentCards.svelte';
 	import KeyValueList from '#lib/components/app/KeyValueList.svelte';
@@ -225,8 +226,14 @@
 		{ id: 'logs', label: 'Logs' },
 		{ id: 'config', label: 'Config' },
 		{ id: 'model', label: 'Model' },
+		{ id: 'checkpoints', label: 'Checkpoints' },
 		{ id: 'overview', label: 'Overview' }
 	];
+	const tabItems = $derived(
+		TAB_ITEMS.map((t) =>
+			t.id === 'checkpoints' ? { ...t, count: run.data?.checkpoints ?? 0 } : t
+		)
+	);
 	const TABS = TAB_ITEMS.map((t) => t.id);
 	let tab = $state(TABS.includes(param('tab') ?? '') ? param('tab')! : 'charts');
 	// System metrics: against time by default, settings of their own.
@@ -523,7 +530,7 @@
 			<UnderlineTabs
 				class="mt-3"
 				label="Run"
-				items={TAB_ITEMS}
+				items={tabItems}
 				current={tab}
 				onSelect={(id) => (tab = id)}
 			/>
@@ -617,6 +624,19 @@
 
 		{#if tab === 'model'}<div role="tabpanel" id="panel-model" aria-labelledby="tab-model">
 				<ModelInfo {project} run={r.id} {running} />
+			</div>{/if}
+		{#if tab === 'checkpoints'}<div
+				role="tabpanel"
+				id="panel-checkpoints"
+				aria-labelledby="tab-checkpoints"
+			>
+				<RunCheckpoints
+					run={r.id}
+					name={r.name}
+					{running}
+					{canEdit}
+					onChanged={() => run.refresh()}
+				/>
 			</div>{/if}
 		{#if tab === 'config'}<div role="tabpanel" id="panel-config" aria-labelledby="tab-config">
 				<RunConfig {project} name={r.name} config={r.config} bind:view={configView} />

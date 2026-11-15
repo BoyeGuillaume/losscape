@@ -234,6 +234,49 @@ async fn upload_resume_commit_download_delete() {
     let (status, _, body) = admin.download(&file(2)).await;
     assert_eq!((status, body.len()), (StatusCode::OK, 0), "an empty file");
 
+    // All of it as one tar archive, decompressed.
+    let (status, headers, body) = admin
+        .download(&format!("/api/v0/checkpoints/{id}/archive"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"ckpt-run-step-1000.tar\""
+    );
+    assert_eq!(
+        headers[header::CONTENT_LENGTH],
+        body.len().to_string().as_str()
+    );
+    let mut archive = tar::Archive::new(body.as_slice());
+    let files: Vec<(String, Vec<u8>)> = archive
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let mut e = e.unwrap();
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut e, &mut data).unwrap();
+            (e.path().unwrap().to_string_lossy().into_owned(), data)
+        })
+        .collect();
+    let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(names, ["model.pt", "cfg/config.json", "empty.txt"]);
+    assert!(files[0].1 == model);
+    assert_eq!(files[1].1, config);
+
+    // The run list counts committed checkpoints.
+    let (_, runs) = admin.json("GET", "/api/v0/projects/test/runs", None).await;
+    let listed = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == run.as_str())
+        .unwrap();
+    assert_eq!(listed["checkpoints"], 1);
+    assert_eq!(
+        listed["checkpoint_bytes"],
+        json!(model.len() + config.len())
+    );
+
     assert_eq!(stored_files(&server), 3, "a stored object per part");
     let (status, _) = admin
         .json("DELETE", &format!("/api/v0/checkpoints/{id}"), None)

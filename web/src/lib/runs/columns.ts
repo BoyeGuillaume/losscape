@@ -7,7 +7,8 @@ import { formatValue } from '#lib/format.js';
 import { isModelMetric } from '#lib/metrics/registry.js';
 import { currentRegistry } from '#lib/metrics/store.svelte.js';
 
-export type ColumnKind = 'state' | 'created' | 'runtime' | 'steps' | 'group' | 'tags' | 'value';
+export type ColumnKind =
+	'state' | 'created' | 'runtime' | 'steps' | 'checkpoints' | 'group' | 'tags' | 'value';
 export type Column = {
 	id: string;
 	/** Key shown in the header; `prefix` above it (config, summary). */
@@ -23,6 +24,13 @@ const BASE: Record<string, Column> = {
 	created: { id: 'created', label: 'Created', width: 112, kind: 'created', numeric: true },
 	runtime: { id: 'runtime', label: 'Runtime', width: 92, kind: 'runtime', numeric: true },
 	steps: { id: 'steps', label: 'Steps', width: 88, kind: 'steps', numeric: true },
+	checkpoints: {
+		id: 'checkpoints',
+		label: 'Checkpoints',
+		width: 120,
+		kind: 'checkpoints',
+		numeric: true
+	},
 	group: { id: 'group', label: 'Group', width: 128, kind: 'group', numeric: false },
 	tags: { id: 'tags', label: 'Tags', width: 168, kind: 'tags', numeric: false }
 };
@@ -60,6 +68,9 @@ export function sortValue(run: RunSummary, id: string, now = Date.now()): unknow
 			return endOf(run, now) - run.created_at_ms;
 		case 'steps':
 			return stepCount(run);
+		case 'checkpoints':
+			// By size: what they cost.
+			return run.checkpoints ? run.checkpoint_bytes : undefined;
 		case 'group':
 			return run.group_name ?? undefined;
 		case 'tags':
@@ -137,6 +148,7 @@ export function defaultColumns(runs: RunSummary[]): string[] {
 		'created',
 		'runtime',
 		'steps',
+		...(sample.some((run) => run.checkpoints > 0) ? ['checkpoints'] : []),
 		'tags',
 		...[...important, ...others.slice(0, Math.max(0, 6 - important.length))].map(
 			(k) => `summary.${k}`

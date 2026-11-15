@@ -15,6 +15,7 @@
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import { duration, formatValue, timeAgo } from '#lib/format.js';
 	import { formatMetric, formatSteps } from '#lib/metric-units.js';
+	import { BYTES, formatUnit } from '#lib/units.js';
 	import type { Change } from '#lib/runs/board.js';
 	import { currentRegistry } from '#lib/metrics/store.svelte.js';
 	import {
@@ -227,6 +228,7 @@
 	/** A cell value: steps and summary metrics in their unit (the exact value is the title). */
 	function formatCell(id: string, value: unknown): string {
 		if (id === 'steps' && typeof value === 'number') return formatSteps(value);
+		if (id === 'checkpoints' && typeof value === 'number') return formatUnit(value, BYTES);
 		if (id.startsWith('summary.')) return formatMetric(id.slice('summary.'.length), value);
 		return formatValue(value);
 	}
@@ -563,6 +565,16 @@
 											? 'No steps logged yet'
 											: `Last step ${run.last_step.toLocaleString('en')}`}
 										>{steps === undefined ? '' : formatSteps(steps)}</span
+									>
+								{:else if c.kind === 'checkpoints'}
+									<span
+										class="truncate"
+										title={run.checkpoints
+											? `${run.checkpoints} checkpoint${run.checkpoints === 1 ? '' : 's'}, ${formatUnit(run.checkpoint_bytes, BYTES)}`
+											: 'No checkpoints'}
+										>{run.checkpoints
+											? `${run.checkpoints} · ${formatUnit(run.checkpoint_bytes, BYTES)}`
+											: ''}</span
 									>
 								{:else if c.kind === 'group'}
 									<span class="truncate">{run.group_name ?? ''}</span>

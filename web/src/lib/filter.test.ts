@@ -20,6 +20,8 @@ function run(overrides: Partial<RunSummary>): RunSummary {
 		abort_requested_at_ms: null,
 		renames: {},
 		rename_scales: {},
+		checkpoints: 0,
+		checkpoint_bytes: 0,
 		heartbeat_at_ms: 0,
 		finished_at_ms: null,
 		summary: {},

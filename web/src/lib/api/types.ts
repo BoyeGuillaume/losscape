@@ -32,6 +32,9 @@ export type RunSummary = {
 	renames: Record<string, string>;
 	/** Factors of renamed metrics, when not 1. */
 	rename_scales: Record<string, number>;
+	/** Checkpoints uploaded, and their size in bytes (as saved, before compression). */
+	checkpoints: number;
+	checkpoint_bytes: number;
 	heartbeat_at_ms: number;
 	finished_at_ms: number | null;
 	summary: Record<string, unknown>;
@@ -205,4 +208,29 @@ export type TagInfo = {
 	color: string | null;
 	description: string;
 	runs: number;
+};
+
+/** A file of a checkpoint. */
+export type CheckpointFile = {
+	index: number;
+	path: string;
+	size: number;
+	stored_size: number;
+	sha256: string;
+	compression: 'none' | 'zstd';
+	parts: number;
+};
+
+/** Files a run saved at a step (docs/ARTIFACTS.md); `files` only from its own endpoint. */
+export type Checkpoint = {
+	id: string;
+	run: string;
+	step: number;
+	state: 'pending' | 'committed';
+	size: number;
+	stored_size: number;
+	file_count: number;
+	created_at_ms: number;
+	committed_at_ms: number | null;
+	files?: CheckpointFile[];
 };

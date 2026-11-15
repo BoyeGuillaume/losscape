@@ -249,7 +249,10 @@ What runs upload with `run.log_checkpoint()` goes to `LOSSCAPE_STORAGE`: the `ch
 volume of `compose.yaml` by default, or an S3-compatible store (`s3://bucket/prefix`, with the
 `AWS_*` settings in `.env`). Either way, everything goes through the server, which checks who asks:
 clients never reach the storage or its credentials. Plan the disk or the bucket for them:
-checkpoints are large and kept until deleted, on the run page or from the SDK. Their files are
+checkpoints are large and kept until deleted, on the run page or from the SDK. With Adam, a
+checkpoint of weights and optimizer state is about three times the weights (12 bytes per
+parameter in fp32: 1.2 GB for 100M parameters), stored a little smaller (zstd saves about 7% on
+fp32, more on bf16); the runs table's Checkpoints column shows what each run keeps. Their files are
 deleted from storage shortly after the checkpoint, run or project is.
 
 ### Backing up

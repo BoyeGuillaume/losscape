@@ -9,6 +9,8 @@ type AppInfo = {
 	protocol: number;
 	favicon: string | null;
 	auth_background: string | null;
+	/** Checkpoints can be uploaded (the server has storage for them). */
+	checkpoints: boolean;
 };
 
 export const app = $state<{ info: AppInfo | null; name: string }>({ info: null, name: '' });
