@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use losscape_core::proto::v0::{Error as ProtoError, RunExitState, RunFinish, RunInit};
-use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
+use losscape_core::{PART_HASH_HEADER, PROTOCOL_HEADER, PROTOCOL_VERSION};
 use prost::Message;
-use reqwest::{StatusCode, header};
+use reqwest::{Method, StatusCode, header};
+use serde_json::Value;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
@@ -36,6 +37,16 @@ pub enum UploadError {
     Unreachable(String),
     #[error("local log: {0}")]
     Local(String),
+}
+
+impl UploadError {
+    /// The server's error code, when it refused.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::Rejected { code, .. } => Some(code),
+            _ => None,
+        }
+    }
 }
 
 impl From<io::Error> for UploadError {
@@ -88,10 +99,69 @@ impl Client {
 
     /// POSTs a protobuf body, retrying network errors and 5xx/429 with backoff.
     pub async fn post(&self, path: &str, body: Bytes, zstd: bool) -> Result<Bytes, UploadError> {
+        self.retrying(path, || {
+            let req = self
+                .http
+                .post(format!("{}/{path}", self.base))
+                .header(header::CONTENT_TYPE, "application/x-protobuf")
+                .body(body.clone());
+            if zstd {
+                req.header(header::CONTENT_ENCODING, "zstd")
+            } else {
+                req
+            }
+        })
+        .await
+    }
+
+    /// A request to the JSON API (checkpoints), retried like [`post`](Self::post).
+    pub async fn json(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, UploadError> {
+        let bytes = self
+            .retrying(path, || {
+                let req = self
+                    .http
+                    .request(method.clone(), format!("{}/{path}", self.base));
+                match body {
+                    Some(body) => req
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(body.to_string()),
+                    None => req,
+                }
+            })
+            .await?;
+        if bytes.is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|e| UploadError::Local(format!("{path}: unexpected answer: {e}")))
+    }
+
+    /// A part of a checkpoint file, with its SHA-256 (hex), retried like [`post`](Self::post).
+    pub async fn put_part(&self, path: &str, body: Bytes, sha256: &str) -> Result<(), UploadError> {
+        self.retrying(path, || {
+            self.http
+                .put(format!("{}/{path}", self.base))
+                .header(PART_HASH_HEADER, sha256)
+                .body(body.clone())
+        })
+        .await
+        .map(|_| ())
+    }
+
+    async fn retrying(
+        &self,
+        path: &str,
+        request: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<Bytes, UploadError> {
         let started = Instant::now();
         let mut delay = Duration::from_millis(100);
         loop {
-            match self.attempt(path, body.clone(), zstd).await {
+            match self.attempt(path, request()).await {
                 Ok(response) => {
                     *self.last_error.lock().expect("not poisoned") = None;
                     return Ok(response);
@@ -112,19 +182,18 @@ impl Client {
         }
     }
 
-    async fn attempt(&self, path: &str, body: Bytes, zstd: bool) -> Result<Bytes, Attempt> {
-        let mut req = self
-            .http
-            .post(format!("{}/{path}", self.base))
+    async fn attempt(&self, path: &str, req: reqwest::RequestBuilder) -> Result<Bytes, Attempt> {
+        let res = req
             .bearer_auth(&self.api_key)
-            .header(header::CONTENT_TYPE, "application/x-protobuf")
             .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
-            .body(body);
-        if zstd {
-            req = req.header(header::CONTENT_ENCODING, "zstd");
-        }
-        let res = req.send().await.map_err(|e| Attempt::Retry(describe(&e)))?;
+            .send()
+            .await
+            .map_err(|e| Attempt::Retry(describe(&e)))?;
         let status = res.status();
+        let json = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .is_some_and(|t| t.as_bytes().starts_with(b"application/json"));
         let bytes = res
             .bytes()
             .await
@@ -132,18 +201,31 @@ impl Client {
         if status.is_success() {
             return Ok(bytes);
         }
-        let error = ProtoError::decode(bytes).unwrap_or_default();
-        if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
-            return Err(Attempt::Retry(format!("HTTP {status} {}", error.code)));
+        // The ingest API answers errors in protobuf, the rest in JSON.
+        let (code, message) = if json {
+            let error: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            let text = |k: &str| error[k].as_str().unwrap_or_default().to_owned();
+            (text("code"), text("message"))
+        } else {
+            let error = ProtoError::decode(bytes).unwrap_or_default();
+            (error.code, error.message)
+        };
+        // `busy`: another request got there first (two at once); worth trying again.
+        // `no_storage`: the server keeps no checkpoints, which waiting won't change.
+        let retry = (status.is_server_error() && code != "no_storage")
+            || status == StatusCode::TOO_MANY_REQUESTS
+            || code == "busy";
+        if retry {
+            return Err(Attempt::Retry(format!("HTTP {status} {code}")));
         }
         Err(Attempt::Fatal(UploadError::Rejected {
             path: path.to_owned(),
-            code: if error.code.is_empty() {
+            code: if code.is_empty() {
                 status.to_string()
             } else {
-                error.code
+                code
             },
-            message: error.message,
+            message,
         }))
     }
 }
@@ -167,6 +249,8 @@ pub struct Live {
     pub finished: Arc<AtomicBool>,
     /// Every seq below this is confirmed (sent to the server as `confirmed_below`).
     pub acked: Arc<AtomicU64>,
+    /// The run exists on the server: its checkpoints can be uploaded.
+    pub initialized: Arc<AtomicBool>,
 }
 
 /// Uploads everything in `dir` and closes the run on the server. Live: follows the log
@@ -185,6 +269,9 @@ pub async fn upload_run(
     client
         .post("runs/init", init.encode_to_vec().into(), false)
         .await?;
+    if let Some(live) = live {
+        live.initialized.store(true, Ordering::SeqCst);
+    }
 
     let mut acked = wal::read_acked(dir)?;
     let mut reader = WalReader::new(dir, acked);

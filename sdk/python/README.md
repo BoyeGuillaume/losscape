@@ -22,6 +22,35 @@ The project must exist: create it in the web UI (New project) and be its owner o
 A run logged to an unknown project is refused by the server; its data stays in the local log,
 so `losscape sync` uploads it once the project is created.
 
+## Checkpoints
+
+Save a checkpoint however you like, then log the folder (or a single file): it uploads in the
+background, beside the metrics, which never wait for it.
+
+```python
+torch.save(model.state_dict(), "ckpt/model.pt")
+torch.save(optimizer.state_dict(), "ckpt/optim.pt")
+run.log_checkpoint("ckpt/")  # at the step last logged; or step=...
+
+# Resuming, after a preempted job:
+run = lsc.init(project="mnist", id=run_id, resume=True)
+if (ckpt := run.latest_checkpoint()) is not None:  # a local folder, or None
+    model.load_state_dict(torch.load(ckpt / "model.pt"))
+```
+
+- `log_checkpoint` copies the folder into the run's local log before returning, so the next
+  save can overwrite it at once (instant on btrfs and XFS). `move=True` hands it over instead.
+- Files upload in parts of 16 MiB, compressed with zstd when that saves at least 5% (configs,
+  mostly-zero tensors), each part checked on arrival. An interrupted upload resumes where it
+  stopped, with the run or with `losscape sync`; the local copy is deleted once uploaded.
+- `finish()` waits for checkpoints as long as they make progress, printing it.
+- One checkpoint per step: the server refuses another at the same step (it stays in the
+  local log, with why). Delete checkpoints with `checkpoint.delete()`.
+- `latest_checkpoint()` and `checkpoint(step)` use a copy still on this machine, or
+  download it, into `checkpoint-cache/<run id>/<step>` under `LOSSCAPE_DIR`, kept until you
+  delete it.
+- The server must have checkpoint storage (`LOSSCAPE_STORAGE`, see docs/DEPLOYMENT.md).
+
 ## Reading runs back
 
 `lsc.Api()` reads what the server stored, for analysis in scripts and notebooks. It connects
@@ -48,6 +77,9 @@ for point in best.scan_history("train/loss"):  # streamed: metric, step, time, v
 - Without `keys`, history has every metric of the run except system metrics
   (`system=True` adds them). `min_step` and `max_step` limit the steps.
 - `api.run(run_id)` gets one run; ids are the ones `lsc.init()` gives (`run.id`).
+- `run.checkpoints` lists its checkpoints by step (`run.checkpoint(step)` for one), with
+  `step`, `size`, `files`; `checkpoint.download(to, files=...)` downloads all of its files or
+  some (checked against their SHA-256), and `checkpoint.delete()` deletes it.
 - Metrics as logged: renames and computed metrics of the web UI aren't applied.
 
 ## How it works

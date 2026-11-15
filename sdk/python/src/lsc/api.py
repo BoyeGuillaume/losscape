@@ -6,6 +6,7 @@
     runs = api.runs("mnist")
     best = max(runs, key=lambda r: r.summary.get("val/acc", 0))
     df = best.history(["train/loss", "val/acc"])  # pandas: pip install 'losscape-sdk[pandas]'
+    folder = best.checkpoints[-1].download(files="model.pt")
 
 Only the standard library is needed, except for ``to_pandas()`` and ``history()``.
 """
@@ -13,6 +14,7 @@ Only the standard library is needed, except for ``to_pandas()`` and ``history()`
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -21,9 +23,10 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
-__all__ = ["Api", "ApiError", "Point", "Run", "Runs"]
+__all__ = ["Api", "ApiError", "Checkpoint", "CheckpointFile", "Point", "Run", "Runs"]
 
 #: Query strings are kept under this, as servers and proxies limit URLs.
 _MAX_QUERY_BYTES = 6000
@@ -45,6 +48,15 @@ class Point(NamedTuple):
     step: int
     time: datetime
     value: float
+
+
+class CheckpointFile(NamedTuple):
+    """A file of a checkpoint: its path in the checkpoint's folder, size in bytes and the
+    SHA-256 of its content (hex)."""
+
+    path: str
+    size: int
+    sha256: str
 
 
 class Api:
@@ -86,10 +98,14 @@ class Api:
 
     # ---- HTTP
 
-    def _open(self, path: str, params: Iterable[tuple[str, Any]] = ()) -> Any:
+    def _open(
+        self, path: str, params: Iterable[tuple[str, Any]] = (), *, method: str = "GET"
+    ) -> Any:
         query = urllib.parse.urlencode(list(params))
         url = f"{self.server}/api/v0{path}" + (f"?{query}" if query else "")
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self._key}"})
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {self._key}"}, method=method
+        )
         try:
             return urllib.request.urlopen(req, timeout=self.timeout)  # noqa: S310 - http(s) only
         except urllib.error.HTTPError as err:
@@ -137,6 +153,19 @@ class Run:
     @property
     def notes(self) -> str:
         return self._details().get("notes") or ""
+
+    @property
+    def checkpoints(self) -> list[Checkpoint]:
+        """Checkpoints uploaded for this run, by step."""
+        listed = self._api._json(f"/runs/{_quote(self.id)}/checkpoints")
+        return [Checkpoint(self._api, c) for c in listed]
+
+    def checkpoint(self, step: int) -> Checkpoint:
+        """The checkpoint at ``step``. Raises ``KeyError`` if there's none."""
+        for c in self.checkpoints:
+            if c.step == step:
+                return c
+        raise KeyError(f"run {self.name} has no checkpoint at step {step}")
 
     @property
     def metrics(self) -> dict[str, int]:
@@ -195,6 +224,81 @@ class Run:
         table = long.pivot(index="step", columns="metric", values="value")
         table.columns.name = None
         return table.reset_index()
+
+
+class Checkpoint:
+    """A checkpoint of a run: the files saved at a step, as uploaded with
+    :meth:`lsc.Run.log_checkpoint`. ``size`` is in bytes (``stored_size``: compressed)."""
+
+    def __init__(self, api: Api, data: dict[str, Any]):
+        self._api = api
+        self.id: str = data["id"]
+        self.run_id: str = data["run"].replace("-", "")
+        self.step: int = data["step"]
+        self.size: int = data["size"]
+        self.stored_size: int = data["stored_size"]
+        self.file_count: int = data["file_count"]
+        self.created_at = _from_ms(data["created_at_ms"])
+        self._files: list[dict[str, Any]] | None = data.get("files")
+
+    def __repr__(self) -> str:
+        return f"<Checkpoint step {self.step} of run {self.run_id}, {self.file_count} files>"
+
+    def _file_list(self) -> list[dict[str, Any]]:
+        if self._files is None:
+            self._files = self._api._json(f"/checkpoints/{_quote(self.id)}")["files"]
+        return self._files
+
+    @property
+    def files(self) -> list[CheckpointFile]:
+        return [CheckpointFile(f["path"], f["size"], f["sha256"]) for f in self._file_list()]
+
+    def download(
+        self, to: str | os.PathLike[str] | None = None, files: str | Iterable[str] | None = None
+    ) -> Path:
+        """Downloads the checkpoint's files (or only ``files``, paths as in :attr:`files`)
+        into the folder ``to`` (default ``checkpoints/<run id>/<step>``), checking each
+        against its SHA-256. Returns the folder."""
+        folder = Path(to) if to is not None else Path("checkpoints", self.run_id, str(self.step))
+        wanted = None if files is None else {files} if isinstance(files, str) else set(files)
+        chosen = [f for f in self._file_list() if wanted is None or f["path"] in wanted]
+        missing = (wanted or set()) - {f["path"] for f in chosen}
+        if missing:
+            raise KeyError(f"not in this checkpoint: {', '.join(sorted(missing))}")
+        for f in chosen:
+            self._download_file(f, folder / _safe_path(f["path"]))
+        return folder
+
+    def _download_file(self, f: dict[str, Any], target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(target.name + ".part")
+        digest = hashlib.sha256()
+        with (
+            self._api._open(f"/checkpoints/{_quote(self.id)}/files/{f['index']}") as res,
+            open(partial, "wb") as out,
+        ):
+            while chunk := res.read(1 << 20):
+                digest.update(chunk)
+                out.write(chunk)
+        if digest.hexdigest() != f["sha256"]:
+            partial.unlink()
+            raise ApiError(f"{f['path']}: downloaded content doesn't match its SHA-256")
+        os.replace(partial, target)
+
+    def delete(self) -> None:
+        """Deletes the checkpoint from the server (needs edit rights on the project)."""
+        self._api._open(f"/checkpoints/{_quote(self.id)}", method="DELETE").close()
+
+
+def _safe_path(path: str) -> Path:
+    """A checkpoint file's path, refused if it could land outside the download folder (the
+    server already refuses those)."""
+    parts = PurePosixPath(path).parts
+    if not parts or path.startswith("/") or any(p in ("", ".", "..") for p in parts):
+        raise ApiError(f"refusing to write {path!r} outside the download folder")
+    if any("\\" in p or ":" in p for p in parts) and os.name == "nt":
+        raise ApiError(f"refusing to write {path!r}: not a valid file name here")
+    return Path(*parts)
 
 
 class Runs(list[Run]):

@@ -22,7 +22,7 @@ use crate::state::AppState;
 use crate::storage::Storage;
 
 /// Bytes of a file per part, before compression.
-pub const PART_SIZE: u64 = 16 * 1024 * 1024;
+pub const PART_SIZE: u64 = losscape_core::CHECKPOINT_PART_SIZE;
 /// Most a part can take stored: zstd's worst case on data it can't compress, and some room.
 pub const MAX_STORED_PART: usize = PART_SIZE as usize + PART_SIZE as usize / 64 + 64 * 1024;
 pub const MAX_FILES: usize = 10_000;
@@ -32,7 +32,7 @@ const MAX_NAME_BYTES: usize = 255;
 const PENDING_HOURS: i32 = 24;
 const CLEAN_EVERY: Duration = Duration::from_secs(60);
 /// Header with the SHA-256 of a part, as sent (hex).
-const PART_HASH: &str = "x-losscape-sha256";
+const PART_HASH: &str = losscape_core::PART_HASH_HEADER;
 
 #[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]

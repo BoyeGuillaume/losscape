@@ -1,5 +1,6 @@
 """The query API (lsc.Api) against a fake server answering as the real one does."""
 
+import hashlib
 import json
 import math
 import subprocess
@@ -34,8 +35,33 @@ RUN_JSON = {
 }
 
 
+CKPT = "01a1a361-acce-72d1-ada3-000000000001"
+CKPT_FILES = {"model.pt": b"weights" * 1000, "tok/vocab.json": b"{}"}
+CKPT_JSON = {
+    "id": CKPT,
+    "run": RUN,
+    "step": 100,
+    "state": "committed",
+    "size": sum(map(len, CKPT_FILES.values())),
+    "stored_size": 40,
+    "file_count": 2,
+    "created_at_ms": 1_700_000_000_000,
+    "committed_at_ms": 1_700_000_001_000,
+}
+CKPT_DETAIL = {
+    **CKPT_JSON,
+    "files": [
+        {"index": i, "path": p, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+        for i, (p, b) in enumerate(CKPT_FILES.items())
+    ],
+}
+
+
 class FakeServer(BaseHTTPRequestHandler):
     requests: list[str] = []
+    # What file downloads answer instead, by index (to corrupt one).
+    served: dict[int, bytes] = {}
+    deleted: list[str] = []
 
     def log_message(self, *args):
         pass
@@ -77,7 +103,20 @@ class FakeServer(BaseHTTPRequestHandler):
                         time = f"2023-11-14 22:13:2{step}.000"
                         lines.append(f'"brave-falcon-1","{RUN}","{key}",{step},"{time}",{text}')
             return self.send(200, ("\n".join(lines) + "\n").encode(), "text/csv")
+        if url.path == f"/api/v0/runs/{RUN.replace('-', '')}/checkpoints":
+            return self.send(200, [CKPT_JSON])
+        if url.path == f"/api/v0/checkpoints/{CKPT}":
+            return self.send(200, FakeServer.detail)
+        if url.path.startswith(f"/api/v0/checkpoints/{CKPT}/files/"):
+            index = int(url.path.rsplit("/", 1)[1])
+            body = FakeServer.served.get(index, list(CKPT_FILES.values())[index])
+            return self.send(200, body, "application/octet-stream")
         return self.send(404, {"code": "unknown_endpoint", "message": "no such endpoint"})
+
+    def do_DELETE(self):
+        FakeServer.deleted.append(self.path)
+        self.send_response(204)
+        self.end_headers()
 
 
 @pytest.fixture
@@ -85,6 +124,9 @@ def api():
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeServer)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     FakeServer.requests = []
+    FakeServer.served = {}
+    FakeServer.deleted = []
+    FakeServer.detail = CKPT_DETAIL
     yield Api(f"http://127.0.0.1:{server.server_address[1]}", KEY)
     server.shutdown()
 
@@ -168,3 +210,37 @@ def test_logging_doesnt_load_the_http_client():
     code = "import sys, lsc; print('urllib.request' in sys.modules); print(lsc.Api.__name__)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.split() == ["False", "Api"]
+
+
+def test_checkpoints_download_and_delete(api, tmp_path):
+    (ckpt,) = api.run(RUN).checkpoints
+    assert (ckpt.step, ckpt.file_count, ckpt.run_id) == (100, 2, RUN.replace("-", ""))
+    assert [f.path for f in ckpt.files] == ["model.pt", "tok/vocab.json"]
+    assert api.run(RUN).checkpoint(100).id == CKPT
+    with pytest.raises(KeyError):
+        api.run(RUN).checkpoint(5)
+
+    folder = ckpt.download(tmp_path / "all")
+    assert (folder / "model.pt").read_bytes() == CKPT_FILES["model.pt"]
+    assert (folder / "tok" / "vocab.json").read_bytes() == b"{}"
+    some = ckpt.download(tmp_path / "some", files="tok/vocab.json")
+    assert [p.name for p in some.rglob("*") if p.is_file()] == ["vocab.json"]
+    with pytest.raises(KeyError, match="nope"):
+        ckpt.download(tmp_path / "x", files=["nope"])
+
+    ckpt.delete()
+    assert FakeServer.deleted == [f"/api/v0/checkpoints/{CKPT}"]
+
+
+def test_checkpoint_downloads_are_checked(api, tmp_path):
+    ckpt = api.run(RUN).checkpoints[0]
+    FakeServer.served = {0: b"tampered"}
+    with pytest.raises(ApiError, match="SHA-256"):
+        ckpt.download(tmp_path, files="model.pt")
+    assert list(tmp_path.iterdir()) == [], "nothing left behind"
+
+    for path in ["../escape", "/etc/passwd", "a/../../b"]:
+        FakeServer.detail = {**CKPT_DETAIL, "files": [{**CKPT_DETAIL["files"][1], "path": path}]}
+        with pytest.raises(ApiError, match="outside"):
+            api.run(RUN).checkpoints[0].download(tmp_path / "in")
+    assert not (tmp_path / "escape").exists()

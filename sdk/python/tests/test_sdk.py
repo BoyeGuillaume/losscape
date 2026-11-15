@@ -256,3 +256,42 @@ def test_the_local_log_is_private(tmp_path):
     assert files
     for file in files:
         assert stat.S_IMODE(file.stat().st_mode) == 0o600, file
+
+
+def test_checkpoints_are_copied_and_kept_offline(offline):
+    src = offline / "ckpt"
+    (src / "sub").mkdir(parents=True)
+    (src / "model.pt").write_bytes(b"v1")
+    (src / "sub" / "opt.pt").write_bytes(b"adam")
+    run = lsc.init(project="p")
+    assert run.latest_checkpoint() is None
+    for _ in range(10):
+        run.log({"loss": 1.0})
+    run.log_checkpoint(src)  # at the step last logged: 9
+    (src / "model.pt").write_bytes(b"v2")  # saved again: the logged copy keeps v1
+    run.log_checkpoint(src / "model.pt", step=20)
+    with pytest.raises(FileExistsError):
+        run.log_checkpoint(src, step=20)
+    with pytest.raises(FileNotFoundError):
+        run.log_checkpoint(offline / "missing", step=30)
+
+    assert (run.checkpoint(9) / "model.pt").read_bytes() == b"v1"
+    assert (run.checkpoint(9) / "sub" / "opt.pt").read_bytes() == b"adam"
+    latest = run.latest_checkpoint()
+    assert latest.name == "20" and (latest / "model.pt").read_bytes() == b"v2"
+    with pytest.raises(KeyError):
+        run.checkpoint(5)
+
+    run.log_checkpoint(src, step=40, move=True)
+    assert not src.exists()
+    assert run.finish() == "saved_locally"
+    assert sorted(p.name for p in (run.dir / "checkpoints").iterdir()) == ["20", "40", "9"]
+    with pytest.raises(RuntimeError, match="finished"):
+        run.log_checkpoint(offline, step=50)
+
+
+def test_checkpoints_in_disabled_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOSSCAPE_MODE", "disabled")
+    run = lsc.init(project="p")
+    run.log_checkpoint(tmp_path / "anything")
+    assert run.latest_checkpoint() is None

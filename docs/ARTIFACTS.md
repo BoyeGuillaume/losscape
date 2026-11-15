@@ -1,8 +1,8 @@
 # Checkpoints (design)
 
 What training runs save every so many steps, uploaded to the server with the run, so a run can be
-resumed from anywhere and its weights downloaded later. The server's part is built (storage,
-endpoints, clean-up); the SDK and the web UI's are next. General artifacts (datasets, models with
+resumed from anywhere and its weights downloaded later. The server and the SDK are built; the
+web UI is next. General artifacts (datasets, models with
 versions and lineage) and logged media come later, on the same storage.
 
 ## Using them
@@ -10,7 +10,7 @@ versions and lineage) and logged media come later, on the same storage.
 ```python
 torch.save(model.state_dict(), "ckpt/model.pt")      # save however you like
 torch.save(optimizer.state_dict(), "ckpt/optim.pt")
-run.log_checkpoint("ckpt/", step=step)                # returns at once; uploads in the background
+run.log_checkpoint("ckpt/", step=step)                # copies, then uploads in the background
 
 # Resuming, after a preempted job:
 run = lsc.init(id=run_id, resume=True)
@@ -18,15 +18,15 @@ ckpt = run.latest_checkpoint()                        # a local folder: kept, or
 model.load_state_dict(torch.load(ckpt / "model.pt"))
 
 # Later, from anywhere:
-lsc.Api().run(run_id).checkpoints[-1].download("model.pt")
+lsc.Api().run(run_id).checkpoints[-1].download(files="model.pt")
 ```
 
 - `log_checkpoint` copies the folder into the run's local folder before returning: scripts often
   save to the same path every time, and the next save would change files mid-upload. On a disk that
   copies instantly (btrfs, XFS) it costs nothing; `move=True` hands the folder over instead.
 - The upload runs in the background, on its own queue: metrics never wait behind a checkpoint.
-  `run.finish()` waits for it with progress; an interrupted upload resumes, also with
-  `losscape sync`. The local copy is deleted once the server has it all, unless asked to keep it.
+  `run.finish()` waits for it as long as it progresses; an interrupted upload resumes, also
+  with `losscape sync`. The local copy is deleted once the server has it all.
 - Checkpoints are deleted by hand, on the run's Checkpoints tab or with `.delete()`. Rules to keep
   only some (the last few, the best by a metric) come later.
 
@@ -69,8 +69,8 @@ server, which checks who asks: clients never reach the storage, or its credentia
 
 Reading: `GET /api/v0/runs/{run}/checkpoints` (committed ones, by step; `?pending=true` for the
 others), `GET /api/v0/checkpoints/{id}` (with its files), and
-`GET /api/v0/checkpoints/{id}/files/{file}`: decompressed, or as stored with `?stored=true` (the
-SDK decompresses it), always as a download. `DELETE /api/v0/checkpoints/{id}` (editors).
+`GET /api/v0/checkpoints/{id}/files/{file}`: decompressed, or as stored with `?stored=true`,
+always as a download. `DELETE /api/v0/checkpoints/{id}` (editors).
 
 ## Data (Postgres)
 
@@ -96,10 +96,12 @@ trigger; the server deletes those files within a minute.
    expiry of pending checkpoints, deletion with runs and projects. Tested end to end in
    crates/losscape-server/tests/checkpoints.rs: full cycle, resuming, corrupt parts, permissions,
    paths, clean-up.
-2. **SDK:** `log_checkpoint` (snapshot, local log, offline), the uploader in the Rust core (queue,
-   parallel, compression, packs, resume), `finish()` and `sync`, `latest_checkpoint()` and
-   `checkpoint(step)` with download, and the query API (`checkpoints`, `download`, `delete`).
-   End-to-end tests, a run killed mid-upload among them.
+2. **SDK (done):** `log_checkpoint` (a copy or a move into the run's local log, offline too),
+   the uploader in the Rust core (beside the metrics, 4 parts at a time, compression decided
+   once per file, resuming), `finish()` and `sync`, `latest_checkpoint()` and `checkpoint(step)`
+   (a local copy, linked, or a download), and the query API (`checkpoints`, `download`,
+   `delete`). Tested end to end in crates/losscape-client/tests/e2e.rs (a run cut short
+   mid-upload, offline, refused) and sdk/python/tests.
 3. **Web UI:** a Checkpoints tab on the run page (step, time, size, files, status; download and
    delete), checkpoint count and size in the runs table.
 4. **Docs:** the SDK README, storage in docs/DEPLOYMENT.md (the volume or S3 settings, backing it

@@ -6,6 +6,7 @@
 //! `sync` uploads whatever is left.
 
 pub mod buffer;
+mod checkpoint;
 pub mod console;
 mod env;
 mod redact;

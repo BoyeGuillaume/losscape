@@ -234,3 +234,34 @@ def test_console_and_system_metrics_are_captured(tmp_path, terminal):
     assert environment["python"]["executable"] == sys.executable
     assert any(p.startswith("pytest==") for p in environment["packages"])
     assert environment["cpu"]["threads"] >= 1
+
+
+def test_checkpoints_round_trip(tmp_path):
+    src = tmp_path / "ckpt"
+    src.mkdir()
+    weights = os.urandom(20 << 20)  # two parts
+    (src / "model.pt").write_bytes(weights)
+    (src / "config.json").write_text('{"lr": 0.001}\n' * 100)
+    run = lsc.init(project="pytest-e2e", mode="online", server=SERVER, dir=tmp_path / "logs")
+    run.log({"loss": 1.0}, step=99)
+    run.log_checkpoint(src)
+    assert run.finish() == "uploaded"
+
+    (ckpt,) = lsc.Api(SERVER).run(run.id).checkpoints
+    assert (ckpt.step, ckpt.file_count, ckpt.size) == (99, 2, len(weights) + 1400)
+    folder = ckpt.download(tmp_path / "back")
+    assert (folder / "model.pt").read_bytes() == weights
+
+    resumed = lsc.init(
+        project="pytest-e2e",
+        mode="online",
+        server=SERVER,
+        dir=tmp_path / "logs",
+        id=run.id,
+        resume=True,
+    )
+    latest = resumed.latest_checkpoint()
+    assert latest.name == "99" and (latest / "model.pt").read_bytes() == weights
+    resumed.finish()
+    ckpt.delete()
+    assert lsc.Api(SERVER).run(run.id).checkpoints == []

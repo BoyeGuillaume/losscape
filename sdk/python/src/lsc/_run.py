@@ -9,6 +9,7 @@ import math
 import os
 import platform
 import re
+import shutil
 import signal
 import sys
 import threading
@@ -126,9 +127,11 @@ class Run:
         config: Mapping[str, Any],
         mode: str,
         start_step: int = 0,
+        server_args: Mapping[str, str] | None = None,
     ) -> None:
         self._native = native
         self._mode = mode
+        self._server_args = dict(server_args or {})
         self._pid = os.getpid()
         self._step = start_step
         self._finished = False
@@ -205,6 +208,98 @@ class Run:
                 raise TypeError(f"log() takes a dict of metrics, got {type(data).__name__}")
             data = dict(data)
         native.log(data, step)
+
+    def log_checkpoint(
+        self, path: str | os.PathLike[str], step: int | None = None, *, move: bool = False
+    ) -> None:
+        """Upload a checkpoint: the folder (or single file) ``path``, as saved at ``step``
+        (default: the step last logged).
+
+        Copied into the run's local folder before returning, so the script can save over it
+        straight away (on btrfs or XFS the copy is instant); ``move=True`` hands it over
+        instead. Then uploaded in the background, beside metrics, which never wait for it;
+        ``finish()`` waits as long as it progresses. What isn't uploaded by then stays for
+        ``losscape sync``. One checkpoint per step: delete one on the server to upload
+        another at its step.
+        """
+        native = self._native
+        if native is None:
+            return
+        if self._finished:
+            raise RuntimeError(f"run {self.name} is finished")
+        if self._pid != _Process.pid:
+            self._warn_fork()
+            return
+        if step is None:
+            step = max(self._step - 1, 0)
+        elif step < 0:
+            raise ValueError("step must be >= 0")
+        native.log_checkpoint(Path(path), step, move)
+
+    def latest_checkpoint(self) -> Path | None:
+        """The run's last checkpoint as a local folder, or None if it has none. For
+        resuming: after ``lsc.init(id=..., resume=True)``, load from it.
+
+        A checkpoint still on this machine is used as is (linked, not copied); others are
+        downloaded (online). Both go to ``checkpoint-cache/<run id>/<step>`` in the local
+        logs folder (``LOSSCAPE_DIR``), kept until deleted.
+        """
+        return self._checkpoint(None)
+
+    def checkpoint(self, step: int) -> Path:
+        """The checkpoint at ``step`` as a local folder, like :meth:`latest_checkpoint`.
+        Raises ``KeyError`` if there's none."""
+        path = self._checkpoint(step)
+        if path is None:
+            raise KeyError(f"run {self.name} has no checkpoint at step {step}")
+        return path
+
+    def _checkpoint(self, step: int | None) -> Path | None:
+        native = self._native
+        if native is None:
+            return None
+        # Listed before asking the server: one uploaded meanwhile is then on the server.
+        local = dict(native.local_checkpoints())
+        remote = self._remote_checkpoints()
+        steps = local.keys() | remote.keys()
+        if step is None:
+            if not steps:
+                return None
+            step = max(steps)
+        elif step not in steps:
+            return None
+        cache = Path(native.dir).parent.parent / "checkpoint-cache" / self.id / str(step)
+        if cache.exists():
+            return cache
+        partial = cache.with_name(f".{step}.partial")
+        shutil.rmtree(partial, ignore_errors=True)
+        try:
+            if step in local:
+                _link_tree(Path(local[step]), partial)
+            else:
+                remote[step].download(partial)
+        except FileNotFoundError:
+            # Uploaded (and deleted here) while linking: from the server, then.
+            shutil.rmtree(partial, ignore_errors=True)
+            remote = self._remote_checkpoints()
+            if step not in remote:
+                raise
+            remote[step].download(partial)
+        os.replace(partial, cache)
+        return cache
+
+    def _remote_checkpoints(self) -> dict[int, Any]:
+        if not self._server_args:
+            return {}
+        from lsc.api import Api, ApiError
+
+        api = Api(self._server_args["server"], self._server_args["api_key"])
+        try:
+            return {c.step: c for c in api.run(self.id).checkpoints}
+        except ApiError as err:
+            if err.status == 404:  # not on the server yet
+                return {}
+            raise
 
     def describe_model(
         self,
@@ -283,7 +378,7 @@ class Run:
         if outcome == "uploaded":
             _say(f"run {self.name} uploaded")
         elif outcome == "saved_locally":
-            if message != "offline mode":
+            if pending and message != "offline mode":
                 message = f"{pending} batch(es) not uploaded yet ({message})"
             _say(f"run {self.name}: {message}; saved in {self._native.dir}.")
             _say("upload it with `losscape sync`")
@@ -319,6 +414,19 @@ class Run:
                 f"child ({_Process.pid}) is ignored. Log from the parent, or call "
                 "lsc.init() in the child."
             )
+
+
+def _link_tree(src: Path, dst: Path) -> None:
+    """Hard links where possible (instant, no space), copies otherwise."""
+    for path in src.rglob("*"):
+        if path.is_dir():
+            continue
+        target = dst / path.relative_to(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(path, target)
+        except OSError:
+            shutil.copy2(path, target)
 
 
 _active_runs: set[Run] = set()
@@ -509,7 +617,15 @@ def init(
         **server_args,
     )
     start_step = native.next_step or 0
-    run = Run(native, project=project, name=name, config=config, mode=mode, start_step=start_step)
+    run = Run(
+        native,
+        project=project,
+        name=name,
+        config=config,
+        mode=mode,
+        start_step=start_step,
+        server_args=server_args,
+    )
     with _lock:
         _active_runs.add(run)
     lsc.run = run

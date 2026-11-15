@@ -13,9 +13,10 @@ use losscape_core::ids::RunId;
 use losscape_core::proto::v0::{Ack, LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse};
 use prost::Message;
 use serde_json::{Map, Value};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 use crate::buffer::Buffer;
+use crate::checkpoint::{self, Progress};
 use crate::console::{Console, MAX_LINES_PER_BATCH};
 use crate::env::Extra;
 use crate::system::Sampler;
@@ -134,7 +135,10 @@ struct Shared {
     wake: Notify,
     finish: Mutex<Option<RunFinish>>,
     /// Stop uploading (finish timed out).
-    cancel: Notify,
+    cancel: watch::Sender<bool>,
+    /// A checkpoint was logged.
+    checkpoint_wake: Notify,
+    progress: Progress,
     outcome: Mutex<Option<FinishOutcome>>,
     done: Condvar,
     /// Batches written to the local log so far (= next seq).
@@ -170,6 +174,7 @@ impl Run {
         let lock = wal::try_lock(&dir)
             .map_err(local)?
             .ok_or(StartError::InUse(run_id))?;
+        checkpoint::remove_partials(&dir);
         let mut writer = WalWriter::open(&dir).map_err(local)?;
         let has_local_log = dir.join(INIT_FILE).exists();
 
@@ -226,7 +231,9 @@ impl Run {
             console: Arc::new(Mutex::new(Console::new(first_console_line))),
             wake: Notify::new(),
             finish: Mutex::default(),
-            cancel: Notify::new(),
+            cancel: watch::Sender::new(false),
+            checkpoint_wake: Notify::new(),
+            progress: Progress::default(),
             outcome: Mutex::default(),
             done: Condvar::new(),
             written: AtomicU64::new(writer.next_seq()),
@@ -279,6 +286,7 @@ impl Run {
             lock,
             writer,
             init,
+            run_id,
             client,
             interval: opts.batch_interval,
             python_version: opts.python_version,
@@ -382,8 +390,32 @@ impl Run {
         self.buffer().update_models(update);
     }
 
-    /// Flushes everything to the local log, then waits up to `timeout` for the upload.
-    /// Later calls return the first outcome.
+    /// Logs `src` (a folder, or one file) as the run's checkpoint at `step`: copied (or with
+    /// `take`, moved) into the run's local folder before returning, then uploaded in the
+    /// background.
+    pub fn log_checkpoint(&self, src: &Path, step: u64, take: bool) -> io::Result<()> {
+        if std::process::id() != self.owner_pid {
+            return Err(io::Error::other("this run belongs to the parent process"));
+        }
+        // Held while copying: finish waits for a checkpoint being logged.
+        let thread = self.thread.lock().expect("not poisoned");
+        if thread.is_none() {
+            return Err(io::Error::other("the run is finished"));
+        }
+        checkpoint::snapshot(&self.dir, src, step, take)?;
+        self.shared.checkpoint_wake.notify_one();
+        Ok(())
+    }
+
+    /// Checkpoints of this run still in its local folder (not uploaded yet, or refused), by
+    /// step, with where their files are. The uploader deletes each once uploaded.
+    pub fn local_checkpoints(&self) -> io::Result<Vec<(u64, PathBuf)>> {
+        checkpoint::local_files(&self.dir)
+    }
+
+    /// Flushes everything to the local log, then waits up to `timeout` for the upload, longer
+    /// while checkpoints upload (as long as they progress). Later calls return the first
+    /// outcome.
     pub fn finish(&self, state: RunExitState, exit_code: i32, timeout: Duration) -> FinishOutcome {
         if std::process::id() != self.owner_pid {
             return FinishOutcome::Failed("this run belongs to the parent process".into());
@@ -410,8 +442,20 @@ impl Run {
         });
         self.shared.wake.notify_one();
 
-        if self.wait_outcome(Some(timeout)).is_none() {
-            self.shared.cancel.notify_one();
+        let progress = &self.shared.progress;
+        let mut sent = progress.sent.load(Ordering::SeqCst);
+        while self.wait_outcome(Some(timeout)).is_none() {
+            let now = progress.sent.load(Ordering::SeqCst);
+            if timeout.is_zero() || now == sent {
+                self.shared.cancel.send_replace(true);
+                break;
+            }
+            eprintln!(
+                "losscape: uploading checkpoints: {} of {}",
+                format_bytes(now),
+                format_bytes(progress.total.load(Ordering::SeqCst))
+            );
+            sent = now;
         }
         thread.join().ok();
         self.wait_outcome(None)
@@ -454,6 +498,7 @@ struct Background {
     lock: RunLock,
     writer: WalWriter,
     init: RunInit,
+    run_id: RunId,
     client: Option<Client>,
     interval: Duration,
     python_version: String,
@@ -508,11 +553,28 @@ impl Background {
                 Err(err) => FinishOutcome::Failed(format!("writing local log: {err}")),
             };
         };
+        let run_id = self.run_id.to_string();
+        let mut cancelled = shared.cancel.subscribe();
         let uploader = async {
+            // Metrics and checkpoints upload side by side: metrics never wait behind a
+            // checkpoint. `Some`: both done, with why checkpoints stay locally, if any.
+            let both = async {
+                tokio::try_join!(
+                    upload_run(client, &self.dir, Some(&shared.live)),
+                    checkpoint::upload_live(
+                        client,
+                        &self.dir,
+                        &run_id,
+                        &shared.live,
+                        &shared.checkpoint_wake,
+                        &shared.progress,
+                    ),
+                )
+            };
             let result = tokio::select! {
-                result = upload_run(client, &self.dir, Some(&shared.live)) => result.map(|()| true),
+                result = both => result.map(|((), checkpoints)| Some(checkpoints)),
                 _ = heartbeat(client, &self.init.run_id, &self.shared.abort) => unreachable!("heartbeat never ends"),
-                _ = shared.cancel.notified() => Ok(false),
+                _ = cancelled.wait_for(|cancel| *cancel) => Ok(None),
             };
             if let Err(err) = &result {
                 eprintln!(
@@ -524,16 +586,28 @@ impl Background {
         };
         match tokio::join!(batcher, uploader) {
             (Err(err), _) => FinishOutcome::Failed(format!("writing local log: {err}")),
-            (Ok(()), Ok(true)) => FinishOutcome::Uploaded,
-            (Ok(()), Ok(false)) => FinishOutcome::SavedLocally {
-                pending_batches: pending(shared),
-                reason: client
+            (Ok(()), Ok(Some(None))) => FinishOutcome::Uploaded,
+            (Ok(()), Ok(Some(Some(reason)))) => FinishOutcome::SavedLocally {
+                pending_batches: 0,
+                reason,
+            },
+            (Ok(()), Ok(None)) => {
+                let mut reason = client
                     .last_error
                     .lock()
                     .expect("not poisoned")
                     .clone()
-                    .unwrap_or_else(|| "upload timed out".into()),
-            },
+                    .unwrap_or_else(|| "upload timed out".into());
+                let waiting = checkpoint::ready(&self.dir).map_or(0, |c| c.len());
+                if waiting > 0 {
+                    let s = if waiting == 1 { "" } else { "s" };
+                    reason = format!("{reason}; {waiting} checkpoint{s} not uploaded yet");
+                }
+                FinishOutcome::SavedLocally {
+                    pending_batches: pending(shared),
+                    reason,
+                }
+            }
             (Ok(()), Err(err)) => FinishOutcome::Failed(err.to_string()),
         }
     }
@@ -600,6 +674,14 @@ async fn batch_loop(
             shared.live.notify.notify_one();
             return Ok(());
         }
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    match bytes {
+        0..1_000_000 => format!("{:.1} kB", bytes as f64 / 1e3),
+        1_000_000..1_000_000_000 => format!("{:.1} MB", bytes as f64 / 1e6),
+        _ => format!("{:.2} GB", bytes as f64 / 1e9),
     }
 }
 

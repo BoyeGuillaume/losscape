@@ -6,6 +6,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::checkpoint::{self, Progress};
 use crate::upload::{Client, UploadError, upload_run};
 use crate::wal;
 
@@ -52,13 +53,24 @@ pub fn sync(root: &Path, server: &str, api_key: &str) -> io::Result<Vec<SyncResu
         let status = match wal::try_lock(&dir)? {
             None => SyncStatus::InUse,
             Some(lock) => {
-                let result = runtime.block_on(upload_run(&client, &dir, None));
+                checkpoint::remove_partials(&dir);
+                let result = runtime.block_on(async {
+                    upload_run(&client, &dir, None).await?;
+                    checkpoint::upload_ready(&client, &dir, &run_id, &Progress::default()).await
+                });
                 drop(lock);
                 match result {
-                    Ok(()) => {
-                        fs::remove_dir_all(&dir)?;
-                        SyncStatus::Uploaded
-                    }
+                    Ok(()) => match checkpoint::refused(&dir)?.first() {
+                        // Kept, with the run's local log, until deleted by hand.
+                        Some((step, reason)) => SyncStatus::Failed(format!(
+                            "checkpoint at step {step} refused by the server: {reason} (its files are in {})",
+                            dir.join(checkpoint::DIR).join(step.to_string()).display()
+                        )),
+                        None => {
+                            fs::remove_dir_all(&dir)?;
+                            SyncStatus::Uploaded
+                        }
+                    },
                     Err(UploadError::Unreachable(reason)) => {
                         SyncStatus::Failed(format!("server unreachable: {reason}"))
                     }

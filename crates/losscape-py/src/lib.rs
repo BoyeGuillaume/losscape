@@ -85,6 +85,18 @@ impl NativeRun {
         Ok(())
     }
 
+    /// Copies (or with `take`, moves) a folder or file into the run's local folder as its
+    /// checkpoint at `step`; uploaded in the background. Releases the GIL while copying.
+    fn log_checkpoint(&self, py: Python<'_>, path: PathBuf, step: u64, take: bool) -> PyResult<()> {
+        py.detach(|| self.run.log_checkpoint(&path, step, take))?;
+        Ok(())
+    }
+
+    /// Checkpoints still in the run's local folder, as (step, files folder), by step.
+    fn local_checkpoints(&self) -> PyResult<Vec<(u64, PathBuf)>> {
+        Ok(self.run.local_checkpoints()?)
+    }
+
     /// Returns (outcome, message, pending batches); outcome is "uploaded",
     /// "saved_locally" or "failed". Releases the GIL while waiting.
     fn finish(
