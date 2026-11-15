@@ -19,7 +19,9 @@ use crate::config::BrandingImage;
 use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
-use crate::{auth, board, history, ingest, live, metric_defs, projects, read, runs, tags};
+use crate::{
+    auth, board, checkpoints, history, ingest, live, metric_defs, projects, read, runs, tags,
+};
 
 /// Between two parts of a request's body. Responses have no such limit: live streams never end.
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -92,6 +94,21 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/projects/{project}/history", get(history::history))
         .route("/metric-stats", post(history::stats))
         .route("/neighbors", post(history::neighbors))
+        .route(
+            "/runs/{run}/checkpoints",
+            get(checkpoints::list).post(checkpoints::create),
+        )
+        .route(
+            "/checkpoints/{id}",
+            get(checkpoints::detail).delete(checkpoints::delete),
+        )
+        .route(
+            "/checkpoints/{id}/files/{file}/parts/{part}",
+            put(checkpoints::upload_part)
+                .layer(DefaultBodyLimit::max(checkpoints::MAX_STORED_PART)),
+        )
+        .route("/checkpoints/{id}/commit", post(checkpoints::commit))
+        .route("/checkpoints/{id}/files/{file}", get(checkpoints::download))
         .route("/auth/me", get(account::me))
         .route("/me", patch(account::update_profile))
         .route(

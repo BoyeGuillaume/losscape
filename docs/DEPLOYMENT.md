@@ -169,6 +169,9 @@ so a typo can't quietly leave a setting at its default.
 | `LOSSCAPE_AUTH_BACKGROUND` | `auth_background` | plain | Image file: sign-in and sign-up pages |
 | `LOSSCAPE_WEB_DIR` | `web_dir` | `web/build` | The built web UI; API only if absent |
 | `LOSSCAPE_MAX_BODY_MB` | `max_body_mb` | `32` | Largest request |
+| `LOSSCAPE_STORAGE` | `storage` | none (`/data/checkpoints` in `compose.yaml`) | Where checkpoints go: an absolute path, or `s3://bucket/prefix`; none: not kept |
+| `LOSSCAPE_MAX_CHECKPOINT_GB` | `max_checkpoint_gb` | `100` | Largest checkpoint, all its files together |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_ENDPOINT` | | | For `s3://` storage; `AWS_ENDPOINT` for MinIO, R2 and others |
 | `LOSSCAPE_FLUSH_INTERVAL_MS` | `ingest.flush_interval_ms` | `250` | Longest a batch waits to be written |
 | `LOSSCAPE_FLUSH_MAX_ROWS` | `ingest.flush_max_rows` | `200000` | Write as soon as this many points wait |
 | `LOSSCAPE_INGEST_QUEUE` | `ingest.queue` | `4096` | Batches queued before requests wait |
@@ -240,10 +243,19 @@ docker compose up -d --build --wait
 
 Database migrations run by themselves at startup. Older SDKs keep working with newer servers.
 
+### Checkpoints
+
+What runs upload with `run.log_checkpoint()` goes to `LOSSCAPE_STORAGE`: the `checkpoints`
+volume of `compose.yaml` by default, or an S3-compatible store (`s3://bucket/prefix`, with the
+`AWS_*` settings in `.env`). Either way, everything goes through the server, which checks who asks:
+clients never reach the storage or its credentials. Plan the disk or the bucket for them:
+checkpoints are large and kept until deleted, on the run page or from the SDK. Their files are
+deleted from storage shortly after the checkpoint, run or project is.
+
 ### Backing up
 
-Both databases are needed, and belong together. Stop the server first, so they match; SDKs just
-wait, and catch up afterwards.
+Both databases are needed, and belong together, with the checkpoints volume if you keep them
+there. Stop the server first, so they match; SDKs just wait, and catch up afterwards.
 
 ```sh
 mkdir -p backup
@@ -254,6 +266,8 @@ docker compose exec -T postgres pg_dump -U losscape -Fc losscape > backup/postgr
 docker compose stop clickhouse
 docker run --rm -v losscape_clickhouse:/data:ro -v "$PWD/backup":/backup alpine \
     tar czf /backup/clickhouse.tar.gz -C /data .
+docker run --rm -v losscape_checkpoints:/data:ro -v "$PWD/backup":/backup alpine \
+    tar cf /backup/checkpoints.tar -C /data .
 
 docker compose up -d --wait
 ```
@@ -267,6 +281,8 @@ docker compose exec -T postgres pg_restore -U losscape -d losscape < backup/post
 
 docker run --rm -v losscape_clickhouse:/data -v "$PWD/backup":/backup alpine \
     sh -c 'rm -rf /data/* && tar xzf /backup/clickhouse.tar.gz -C /data && chown -R 101:101 /data'
+docker run --rm -v losscape_checkpoints:/data -v "$PWD/backup":/backup alpine \
+    sh -c 'rm -rf /data/* && tar xf /backup/checkpoints.tar -C /data && chown -R 65532:65532 /data'
 
 docker compose up -d --wait
 ```

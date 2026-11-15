@@ -39,10 +39,13 @@ services:
       CLICKHOUSE_USER: losscape
       CLICKHOUSE_PASSWORD: ${LOSSCAPE_CLICKHOUSE_PASSWORD:-losscape}
       CLICKHOUSE_DATABASE: losscape
+      # Checkpoints: the volume below, or s3://… with AWS_* settings in .env.
+      LOSSCAPE_STORAGE: ${LOSSCAPE_STORAGE:-/data/checkpoints}
     # Your own images, if any: LOSSCAPE_FAVICON and LOSSCAPE_AUTH_BACKGROUND in .env.
     volumes:
       - ./branding:/branding:ro
-    # It keeps nothing on disk, and needs no privileges.
+      - checkpoints:/data/checkpoints
+    # It keeps nothing on disk but checkpoints, and needs no privileges.
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -124,5 +127,6 @@ networks:
 volumes:
   postgres:
   clickhouse:
+  checkpoints:
   caddy_data:
   caddy_config:

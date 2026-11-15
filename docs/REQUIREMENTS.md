@@ -10,7 +10,6 @@ A free, self-hosted, high-performance ML experiment tracker. W&B-like Python API
 **Out of scope for now**
 - Framework integrations (Lightning, HF Transformers/Accelerate, Keras, JAX, XGBoost/LightGBM, Optuna, Ray Tune). Instead, the Python API looks like W&B's so migrating is a rename.
 - Importers (W&B, MLflow, TensorBoard tfevents) — revisit after v1.
-- Artifact uploads — artifacts only reference existing files (see §6).
 
 ---
 
@@ -205,11 +204,11 @@ Per project, editors; stored in Postgres and applied by the UI when reading: log
 
 ## 6. Artifacts
 
-- **P0 (for now: references only)** An artifact stores a URI (`s3://…`, `gs://…`, `/nfs/…`) plus optional size, hash and modified time. Nothing is uploaded.
-- **P0** Versions and aliases (`latest`, `best`, `prod`).
-- **P0** Linked to runs as input or output; lineage graph of which run produced or used which artifact.
-- **P2** Uploads: content-addressed dedup, resumable multipart uploads straight to storage through signed URLs, files > 100 GB.
-- **P2** Retention rules and automatic expiry for checkpoints.
+- **P0 (server done; SDK and UI next, see docs/ARTIFACTS.md)** Checkpoints: a run uploads a folder at a step (`run.log_checkpoint`), file by file in checked parts, compressed when it helps, in the background and resumable; stored in a folder or S3-compatible storage (`object_store`), always through the server; deleted by hand; resumed from with `run.latest_checkpoint()`.
+- **P1** References: an artifact can be a URI (`s3://…`, `gs://…`, `/nfs/…`) plus optional size, hash and modified time, with nothing uploaded.
+- **P2** General artifacts on the same storage: versions and aliases (`latest`, `best`, `prod`), content-addressed dedup, files > 100 GB.
+- **P2** Linked to runs as input or output; lineage graph of which run produced or used which artifact.
+- **P1** Retention rules for checkpoints (the last N, the best by a metric, every K steps, pinned).
 - **P2** Model registry with stages.
 
 ---

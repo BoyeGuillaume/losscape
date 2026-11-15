@@ -113,6 +113,7 @@ async fn serve(file: Option<PathBuf>) -> Result<(), Error> {
     let (state, flusher) = AppState::start(&config).await?;
     let live = state.live().clone();
     let purger = losscape_server::purge::spawn_purger(state.clone());
+    let cleaner = losscape_server::checkpoints::spawn_cleaner(state.clone());
     let backfill = state.clone();
     let backfiller = tokio::spawn(async move {
         match losscape_server::purge::backfill_last_step(&backfill).await {
@@ -160,6 +161,7 @@ async fn serve(file: Option<PathBuf>) -> Result<(), Error> {
 
     // The flusher ends once nothing can queue any more: these two hold the state as well.
     purger.abort();
+    cleaner.abort();
     backfiller.abort();
     // The router (and its queue handles) is gone; let the flusher write what is queued.
     flusher.await?;

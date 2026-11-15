@@ -18,7 +18,7 @@ COPY crates/ crates/
 COPY proto/ proto/
 COPY scripts/third_party_notices.py scripts/
 RUN cargo build --release --locked -p losscape-server \
-    && mkdir -p /out \
+    && mkdir -p /out /out/data/checkpoints \
     && cp target/release/losscape-server /out/ \
     && python3 scripts/third_party_notices.py --package losscape-server \
         --output /out/THIRD-PARTY-NOTICES-SERVER.txt --json /out/third-party-server.json
@@ -26,6 +26,8 @@ RUN cargo build --release --locked -p losscape-server \
 # ---- What runs: no shell, no package manager, not root ------------------------------
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=server /out/losscape-server /usr/local/bin/losscape-server
+# Where checkpoints go by default (a volume in compose.yaml), writable by the server's user.
+COPY --from=server --chown=65532:65532 /out/data /data
 COPY LICENSE /app/LICENSE
 COPY --from=web /src/web/build /app/web
 # Served with the web interface, for its About page.

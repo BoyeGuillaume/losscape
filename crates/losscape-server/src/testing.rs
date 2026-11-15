@@ -26,6 +26,8 @@ pub struct TestServer {
     admin: PgPool,
     db: String,
     clickhouse: ClickHouseConfig,
+    /// Where this server keeps checkpoints: a folder of its own.
+    pub storage_dir: std::path::PathBuf,
 }
 
 impl TestServer {
@@ -71,6 +73,7 @@ impl TestServer {
             database: db.clone(),
         };
         let addr = listener.local_addr().unwrap();
+        let storage_dir = std::env::temp_dir().join(&db);
         let config = Config {
             listen: addr,
             database_url: format!("{base}/{db}"),
@@ -84,6 +87,8 @@ impl TestServer {
             web_dir: None,
             branding: Default::default(),
             live_recheck: Duration::from_millis(200),
+            storage: Some(storage_dir.to_string_lossy().into_owned()),
+            max_checkpoint_bytes: 1 << 30,
         };
         let (state, flusher) = AppState::start(&config).await.expect("server starts");
         // Before serving: a client may already be waiting on the listener.
@@ -134,6 +139,7 @@ impl TestServer {
             admin,
             db,
             clickhouse,
+            storage_dir,
         })
     }
 
@@ -145,8 +151,10 @@ impl TestServer {
             admin,
             db,
             clickhouse,
+            storage_dir,
             ..
         } = self;
+        std::fs::remove_dir_all(storage_dir).ok();
         let pg = state.pg().clone();
         drop(state);
         shutdown.send(()).ok();

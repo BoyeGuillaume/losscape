@@ -15,6 +15,7 @@ use crate::config::{AuthConfig, Branding, Config, SetupToken};
 use crate::error::ApiError;
 use crate::ingest::{IngestQueue, spawn_flusher};
 use crate::live::LiveHub;
+use crate::storage::Storage;
 
 /// Limits of one query made on behalf of a user: bytes, and seconds.
 const CLICKHOUSE_READ_MEMORY: &str = "2000000000";
@@ -72,6 +73,11 @@ struct Inner {
     setup_token: Option<String>,
     /// run id -> project id. Runs never change project; entries go when runs are deleted.
     run_projects: RwLock<HashMap<Uuid, i64>>,
+    /// Where checkpoints are kept, if anywhere.
+    storage: Option<Storage>,
+    max_checkpoint_bytes: u64,
+    /// Wakes the checkpoint cleaner (files of deleted checkpoints to delete).
+    clean: tokio::sync::Notify,
 }
 
 impl AppState {
@@ -88,6 +94,11 @@ impl AppState {
         let ch = crate::clickhouse_store::connect_and_migrate(&config.clickhouse).await?;
 
         let setup_token = setup_token(&pg, &config.auth.setup_token).await?;
+        // Opened now, so that a wrong location stops the server right away.
+        let storage = config.storage.as_deref().map(Storage::open).transpose()?;
+        if let Some(storage) = &storage {
+            tracing::info!(storage = %storage.description, "checkpoints kept in");
+        }
         let ch_read = ch
             .clone()
             .with_option("max_memory_usage", CLICKHOUSE_READ_MEMORY)
@@ -108,6 +119,9 @@ impl AppState {
             live_recheck: config.live_recheck,
             setup_token,
             run_projects: RwLock::default(),
+            storage,
+            max_checkpoint_bytes: config.max_checkpoint_bytes,
+            clean: tokio::sync::Notify::new(),
         }));
         Ok((state, flusher))
     }
@@ -139,6 +153,24 @@ impl AppState {
             "setup_token_required",
             "the first account needs the setup token from the server's log",
         ))
+    }
+
+    pub fn storage(&self) -> Option<&Storage> {
+        self.0.storage.as_ref()
+    }
+
+    pub fn max_checkpoint_bytes(&self) -> u64 {
+        self.0.max_checkpoint_bytes
+    }
+
+    /// Has the checkpoint cleaner run now rather than at its next round.
+    pub fn clean_soon(&self) {
+        self.0.clean.notify_one();
+    }
+
+    /// Resolves when [`clean_soon`](Self::clean_soon) was called.
+    pub async fn clean_requested(&self) {
+        self.0.clean.notified().await;
     }
 
     pub fn pg(&self) -> &PgPool {

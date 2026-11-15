@@ -28,6 +28,8 @@ pub struct TestServer {
     pub admin: PgPool,
     pub db: String,
     pub clickhouse: ClickHouseConfig,
+    /// Where this server keeps checkpoints: a folder of its own.
+    pub storage_dir: std::path::PathBuf,
 }
 
 impl TestServer {
@@ -81,7 +83,15 @@ impl TestServer {
             web_dir: None,
             branding: Default::default(),
             live_recheck: Duration::from_millis(200),
+            storage: Some(
+                std::env::temp_dir()
+                    .join(&db)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            max_checkpoint_bytes: 1 << 30,
         };
+        let storage_dir = std::env::temp_dir().join(&db);
         let (state, flusher) = AppState::start(&config).await.expect("server starts");
         let router = app::router(state.clone(), config.max_body_bytes, None);
         let api_key = String::new();
@@ -93,6 +103,7 @@ impl TestServer {
             admin,
             db,
             clickhouse,
+            storage_dir,
         })
     }
 
@@ -108,8 +119,10 @@ impl TestServer {
             admin,
             db,
             clickhouse,
+            storage_dir,
             ..
         } = self;
+        std::fs::remove_dir_all(storage_dir).ok();
         let pg = state.pg().clone();
         drop((router, state));
         tokio::time::timeout(Duration::from_secs(10), flusher)

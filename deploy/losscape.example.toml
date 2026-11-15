@@ -18,6 +18,10 @@ web_dir = "web/build"
 # favicon = "/etc/losscape/favicon.svg"
 # auth_background = "/etc/losscape/background.jpg"
 max_body_mb = 32
+# Where checkpoints go: a folder (absolute path) or s3://bucket/prefix, with the AWS_*
+# settings in the environment. Without it, checkpoints aren't kept.
+storage = "/var/lib/losscape/checkpoints"
+max_checkpoint_gb = 100
 
 [database]
 url = "postgres://losscape:losscape@localhost:5432/losscape"

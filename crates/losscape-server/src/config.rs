@@ -23,6 +23,10 @@ pub struct Config {
     pub branding: Branding,
     /// How often live streams check that their viewer may still see the project.
     pub live_recheck: Duration,
+    /// Where checkpoints are kept (a folder or `s3://…`, see `storage`); none: not kept.
+    pub storage: Option<String>,
+    /// Largest checkpoint accepted, all its files together.
+    pub max_checkpoint_bytes: u64,
 }
 
 /// What this deployment calls itself, and how it looks.
@@ -420,6 +424,10 @@ impl Config {
                 .filter(|dir: &std::path::PathBuf| dir.join("index.html").exists()),
             branding: Branding::load(s)?,
             live_recheck: Duration::from_secs(30),
+            storage: s.get("LOSSCAPE_STORAGE").filter(|v| !v.is_empty()),
+            max_checkpoint_bytes: s
+                .parse::<u64>("LOSSCAPE_MAX_CHECKPOINT_GB", "100")?
+                .saturating_mul(1 << 30),
         })
     }
 }
@@ -491,6 +499,8 @@ const TOML_KEYS: &[(&str, &str)] = &[
     ("favicon", "LOSSCAPE_FAVICON"),
     ("auth_background", "LOSSCAPE_AUTH_BACKGROUND"),
     ("max_body_mb", "LOSSCAPE_MAX_BODY_MB"),
+    ("storage", "LOSSCAPE_STORAGE"),
+    ("max_checkpoint_gb", "LOSSCAPE_MAX_CHECKPOINT_GB"),
     ("database.url", "DATABASE_URL"),
     ("clickhouse.url", "CLICKHOUSE_URL"),
     ("clickhouse.user", "CLICKHOUSE_USER"),
