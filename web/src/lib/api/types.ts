@@ -1,6 +1,7 @@
 export type RunState = 'running' | 'finished' | 'failed' | 'killed' | 'crashed';
 
-export type Role = 'owner' | 'editor' | 'viewer';
+/** `guest`: reads runs and charts, not checkpoints. */
+export type Role = 'owner' | 'editor' | 'viewer' | 'guest';
 
 export type ProjectSummary = {
 	name: string;
@@ -156,6 +157,20 @@ export type ProjectInfo = {
 	archive_days: number;
 	runs: number;
 	archived_runs: number;
+	checkpoint_retention: CheckpointRetention;
+};
+
+/** How long a project keeps checkpoints (docs/ARTIFACTS.md). */
+export type CheckpointRetention = {
+	/** Deleted this long after upload; null: kept until deleted by hand. */
+	days: number | null;
+	/** Never delete each run's last checkpoint. */
+	keep_last: boolean;
+	/** Never delete each run's best checkpoint (by `best`). */
+	keep_best: boolean;
+	/** What makes a run's checkpoint its best (the latest value of the metric at its step): for
+	 * `:best` links, its mark, and `keep_best`. */
+	best: { metric: string; goal: 'min' | 'max' } | null;
 };
 
 export type ProviderIconName = 'google' | 'github' | 'microsoft' | 'gitlab' | 'key';
@@ -169,6 +184,8 @@ export type RunEnvironment = {
 	git?: { remote?: string; commit?: string; dirty?: boolean; diff_bytes?: number };
 	git_branch?: string;
 	git_untracked?: string[];
+	/** Where git was read, when not the working directory (`code_dir`, or the script's folder). */
+	code_dir?: string;
 	python?: { executable?: string; implementation?: string };
 	torch?: { version?: string | null; cuda?: string | null };
 	os?: { name?: string | null; version?: string | null; kernel?: string | null; arch?: string };
@@ -216,7 +233,8 @@ export type CheckpointFile = {
 	path: string;
 	size: number;
 	stored_size: number;
-	sha256: string;
+	/** BLAKE3 of its content (hex, as b3sum gives it), computed by the server as it arrived. */
+	blake3: string;
 	compression: 'none' | 'zstd';
 	parts: number;
 };
@@ -232,5 +250,25 @@ export type Checkpoint = {
 	file_count: number;
 	created_at_ms: number;
 	committed_at_ms: number | null;
+	/** Never deleted by retention. */
+	important: boolean;
+	/** Why retention keeps it (last and best only while retention is on). */
+	keep: ('important' | 'last' | 'best')[];
+	/** When retention deletes it, if it will. */
+	expires_at_ms: number | null;
+	/** Its link by name (a path, `/ckpt/<project>/<run>:<step>`): all of it as a tar archive;
+	 * `<url>/<path>` for one file. */
+	url: string;
+	/** `/ckpt/<id>`: always this checkpoint. */
+	permanent_url: string;
+	/** Its run's best, by the project's metric for it. */
+	best: boolean;
+	/** BLAKE3 of its files listed as b3sum lists them (`<hash>  <path>`, by path), computed by
+	 * the server at upload. */
+	digest: string | null;
+	/** What storage gave back changed, if it ever did (downloads then fail rather than give it). */
+	corrupt: string | null;
+	/** Latest values of the metrics asked for, at its step. */
+	metrics?: Record<string, { step: number; value: number }>;
 	files?: CheckpointFile[];
 };

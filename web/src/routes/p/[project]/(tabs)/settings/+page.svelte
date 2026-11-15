@@ -9,6 +9,7 @@
 	import { apiJson, apiSend } from '#lib/api/client.js';
 	import type { Member, ProjectAccess, ProjectInfo, Role } from '#lib/api/types.js';
 	import { auth } from '#lib/auth.svelte.js';
+	import CheckpointRetention from '#lib/components/app/CheckpointRetention.svelte';
 	import UserAvatar from '#lib/components/app/UserAvatar.svelte';
 	import * as AlertDialog from '#lib/components/ui/alert-dialog/index.js';
 	import { Button, buttonVariants } from '#lib/components/ui/button/index.js';
@@ -35,7 +36,16 @@
 			label: 'Editor',
 			help: 'Logs runs with the SDK, archives runs, sets aliases.'
 		},
-		{ value: 'viewer', label: 'Viewer', help: 'Reads runs and charts.' }
+		{
+			value: 'viewer',
+			label: 'Viewer',
+			help: 'Reads runs and charts, and downloads checkpoints.'
+		},
+		{
+			value: 'guest',
+			label: 'Guest',
+			help: 'Reads runs and charts, but not checkpoints (their files can be what matters most).'
+		}
 	];
 	const roleLabel = (role: Role) => ROLES.find((r) => r.value === role)?.label ?? role;
 	/** Roles owners give out; ownership itself only moves by transfer (danger zone). */
@@ -144,8 +154,13 @@
 	);
 	let newOwner = $state('');
 	let transferOpen = $state(false);
-	let then = $state<'editor' | 'viewer' | 'leave'>('editor');
-	const THEN = { editor: 'Stay as editor', viewer: 'Stay as viewer', leave: 'Leave the project' };
+	let then = $state<'editor' | 'viewer' | 'guest' | 'leave'>('editor');
+	const THEN = {
+		editor: 'Stay as editor',
+		viewer: 'Stay as viewer',
+		guest: 'Stay as guest',
+		leave: 'Leave the project'
+	};
 
 	async function transfer() {
 		const to = newOwner;
@@ -246,6 +261,13 @@
 				{/if}
 			</Card.Content>
 		</Card.Root>
+
+		<CheckpointRetention
+			{project}
+			saved={info.data.checkpoint_retention}
+			{isOwner}
+			onSaved={info.refresh}
+		/>
 
 		<Card.Root>
 			<Card.Header>

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Area, Chart, Points, Spline } from 'layerchart/canvas';
+	import { Area, Chart, Points, Rule, Spline } from 'layerchart/canvas';
 	import { Tooltip, type BrushContext } from 'layerchart';
 	import { scaleLog } from 'd3-scale';
 	import { curveMonotoneX } from 'd3-shape';
@@ -42,12 +42,20 @@
 	import { isolatedPoints } from '#lib/charts/isolated.js';
 	import { levelFor, tileStore, type SeriesPoints } from '#lib/charts/tiles.svelte.js';
 	import { formatMetric, metricAxis, unitFor, unitTicks } from '#lib/metric-units.js';
-	import { appearance, CHART_SIZES, DOTS_BELOW } from '#lib/appearance.svelte.js';
+	import {
+		appearance,
+		CHART_SIZES,
+		DOTS_BELOW,
+		MAX_CHECKPOINT_LINES
+	} from '#lib/appearance.svelte.js';
 	import { crossing } from '#lib/charts/crossing.js';
+	import { nearestMarker, type ChartMarker } from '#lib/charts/markers.js';
 	import { nav } from '#lib/nav.svelte.js';
 	import { notifyError } from '#lib/notify.js';
 
 	import ChartToolbar from './ChartToolbar.svelte';
+	import MetricChart from './MetricChart.svelte';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
 
 	/** BrushContext's event payload (not exported by name). */
 	type BrushEvent = Parameters<NonNullable<ComponentProps<typeof BrushContext>['onBrushEnd']>>[0];
@@ -69,6 +77,7 @@
 	type Line = { series: ChartSeries; rows: Row[]; ascending: boolean };
 
 	const MAX_TOOLTIP_ROWS = 12;
+	/** More checkpoints than this and none are marked: they'd hide the lines. */
 	const MAX_ZOOM_HISTORY = 50;
 
 	let {
@@ -83,7 +92,11 @@
 		view: sharedView = $bindable(null),
 		title = metric,
 		href,
-		onRename
+		onRename,
+		markers = [],
+		selectedMarker = null,
+		onMarker,
+		fullscreen = false
 	}: {
 		/** The series to pick out, fading the others. */
 		highlight?: string | null;
@@ -105,7 +118,17 @@
 		xOptions?: XAxis[];
 		/** Zoomed x range, shared by the charts of a page; null shows everything. */
 		view?: [number, number] | null;
+		/** Steps to mark with a vertical line (a run's checkpoints), when x is the step. */
+		markers?: ChartMarker[];
+		/** The marker to draw as chosen. */
+		selectedMarker?: number | null;
+		/** A marker was clicked. */
+		onMarker?: (step: number) => void;
+		/** Drawn alone, filling what holds it (the full-screen view). */
+		fullscreen?: boolean;
 	} = $props();
+	/** The full-screen view of this chart is open. */
+	let expanded = $state(false);
 
 	const settings = $derived<ChartSettings>({ ...pageSettings, ...override });
 
@@ -525,6 +548,32 @@
 		};
 	});
 	const grid = $derived(resolve('var(--chart-grid)'));
+	const markerColor = $derived(resolve('var(--primary)'));
+	/** Markers in view: all of them when few enough not to hide the data (zoom in for more);
+	 * otherwise only the chosen one. */
+	const shownMarkers = $derived.by(() => {
+		if (settings.x !== 'step' || !appearance.current.checkpoints) return [];
+		const inView = markers.filter((m) => m.step >= xDomain[0] && m.step <= xDomain[1]);
+		return inView.length <= MAX_CHECKPOINT_LINES
+			? inView
+			: inView.filter((m) => m.step === selectedMarker);
+	});
+	/** Where a step is drawn, in pixels from the chart's left (the plot's padding included). */
+	const markerPx = $derived((step: number) => {
+		const [lo, hi] = xDomain;
+		const inner = width - padLeft - 6;
+		return hi > lo ? padLeft + ((step - lo) / (hi - lo)) * inner : padLeft;
+	});
+	/** The marker under the pointer. */
+	let hoveredMarker = $state<ChartMarker | null>(null);
+	/** Where a press started, and on which marker: a click there opens it, without zooming. */
+	let pressed: { x: number; step: number | null } | null = null;
+
+	function trackMarker(event: PointerEvent) {
+		if (!shownMarkers.length) return;
+		const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+		hoveredMarker = nearestMarker(shownMarkers, event.clientX - box.left, markerPx);
+	}
 	const label = $derived(resolve('var(--muted-foreground)'));
 	const colors = $derived(Object.fromEntries(series.map((s) => [s.id, resolve(s.color)])));
 
@@ -562,6 +611,12 @@
 		const [lo, hi] = e.brush.x;
 		const [yLo, yHi] = e.brush.y;
 		e.brush.reset();
+		// A click on a checkpoint opens it (on click): the zoom stays.
+		if (
+			pressed?.step != null &&
+			(!active || (typeof lo === 'number' && typeof hi === 'number' && hi - lo < 1))
+		)
+			return;
 		if (!active || typeof lo !== 'number' || typeof hi !== 'number') return;
 		const box = brushAxis === 'both' && typeof yLo === 'number' && typeof yHi === 'number';
 		// Double-click selects the whole visible range: treat that as "zoom out".
@@ -689,7 +744,11 @@
 
 <section
 	bind:this={card}
-	class="group/chart flex min-w-0 flex-col rounded-xl border bg-card p-3 pb-1 text-card-foreground shadow-xs"
+	class={[
+		'group/chart flex min-w-0 flex-col bg-card p-3 pb-1 text-card-foreground',
+		// Full screen: room on the right for the dialog's close button.
+		fullscreen ? 'h-full pr-12' : 'rounded-xl border shadow-xs'
+	]}
 	onpointerenter={() => (hovered = true)}
 	onpointerleave={() => (hovered = false)}
 	aria-label={`${metric} chart`}
@@ -751,6 +810,7 @@
 			onBack={zoomBack}
 			zoomed={view !== null || yView !== null}
 			onReset={resetZoom}
+			onFullscreen={fullscreen ? undefined : () => (expanded = true)}
 		>
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger
@@ -879,16 +939,43 @@
 	</header>
 
 	<div
-		class={['w-full', CHART_SIZES[appearance.current.chartSize].height]}
+		class={[
+			'relative w-full',
+			fullscreen ? 'min-h-0 flex-1' : CHART_SIZES[appearance.current.chartSize].height,
+			hoveredMarker && onMarker && 'cursor-pointer'
+		]}
 		bind:clientWidth={width}
 		ondblclickcapture={(e) => {
 			// Before the brush, which would take it as "select everything".
 			e.stopPropagation();
 			resetZoom();
 		}}
-		onpointerdowncapture={(e) => (shiftDrag = e.shiftKey)}
+		onpointerdowncapture={(e) => {
+			shiftDrag = e.shiftKey;
+			pressed = { x: e.clientX, step: hoveredMarker?.step ?? null };
+		}}
+		onpointermove={trackMarker}
+		onpointerleave={() => (hoveredMarker = null)}
+		onclick={(e) => {
+			const step = pressed?.step;
+			if (step != null && Math.abs(e.clientX - pressed!.x) < 4) onMarker?.(step);
+			pressed = null;
+		}}
 		role="presentation"
 	>
+		{#if hoveredMarker}
+			{@const px = markerPx(hoveredMarker.step)}
+			{@const flip = px > width - 200}
+			<div
+				class="pointer-events-none absolute top-1 z-10 rounded-md border bg-popover px-2 py-1 text-xs whitespace-nowrap text-popover-foreground shadow-sm"
+				style:left={`${px}px`}
+				style:transform={flip ? 'translateX(calc(-100% - 6px))' : 'translateX(6px)'}
+			>
+				<p class="font-medium">{hoveredMarker.title}</p>
+				<p class="text-muted-foreground">{hoveredMarker.detail}</p>
+				{#if onMarker}<p class="text-muted-foreground">Click to open it</p>{/if}
+			</div>
+		{/if}
 		{#if drawn}
 			<Chart
 				data={merged}
@@ -920,6 +1007,16 @@
 				}}
 			>
 				{#snippet belowMarks()}
+					{#each shownMarkers as m (m.step)}
+						{@const lit = m.step === hoveredMarker?.step || m.step === selectedMarker}
+						<Rule
+							x={m.step}
+							stroke={lit ? markerColor : label}
+							strokeWidth={lit ? 2 : 1}
+							opacity={lit ? 0.9 : 0.45}
+							class={lit ? undefined : '[stroke-dasharray:3_3]'}
+						/>
+					{/each}
 					{#if settings.band}
 						{#each lines as line (line.series.id)}
 							<Area
@@ -1034,3 +1131,36 @@
 		{/if}
 	</div>
 </section>
+
+{#if expanded}
+	<Dialog.Root open onOpenChange={(open) => !open && (expanded = false)}>
+		<Dialog.Content
+			class="flex h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-none flex-col gap-0 p-2 sm:max-w-none"
+		>
+			<Dialog.Title class="sr-only">{title}</Dialog.Title>
+			<Dialog.Description class="sr-only">The {title} chart, full screen</Dialog.Description>
+			<MetricChart
+				{highlight}
+				{series}
+				{metric}
+				{title}
+				{href}
+				{source}
+				{onRename}
+				settings={pageSettings}
+				{override}
+				{onOverride}
+				{xOptions}
+				bind:view={sharedView}
+				{markers}
+				{selectedMarker}
+				onMarker={onMarker &&
+					((step) => {
+						expanded = false;
+						onMarker(step);
+					})}
+				fullscreen
+			/>
+		</Dialog.Content>
+	</Dialog.Root>
+{/if}

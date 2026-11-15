@@ -4,6 +4,7 @@
 	import Scissors from '@lucide/svelte/icons/scissors';
 	import SquareDashedMousePointer from '@lucide/svelte/icons/square-dashed-mouse-pointer';
 	import Undo2 from '@lucide/svelte/icons/undo-2';
+	import Maximize2 from '@lucide/svelte/icons/maximize-2';
 
 	/**
 	 * What can be done to a chart while looking at it. None of it is remembered. Buttons take no
@@ -22,6 +23,7 @@
 		onBack,
 		zoomed,
 		onReset,
+		onFullscreen,
 		children
 	}: {
 		log: boolean;
@@ -36,6 +38,8 @@
 		onBack: () => void;
 		zoomed: boolean;
 		onReset: () => void;
+		/** Shows the chart alone, as large as the window (none: it already is). */
+		onFullscreen?: () => void;
 		/** The settings menu, at the end. */
 		children?: Snippet;
 	} = $props();
@@ -94,6 +98,15 @@
 			aria-label="Reset zoom"
 			title="Reset zoom (or double-click the chart)"
 			onclick={onReset}><RotateCcw class="size-3.5" /></button
+		>
+	{/if}
+	{#if onFullscreen}
+		<button
+			type="button"
+			class={[base, hidden]}
+			aria-label="Full screen"
+			title="Full screen: the chart alone, as large as the window"
+			onclick={onFullscreen}><Maximize2 class="size-3.5" /></button
 		>
 	{/if}
 	{@render children?.()}

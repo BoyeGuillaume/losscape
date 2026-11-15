@@ -80,7 +80,9 @@
 		['Branch', env.git_branch],
 		['Commit', env.git?.commit],
 		['Uncommitted changes', env.git?.commit ? (env.git.dirty ? 'yes' : 'no') : null],
-		['Untracked files', untracked(env.git_untracked ?? [])]
+		['Untracked files', untracked(env.git_untracked ?? [])],
+		// Only when it isn't where the run started (set with `code_dir`, or the script's folder).
+		['Code folder', env.code_dir]
 	]);
 
 	let packageQuery = $state('');

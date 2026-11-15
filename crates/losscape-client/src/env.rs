@@ -53,11 +53,46 @@ pub struct Extra {
     pub details: Map<String, Value>,
     /// Don't record the uncommitted changes, only whether there are any.
     pub skip_git_diff: bool,
+    /// Where the code is, set by hand: git's state and diff are read there.
+    pub code_dir: Option<PathBuf>,
+    /// The main script's folder: where the code is if the working directory isn't in a git
+    /// repository (a script run from elsewhere).
+    pub script_dir: Option<PathBuf>,
 }
 
 pub fn capture(python_version: &str, sdk_version: &str, extra: &Extra) -> RunEnvironment {
     let cwd = std::env::current_dir().unwrap_or_default();
-    capture_at(&cwd, python_version, sdk_version, extra)
+    let code = code_dir(&cwd, extra);
+    let mut env = capture_at(&code, python_version, sdk_version, extra);
+    if code != cwd {
+        // Where the git details come from, when it isn't where the run started.
+        if let Ok(Value::Object(mut details)) = serde_json::from_str(&env.details_json) {
+            details.insert("code_dir".into(), json!(code.to_string_lossy()));
+            env.details_json = Value::Object(details).to_string();
+        }
+    }
+    env
+}
+
+/// Where to read git from: the folder set by hand, else the working directory if it's in a
+/// repository, else the main script's folder if that is.
+fn code_dir(cwd: &Path, extra: &Extra) -> PathBuf {
+    if let Some(dir) = &extra.code_dir {
+        if git(dir, &["rev-parse", "HEAD"], 1 << 10).is_none() {
+            eprintln!(
+                "losscape: code_dir {}: not in a git repository (or no commit yet); no git details recorded",
+                dir.display()
+            );
+        }
+        return dir.clone();
+    }
+    if git(cwd, &["rev-parse", "HEAD"], 1 << 10).is_some() {
+        return cwd.to_owned();
+    }
+    match &extra.script_dir {
+        Some(dir) if git(dir, &["rev-parse", "HEAD"], 1 << 10).is_some() => dir.clone(),
+        _ => cwd.to_owned(),
+    }
 }
 
 fn capture_at(
@@ -569,5 +604,46 @@ mod tests {
         let env = capture_at(repo.path(), "3", "0", &off);
         assert!(env.git_dirty, "whether there are changes is still recorded");
         assert_eq!(env.git_diff, "");
+    }
+
+    #[test]
+    fn the_code_is_found_where_it_is() {
+        let repo = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let git_ok = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "init", "-q"])
+            .current_dir(repo.path())
+            .status()
+            .is_ok_and(|s| s.success())
+            && Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["commit", "-q", "--allow-empty", "-m", "x"])
+                .current_dir(repo.path())
+                .status()
+                .is_ok_and(|s| s.success());
+        if !git_ok {
+            return; // no git here
+        }
+        let (cwd, code) = (elsewhere.path(), repo.path().to_owned());
+        // Run from elsewhere: the main script's folder, if it's in a repository.
+        let script = Extra {
+            script_dir: Some(code.clone()),
+            ..Extra::default()
+        };
+        assert_eq!(code_dir(cwd, &script), code);
+        assert_eq!(code_dir(cwd, &Extra::default()), cwd, "nothing better");
+        // Run from the repository: there, whatever the script's folder.
+        let away = Extra {
+            script_dir: Some(cwd.to_owned()),
+            ..Extra::default()
+        };
+        assert_eq!(code_dir(&code, &away), code);
+        // Set by hand: there, always.
+        let set = Extra {
+            code_dir: Some(cwd.to_owned()),
+            script_dir: Some(code.clone()),
+            ..Extra::default()
+        };
+        assert_eq!(code_dir(&code, &set), cwd);
     }
 }

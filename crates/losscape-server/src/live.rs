@@ -191,7 +191,7 @@ pub async fn live(
     Query(params): Query<LiveParams>,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, UiError> {
     let project_id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, project_id, Role::Guest, unknown_project).await?;
     let requested: Vec<String> = params
         .runs
         .split(',')

@@ -6,15 +6,16 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
+use futures_util::{StreamExt, stream};
 use losscape_core::CHECKPOINT_PART_SIZE as PART_SIZE;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::upload::{Client, Live, UploadError};
@@ -28,8 +29,10 @@ const FILES: &str = "files";
 const MANIFEST: &str = "manifest.json";
 /// Why the server refused it: it stays, and isn't sent again.
 const REFUSED: &str = "refused.txt";
-/// Parts sent at once (each in memory while sent).
+/// Parts sent at once, all checkpoints together (each in memory while sent).
 const IN_FLIGHT: usize = 4;
+/// Checkpoints uploaded at once: small ones are mostly round trips, which overlap.
+const CHECKPOINTS_AT_ONCE: usize = 8;
 const ZSTD_LEVEL: i32 = 1;
 /// Compression is tried on this much of a file...
 const SAMPLE_BYTES: usize = 4 << 20;
@@ -53,7 +56,8 @@ struct Manifest {
 struct FileEntry {
     path: String,
     size: u64,
-    sha256: String,
+    /// BLAKE3 of its content, which the server computes again from the parts it receives.
+    blake3: String,
     compression: String,
     parts: u64,
 }
@@ -237,7 +241,7 @@ fn manifest(dir: &Path, step: u64) -> io::Result<Manifest> {
         let full = files_dir.join(&path);
         let size = fs::metadata(&full)?.len();
         files.push(FileEntry {
-            sha256: hash_file(&full)?,
+            blake3: hash_file(&full)?,
             compression: if compresses(&full)? { "zstd" } else { "none" }.into(),
             parts: size.div_ceil(PART_SIZE),
             size,
@@ -272,7 +276,7 @@ fn list(root: &Path, dir: &Path, out: &mut Vec<String>) -> io::Result<()> {
 
 fn hash_file(path: &Path) -> io::Result<String> {
     let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0; 1 << 20];
     loop {
         let n = file.read(&mut buf)?;
@@ -281,7 +285,7 @@ fn hash_file(path: &Path) -> io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hex(&hasher.finalize()))
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Whether zstd saves enough on the start of the file: weights barely compress, configs and
@@ -298,10 +302,6 @@ fn compresses(path: &Path) -> io::Result<bool> {
     Ok((compressed.len() as f64) <= sample.len() as f64 * (1.0 - MIN_SAVING))
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// A part of a file as it's sent: compressed (one zstd frame) or not, with its hash and how
 /// many bytes of the file it holds.
 fn read_part(path: &Path, part: u64, zstd: bool) -> io::Result<(Bytes, String, u64)> {
@@ -313,7 +313,7 @@ fn read_part(path: &Path, part: u64, zstd: bool) -> io::Result<(Bytes, String, u
     if zstd {
         data = zstd::bulk::compress(&data, ZSTD_LEVEL)?;
     }
-    let hash = hex(&Sha256::digest(&data));
+    let hash = blake3::hash(&data).to_hex().to_string();
     Ok((data.into(), hash, original))
 }
 
@@ -325,6 +325,7 @@ async fn upload(
     step: u64,
     run_id: &str,
     progress: &Progress,
+    parts: &Arc<Semaphore>,
 ) -> Result<(), UploadError> {
     let manifest = {
         let dir = dir.to_owned();
@@ -375,7 +376,9 @@ async fn upload(
             let zstd = file.compression == "zstd";
             let client = client.clone();
             let url = format!("checkpoints/{id}/files/{index}/parts/{part}");
+            let parts = parts.clone();
             sending.spawn(async move {
+                let _permit = parts.acquire_owned().await.expect("never closed");
                 let (body, hash, length) =
                     tokio::task::spawn_blocking(move || read_part(&path, part, zstd))
                         .await
@@ -405,8 +408,18 @@ pub async fn upload_ready(
     run_id: &str,
     progress: &Progress,
 ) -> Result<(), UploadError> {
-    for (step, dir) in ready(run_dir)? {
-        match upload(client, &dir, step, run_id, progress).await {
+    let parts = Arc::new(Semaphore::new(IN_FLIGHT));
+    let mut uploads = stream::iter(ready(run_dir)?)
+        .map(|(step, dir)| {
+            let parts = &parts;
+            async move {
+                let result = upload(client, &dir, step, run_id, progress, parts).await;
+                (step, dir, result)
+            }
+        })
+        .buffer_unordered(CHECKPOINTS_AT_ONCE);
+    while let Some((step, dir, result)) = uploads.next().await {
+        match result {
             Ok(()) => {}
             // Not this checkpoint's fault: kept to try again (with `losscape sync`).
             Err(err @ UploadError::Rejected { .. }) if err.code() == Some("no_storage") => {
@@ -464,6 +477,10 @@ pub async fn upload_live(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
 
     fn write(path: &Path, bytes: &[u8]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -531,7 +548,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("ckpt");
         let noise: Vec<u8> = (0..3_000u64)
-            .flat_map(|i| Sha256::digest(i.to_le_bytes()))
+            .flat_map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes())
             .collect();
         write(&src.join("weights.bin"), &noise);
         write(&src.join("config.json"), &br#"{"a": 1}"#.repeat(1000));
@@ -544,7 +561,10 @@ mod tests {
         assert_eq!(by_path("weights.bin").compression, "none");
         assert_eq!(by_path("config.json").compression, "zstd");
         assert_eq!(by_path("empty").parts, 0);
-        assert_eq!(by_path("weights.bin").sha256, hex(&Sha256::digest(&noise)));
+        assert_eq!(
+            by_path("weights.bin").blake3,
+            hex(blake3::hash(&noise).as_bytes())
+        );
         // Read back as decided, even if the files were to change.
         fs::write(files.join("config.json"), &noise).unwrap();
         assert_eq!(manifest(dir, 7).unwrap(), m);
@@ -558,7 +578,7 @@ mod tests {
         fs::write(&path, &data).unwrap();
         let (first, hash, len) = read_part(&path, 0, false).unwrap();
         assert_eq!((first.len() as u64, len), (PART_SIZE, PART_SIZE));
-        assert_eq!(hash, hex(&Sha256::digest(&first)));
+        assert_eq!(hash, hex(blake3::hash(&first).as_bytes()));
         let (second, _, len) = read_part(&path, 1, true).unwrap();
         assert_eq!(len, 100);
         assert_eq!(

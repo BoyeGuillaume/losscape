@@ -141,12 +141,12 @@ impl Client {
             .map_err(|e| UploadError::Local(format!("{path}: unexpected answer: {e}")))
     }
 
-    /// A part of a checkpoint file, with its SHA-256 (hex), retried like [`post`](Self::post).
-    pub async fn put_part(&self, path: &str, body: Bytes, sha256: &str) -> Result<(), UploadError> {
+    /// A part of a checkpoint file, with its BLAKE3 (hex), retried like [`post`](Self::post).
+    pub async fn put_part(&self, path: &str, body: Bytes, hash: &str) -> Result<(), UploadError> {
         self.retrying(path, || {
             self.http
                 .put(format!("{}/{path}", self.base))
-                .header(PART_HASH_HEADER, sha256)
+                .header(PART_HASH_HEADER, hash)
                 .body(body.clone())
         })
         .await

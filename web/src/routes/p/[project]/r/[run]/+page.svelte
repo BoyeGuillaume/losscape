@@ -9,6 +9,7 @@
 	import Cpu from '@lucide/svelte/icons/cpu';
 	import GitCommitHorizontal from '@lucide/svelte/icons/git-commit-horizontal';
 	import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
+	import Lock from '@lucide/svelte/icons/lock';
 	import Plus from '@lucide/svelte/icons/plus';
 	import Server from '@lucide/svelte/icons/server';
 	import X from '@lucide/svelte/icons/x';
@@ -40,6 +41,8 @@
 	import { buttonVariants } from '#lib/components/ui/button/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { dateTime, duration, flatten, timeAgo } from '#lib/format.js';
+	import type { ChartMarker } from '#lib/charts/markers.js';
+	import { BYTES, formatUnit } from '#lib/units.js';
 	import { formatMetric, formatSteps } from '#lib/metric-units.js';
 	import { effectiveSummary } from '#lib/metrics/apply.js';
 	import { currentRegistry, useProjectMetrics } from '#lib/metrics/store.svelte.js';
@@ -54,6 +57,7 @@
 	import { notifyError, withToast } from '#lib/notify.js';
 	import { projectsChanged } from '#lib/projects.svelte.js';
 	import { toast } from 'svelte-sonner';
+	import EmptyCard from '#lib/components/app/EmptyCard.svelte';
 	import ErrorCard from '#lib/components/app/ErrorCard.svelte';
 	import { poll, type Polled } from '#lib/poll.svelte.js';
 	import { metricHref } from '#lib/metrics/href.js';
@@ -147,15 +151,79 @@
 			.filter(isHeadline)
 			.map(([key, value]) => ({ key: String(key), value }))
 	);
-	/** The rest of the summary, hidden metrics last. */
-	const summaryRows = $derived.by(() => {
-		const registry = currentRegistry();
-		return flatten(summary)
-			.filter((row) => !isHeadline(row))
-			.map((row, i) => ({ row, i, hidden: registry.describe(String(row[0])).hidden ? 1 : 0 }))
-			.sort((a, b) => a.hidden - b.hidden || a.i - b.i)
-			.map(({ row }) => row);
+
+	/** Favourite (important) metrics as the Checkpoints tab reads them: logged name and factor. */
+	const favorites = $derived(
+		headlines.map(({ key }) => {
+			const from = Object.entries(renames()).find(([, to]) => to === key)?.[0] ?? key;
+			return { name: key, key: from, scale: renameScale(from) };
+		})
+	);
+
+	/** Checkpoints marked on the charts: all of them (charts draw those in view, when few
+	 * enough not to hide the data). */
+	type Brief = {
+		step: number[];
+		committed_at_ms: number[];
+		size: number[];
+		file_count: number[];
+		important: boolean[];
+	};
+	let checkpointMarkers = $state<ChartMarker[]>([]);
+	/** Bumped when a checkpoint changes (marked important, deleted): markers load again. */
+	let checkpointsChanged = $state(0);
+	const markedRun = $derived(run.data?.id ?? '');
+	const checkpointCount = $derived(run.data?.checkpoints ?? 0);
+	$effect(() => {
+		const id = markedRun;
+		const count = checkpointCount;
+		void checkpointsChanged;
+		if (!id || count === 0 || !canReadCheckpoints) {
+			checkpointMarkers = [];
+			return;
+		}
+		let current = true;
+		apiJson<Brief>(`/runs/${encodeURIComponent(id)}/checkpoints/brief`).then(
+			(b) => current && (checkpointMarkers = b.step.map((step, i) => checkpointMarker(b, i))),
+			() => {}
+		);
+		return () => (current = false);
 	});
+
+	function checkpointMarker(b: Brief, i: number): ChartMarker {
+		const files = b.file_count[i];
+		return {
+			step: b.step[i],
+			title: `Checkpoint at step ${b.step[i].toLocaleString('en')}`,
+			detail: `${timeAgo(b.committed_at_ms[i])} · ${files} file${files === 1 ? '' : 's'} · ${formatUnit(b.size[i], BYTES)}${b.important[i] ? ' · important' : ''}`
+		};
+	}
+
+	/** The checkpoint shown on the Checkpoints tab (by step), from a click on a chart too. */
+	let selectedCheckpoint = $state<number | null>(
+		param('ckpt') !== null && Number.isInteger(Number(param('ckpt')))
+			? Number(param('ckpt'))
+			: null
+	);
+	function openCheckpoint(step: number) {
+		selectedCheckpoint = step;
+		tab = 'checkpoints';
+		window.scrollTo({ top: 0, behavior: 'smooth' });
+	}
+	/** Metrics the Checkpoints tab can chart: the favourites, and the one picking the best. */
+	const checkpointMetrics = $derived.by(() => {
+		const names = favorites.map((f) => f.name);
+		const best = projectInfo.data?.checkpoint_retention.best?.metric;
+		const logged = (run.data?.metrics ?? []).map((m) => m.key);
+		if (best && logged.includes(best) && !names.includes(best)) names.unshift(best);
+		if (!names.length) {
+			const first = logged.find((k) => !k.startsWith('system/'));
+			if (first) names.push(first);
+		}
+		return names;
+	});
+	let checkpointSettings = $state<ChartSettings>({ ...DEFAULT_SETTINGS });
+	let checkpointView = $state<[number, number] | null>(null);
 
 	function rememberRun() {
 		nav.back = { href: page.url.pathname + page.url.search, label: nav.runName ?? 'Run' };
@@ -164,6 +232,8 @@
 	const projectInfo = poll(() =>
 		apiJson<ProjectInfo>(`/projects/${encodeURIComponent(project)}`)
 	);
+	/** Guests read runs and charts, not checkpoints. */
+	const canReadCheckpoints = $derived(projectInfo.data?.role !== 'guest');
 	const canEdit = $derived(
 		projectInfo.data?.role === 'owner' || projectInfo.data?.role === 'editor'
 	);
@@ -247,7 +317,9 @@
 		zoom: zoomParam(view),
 		charts: overridesParam(overrides),
 		tab: tab === 'charts' ? null : tab,
-		cfg: configView === 'yaml' ? 'yaml' : null
+		cfg: configView === 'yaml' ? 'yaml' : null,
+		ckpt:
+			tab === 'checkpoints' && selectedCheckpoint !== null ? String(selectedCheckpoint) : null
 	}));
 
 	// Ticks once a second while running, for the live duration.
@@ -460,7 +532,10 @@
 									placeholder="best"
 									aria-label="New alias"
 									autocomplete="off"
-									bind:value={newAlias}
+									bind:value={
+										() => newAlias, (v) => (newAlias = v.replace(/\s/g, '-'))
+									}
+									title="Letters, digits, '.', '_' and '-' (a space becomes '-')"
 									onkeydown={(e) => e.key === 'Escape' && (addingAlias = false)}
 								/>
 								<Button
@@ -590,6 +665,8 @@
 				summaryOf={() => summary}
 				onRename={canEdit ? startRename : undefined}
 				onRunState={() => run.refresh()}
+				markers={checkpointMarkers}
+				onMarker={openCheckpoint}
 			/>
 		</div>
 
@@ -630,13 +707,48 @@
 				id="panel-checkpoints"
 				aria-labelledby="tab-checkpoints"
 			>
-				<RunCheckpoints
-					run={r.id}
-					name={r.name}
-					{running}
-					{canEdit}
-					onChanged={() => run.refresh()}
-				/>
+				{#if canReadCheckpoints}
+					<RunCheckpoints
+						{project}
+						run={r.id}
+						name={r.name}
+						{running}
+						{canEdit}
+						{favorites}
+						metrics={checkpointMetrics}
+						retention={projectInfo.data?.checkpoint_retention ?? null}
+						bind:selected={selectedCheckpoint}
+						count={r.checkpoints}
+						onChanged={() => {
+							run.refresh();
+							checkpointsChanged++;
+						}}
+					>
+						{#snippet chart(metric, selected, select)}
+							<ChartsPanel
+								{project}
+								series={chartSeries}
+								running={running ? [r.id] : []}
+								bind:settings={checkpointSettings}
+								bind:view={checkpointView}
+								only={metric}
+								renames={(id) => (id === run.data?.id ? run.data : undefined)}
+								summaryOf={() => summary}
+								markers={checkpointMarkers}
+								selectedMarker={selected}
+								onMarker={select}
+							/>
+						{/snippet}
+					</RunCheckpoints>
+				{:else}
+					<EmptyCard icon={Lock} title="Checkpoints aren't part of your role">
+						{#snippet description()}
+							As a guest of {project}, you read its runs and charts, not its
+							checkpoints. Its owner can make you a viewer (project settings,
+							Members).
+						{/snippet}
+					</EmptyCard>
+				{/if}
 			</div>{/if}
 		{#if tab === 'config'}<div role="tabpanel" id="panel-config" aria-labelledby="tab-config">
 				<RunConfig {project} name={r.name} config={r.config} bind:view={configView} />
@@ -648,18 +760,6 @@
 				aria-labelledby="tab-overview"
 			>
 				<div class="grid gap-4 lg:grid-cols-2">
-					{#if summaryRows.length || !headlines.length}
-						<Card.Root>
-							<Card.Header><Card.Title>Summary</Card.Title></Card.Header>
-							<Card.Content
-								><KeyValueList
-									rows={summaryRows}
-									format={formatMetric}
-									empty="No summary yet."
-								/></Card.Content
-							>
-						</Card.Root>
-					{/if}
 					{#if Object.keys(r.renames).length}
 						<Card.Root>
 							<Card.Header>

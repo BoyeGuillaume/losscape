@@ -159,7 +159,7 @@ async fn serve(file: Option<PathBuf>) -> Result<(), Error> {
     })
     .await;
 
-    // The flusher ends once nothing can queue any more: these two hold the state as well.
+    // The flusher ends once nothing can queue any more: these hold the state as well.
     purger.abort();
     cleaner.abort();
     backfiller.abort();

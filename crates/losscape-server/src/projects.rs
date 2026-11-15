@@ -131,7 +131,7 @@ pub async fn get_alias(
     Path((project, alias)): Path<(String, String)>,
 ) -> Result<Json<AliasTarget>, UiError> {
     let project_id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, project_id, Role::Guest, unknown_project).await?;
     let run =
         sqlx::query_scalar("SELECT run_id FROM run_aliases WHERE project_id = $1 AND alias = $2")
             .bind(project_id)
@@ -277,6 +277,9 @@ pub struct ProjectInfo {
     archive_days: i32,
     runs: i64,
     archived_runs: i64,
+    /// How long checkpoints are kept.
+    #[sqlx(skip)]
+    checkpoint_retention: Option<crate::retention::Retention>,
 }
 
 /// `GET /api/v0/projects/{project}` (members).
@@ -286,7 +289,7 @@ pub async fn project_info(
     Path(project): Path<String>,
 ) -> Result<Json<ProjectInfo>, UiError> {
     let project_id = members::project_id(&state, &project).await?;
-    let role = auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
+    let role = auth::require_role(&state, &user, project_id, Role::Guest, unknown_project).await?;
     let mut info: ProjectInfo = sqlx::query_as(
         "SELECT p.name, (extract(epoch from p.created_at) * 1000)::bigint AS created_at_ms,
                 p.archive_days,
@@ -299,15 +302,18 @@ pub async fn project_info(
     .fetch_one(state.pg())
     .await?;
     info.role = role.as_str();
+    info.checkpoint_retention = Some(crate::retention::load(&state, project_id).await?);
     Ok(Json(info))
 }
 
 #[derive(Deserialize)]
 pub struct ProjectUpdate {
     archive_days: Option<i32>,
+    checkpoint_retention: Option<crate::retention::Retention>,
 }
 
-/// `PATCH /api/v0/projects/{project}` `{"archive_days": n}` (owners).
+/// `PATCH /api/v0/projects/{project}` `{"archive_days": n, "checkpoint_retention": {"days",
+/// "keep_last", "best": {"metric", "goal"}}}` (owners), each optional.
 pub async fn update_project(
     State(state): State<AppState>,
     user: AuthUser,
@@ -330,6 +336,15 @@ pub async fn update_project(
             .bind(days)
             .execute(state.pg())
             .await?;
+    }
+    if let Some(retention) = body.checkpoint_retention {
+        crate::retention::save(&state, project_id, &retention).await?;
+        tracing::info!(
+            project,
+            user = user.id,
+            ?retention,
+            "checkpoint retention set"
+        );
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -361,6 +376,8 @@ pub async fn delete_project(
             tracing::warn!(project_id, %err, "deleting the project's metrics failed");
         }
     });
+    // Its checkpoints went with it: their files go now.
+    state.clean_soon();
     tracing::info!(project_id, project, user = user.id, "project deleted");
     Ok(StatusCode::NO_CONTENT)
 }

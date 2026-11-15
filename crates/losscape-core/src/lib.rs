@@ -13,8 +13,9 @@ pub const PROTOCOL_HEADER: &str = "x-losscape-protocol";
 /// part of a file is shorter (docs/ARTIFACTS.md).
 pub const CHECKPOINT_PART_SIZE: u64 = 16 * 1024 * 1024;
 
-/// Header carrying the SHA-256 of a checkpoint part, as sent (hex).
-pub const PART_HASH_HEADER: &str = "x-losscape-sha256";
+/// Header carrying the BLAKE3 hash of a checkpoint part as sent, or of a file as downloaded
+/// (hex).
+pub const PART_HASH_HEADER: &str = "x-losscape-blake3";
 
 /// Version of the losscape crates.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

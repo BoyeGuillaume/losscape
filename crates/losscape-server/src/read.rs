@@ -198,7 +198,7 @@ pub async fn project_runs(
     Query(params): Query<RunsParams>,
 ) -> Result<Json<RunsPage>, UiError> {
     let project_id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, project_id, Role::Guest, unknown_project).await?;
     // Taken before listing, so the next `since_ms` can't skip a change made meanwhile.
     let as_of_ms: i64 = sqlx::query_scalar(&format!("SELECT {}", ms("now()")))
         .fetch_one(state.pg())
@@ -301,7 +301,7 @@ pub async fn run_detail(
     Path(run): Path<String>,
 ) -> Result<Json<RunDetail>, UiError> {
     let run_id = parse_run_id(&run)?;
-    auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+    auth::require_run(&state, &user, run_id, Role::Guest).await?;
     let sql = format!(
         "SELECT r.id, p.name AS project, r.name, {STATE_SQL} AS state, r.group_name, r.tags, r.notes,
                 r.exit_code, {}, r.summary, r.config, r.environment
@@ -371,7 +371,7 @@ pub async fn project_metrics(
     Json(req): Json<RunsRequest>,
 ) -> Result<Json<Vec<RunMetricInfo>>, UiError> {
     let project_id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, project_id, Role::Guest, unknown_project).await?;
     let runs = parse_run_ids(&req.runs)?;
     if runs.is_empty() {
         return Ok(Json(Vec::new()));
@@ -448,7 +448,7 @@ pub async fn series(
             .into());
         }
         let run_id = parse_run_id(&range.run)?;
-        let project_id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+        let project_id = auth::require_run(&state, &user, run_id, Role::Guest).await?;
         let steps_per_tile = (TILE_BUCKETS as u128) << range.level;
         let lo = (range.from_tile as u128 * steps_per_tile).min(u64::MAX as u128) as u64;
         let hi = (range.to_tile as u128 * steps_per_tile).min(u64::MAX as u128) as u64;
@@ -602,7 +602,7 @@ pub async fn run_logs(
     Query(params): Query<LogsParams>,
 ) -> Result<Json<Logs>, UiError> {
     let run_id = parse_run_id(&run)?;
-    let project_id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+    let project_id = auth::require_run(&state, &user, run_id, Role::Guest).await?;
     let count: u64 = state
         .ch_read()
         .query(
@@ -680,7 +680,7 @@ pub async fn run_models(
     Path(run): Path<String>,
 ) -> Result<Json<serde_json::Value>, UiError> {
     let run_id = parse_run_id(&run)?;
-    auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+    auth::require_run(&state, &user, run_id, Role::Guest).await?;
     let models: sqlx::types::Json<serde_json::Value> =
         sqlx::query_scalar("SELECT models FROM runs WHERE id = $1")
             .bind(run_id)
@@ -698,7 +698,7 @@ pub async fn run_logs_file(
     Query(params): Query<DownloadParams>,
 ) -> Result<Response, UiError> {
     let run_id = parse_run_id(&run)?;
-    let project_id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+    let project_id = auth::require_run(&state, &user, run_id, Role::Guest).await?;
     let name: String = sqlx::query_scalar("SELECT name FROM runs WHERE id = $1")
         .bind(run_id)
         .fetch_one(state.pg())
@@ -791,7 +791,7 @@ pub async fn run_file(
     Path((run, name)): Path<(String, String)>,
 ) -> Result<Response, UiError> {
     let run_id = parse_run_id(&run)?;
-    auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+    auth::require_run(&state, &user, run_id, Role::Guest).await?;
     let content: Vec<u8> =
         sqlx::query_scalar("SELECT content FROM run_files WHERE run_id = $1 AND name = $2")
             .bind(run_id)

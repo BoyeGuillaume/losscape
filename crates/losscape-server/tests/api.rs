@@ -1655,6 +1655,17 @@ async fn history_streams_every_point_as_csv() {
     );
     assert!(lines[10].starts_with(&format!(r#""brave-falcon-1","{id}","loss",4,"#)));
 
+    // Many metrics: a query over 8 KB, sent read-only, as above (no settings allowed).
+    let many: String = (0..150)
+        .map(|i| format!("&key=layer/{i:03}/{}", "w".repeat(60)))
+        .collect();
+    let (status, csv) = server.call(get(format!("run={id}&key=loss{many}"))).await;
+    assert_eq!(status, StatusCode::OK, "{}", error_of(&csv));
+    assert_eq!(
+        String::from_utf8(csv.to_vec()).unwrap().lines().count(),
+        1 + 5
+    );
+
     let (_, some) = server
         .call(get(format!("run={id}&key=loss&min_step=1&max_step=2")))
         .await;
@@ -1733,6 +1744,17 @@ async fn metric_stats_are_over_every_point() {
     let mean = (1.0 + 0.5 + 1.0 / 3.0 + 0.25 + 0.2) / 5.0;
     assert!((loss["mean"].as_f64().unwrap() - mean).abs() < 1e-12);
     assert!((loss["median"].as_f64().unwrap() - 1.0 / 3.0).abs() < 1e-12);
+
+    // Many metrics at once: a query over 8 KB, which the ClickHouse client sends as a read-only
+    // POST (where ClickHouse refuses settings).
+    let mut many: Vec<serde_json::Value> = (0..150)
+        .map(|i| serde_json::json!({"run": id.to_string(), "key": format!("layer/{i:03}/{}", "w".repeat(60))}))
+        .collect();
+    many.push(serde_json::json!({"run": id.to_string(), "key": "loss"}));
+    let (status, body) = server.call(stats(serde_json::Value::Array(many))).await;
+    assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(rows.len(), 1);
 
     let (status, _) = server
         .call(stats(

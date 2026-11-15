@@ -252,6 +252,39 @@ def test_checkpoints_round_trip(tmp_path):
     folder = ckpt.download(tmp_path / "back")
     assert (folder / "model.pt").read_bytes() == weights
 
+    # Its link names it: the project, the run, the step.
+    assert ckpt.url.endswith(f"/ckpt/pytest-e2e/{run.name}:99")
+    assert ckpt.permanent_url.endswith(f"/ckpt/{ckpt.id}")
+
+    # Its link: found again by it, and read in parts like any HTTP download.
+    again = lsc.Api(SERVER).checkpoint(ckpt.url)
+    assert lsc.Api(SERVER).checkpoint(ckpt.url.replace(":99", ":latest")).id == ckpt.id
+    assert again.id == ckpt.id and not again.important
+    again.set_important()
+    assert again.important and lsc.Api(SERVER).checkpoint(ckpt.id).important
+    req = urllib.request.Request(
+        f"{ckpt.url}/model.pt",
+        headers={
+            "Authorization": f"Bearer {os.environ['LOSSCAPE_API_KEY']}",
+            "Range": "bytes=1000-1999",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as res:
+        assert res.status == 206
+        assert res.read() == weights[1000:2000]
+
+    # Hashed by the server as it arrived: BLAKE3, as b3sum gives it, and the digest of them.
+    def b3(data: bytes) -> str:
+        h = lsc._native.Blake3()
+        h.update(data)
+        return h.hexdigest()
+
+    files = {f.path: f.blake3 for f in ckpt.files}
+    assert files["model.pt"] == b3(weights)
+    listing = "".join(f"{files[p]}  {p}\n" for p in sorted(files))
+    assert ckpt.digest == b3(listing.encode())
+    assert ckpt.corrupt is None
+
     resumed = lsc.init(
         project="pytest-e2e",
         mode="online",
@@ -265,3 +298,34 @@ def test_checkpoints_round_trip(tmp_path):
     resumed.finish()
     ckpt.delete()
     assert lsc.Api(SERVER).run(run.id).checkpoints == []
+
+
+def test_code_is_read_where_it_is(tmp_path, monkeypatch):
+    """Run from a folder that isn't the code's: `code_dir` says where its repository is."""
+    repo = tmp_path / "code"
+    repo.mkdir()
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    try:
+        subprocess.run([*git, "init", "-q"], cwd=repo, check=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], cwd=repo, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("no git here")
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    run = lsc.init(
+        project="pytest-e2e",
+        mode="online",
+        server=SERVER,
+        dir=tmp_path / "logs",
+        code_dir=repo,
+        system_metrics=False,
+        console=False,
+    )
+    assert run.finish() == "uploaded"
+    environment = api(f"/runs/{run.id}")["environment"]
+    assert environment["git"]["commit"] == commit
+    assert environment["code_dir"] == str(repo)

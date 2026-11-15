@@ -44,7 +44,7 @@ pub async fn history(
     Query(params): Query<HistoryParams>,
 ) -> Result<Response, UiError> {
     let project_id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, project_id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, project_id, Role::Guest, unknown_project).await?;
     let runs = parse_run_ids(&params.run)?;
     if runs.is_empty() {
         return Err(ApiError::invalid("run: at least one run id").into());
@@ -70,15 +70,15 @@ pub async fn history(
     let ids = vec!["toUUID(?)"; names.len()].join(", ");
     let labels = vec!["?"; names.len()].join(", ");
     let key_list = vec!["?"; keys.len()].join(", ");
-    // `run_id` is a column and a name for the output: everywhere but the output, the column.
+    // `run_id` is a column and a name for the output: everywhere but the output, the column
+    // (`m.`). Not with a setting: ClickHouse refuses settings on long read-only queries.
     let sql = format!(
-        "SELECT transform(run_id, [{ids}], [{labels}], '') AS run, toString(run_id) AS run_id,
-                key AS metric, step, toString(ts, 'UTC') AS time_utc, value
-         FROM metrics FINAL
-         WHERE project_id = ? AND run_id IN ({ids}) AND key IN ({key_list})
-           AND step >= ? AND step <= ?
-         ORDER BY run_id, key, step
-         SETTINGS prefer_column_name_to_alias = 1"
+        "SELECT transform(m.run_id, [{ids}], [{labels}], '') AS run, toString(m.run_id) AS run_id,
+                m.key AS metric, m.step AS step, toString(m.ts, 'UTC') AS time_utc, m.value AS value
+         FROM metrics AS m FINAL
+         WHERE m.project_id = ? AND m.run_id IN ({ids}) AND m.key IN ({key_list})
+           AND m.step >= ? AND m.step <= ?
+         ORDER BY m.run_id, m.key, m.step"
     );
     let mut query = state.ch_read().query(&sql);
     for (id, _) in &names {
@@ -158,7 +158,7 @@ pub async fn stats(
     let mut parts = Vec::with_capacity(by_run.len());
     let mut binds: Vec<(u64, Uuid, Vec<String>)> = Vec::with_capacity(by_run.len());
     for (run_id, keys) in by_run {
-        let project_id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+        let project_id = auth::require_run(&state, &user, run_id, Role::Guest).await?;
         let key_list = vec!["?"; keys.len()].join(", ");
         parts.push(format!(
             "SELECT toString(run_id) AS run, key, count() AS n,
@@ -172,10 +172,8 @@ pub async fn stats(
         ));
         binds.push((project_id as u64, run_id, keys));
     }
-    let mut query = state.ch_read().query(&format!(
-        "{} SETTINGS prefer_column_name_to_alias = 1",
-        parts.join(" UNION ALL ")
-    ));
+    // No settings here: ClickHouse refuses them on read-only queries over 8 KB (many items).
+    let mut query = state.ch_read().query(&parts.join(" UNION ALL "));
     for (project_id, run_id, keys) in binds {
         query = query.bind(project_id).bind(run_id.to_string());
         for key in keys {
@@ -238,7 +236,7 @@ pub async fn neighbors(
         let project_id = match projects.get(&run_id) {
             Some(&id) => id,
             None => {
-                let id = auth::require_run(&state, &user, run_id, Role::Viewer).await?;
+                let id = auth::require_run(&state, &user, run_id, Role::Guest).await?;
                 projects.insert(run_id, id);
                 id
             }

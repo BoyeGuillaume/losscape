@@ -41,6 +41,8 @@ export type Appearance = {
 	columns: keyof typeof CHART_COLUMNS;
 	/** Points drawn as dots when a line has few of them in view. */
 	dots: boolean;
+	/** A run's checkpoints marked on its charts, when few enough are in view. */
+	checkpoints: boolean;
 };
 
 export const DEFAULTS: Appearance = {
@@ -49,11 +51,14 @@ export const DEFAULTS: Appearance = {
 	curve: 'straight',
 	chartSize: 'medium',
 	columns: 'auto',
-	dots: false
+	dots: false,
+	checkpoints: true
 };
 
 /** Lines with fewer points than this in view show them as dots (when `dots` is on). */
 export const DOTS_BELOW = 100;
+/** More checkpoints than this in view, and none are marked: their lines would hide the data. */
+export const MAX_CHECKPOINT_LINES = 100;
 
 const STORAGE_KEY = 'losscape:appearance';
 /** The palette last in use, for src/app.html to apply before the page draws. */
@@ -77,6 +82,7 @@ export function parseAppearance(raw: unknown): Partial<Appearance> {
 	const columns = pick(CHART_COLUMNS, r.columns);
 	if (columns) out.columns = columns;
 	if (typeof r.dots === 'boolean') out.dots = r.dots;
+	if (typeof r.checkpoints === 'boolean') out.checkpoints = r.checkpoints;
 	return out;
 }
 

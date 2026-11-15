@@ -47,7 +47,7 @@ pub async fn list(
     Path(project): Path<String>,
 ) -> Result<Json<ProjectAccess>, UiError> {
     let id = project_id(&state, &project).await?;
-    let role = require_role(&state, &user, id, Role::Viewer, unknown_project).await?;
+    let role = require_role(&state, &user, id, Role::Guest, unknown_project).await?;
     let sql = format!(
         "SELECT u.username, u.display_name, {AVATAR_URL_SQL} AS avatar_url, m.role, (extract(epoch from m.added_at) * 1000)::bigint AS added_at_ms
          FROM project_members m JOIN users u ON u.id = m.user_id
@@ -84,7 +84,7 @@ async fn owner_of(tx: &mut sqlx::PgConnection, project_id: i64) -> Result<Option
 }
 
 /// `PUT /api/v0/projects/{project}/members/{username}` (owners): adds a member or changes
-/// their role, as editor or viewer.
+/// their role, as editor, viewer or guest.
 pub async fn set_role(
     State(state): State<AppState>,
     user: AuthUser,
@@ -98,7 +98,7 @@ pub async fn set_role(
         .filter(|r| *r != Role::Owner)
         .ok_or_else(|| {
             ApiError::invalid(
-                "role: editor or viewer (a project has one owner; transfer ownership in the project settings)",
+                "role: editor, viewer or guest (a project has one owner; transfer ownership in the project settings)",
             )
         })?;
     let mut tx = state.pg().begin().await?;
@@ -149,7 +149,7 @@ pub async fn remove(
         &state,
         &user,
         id,
-        if leaving { Role::Viewer } else { Role::Owner },
+        if leaving { Role::Guest } else { Role::Owner },
         unknown_project,
     )
     .await?;
@@ -196,7 +196,8 @@ pub async fn remove(
 pub struct Transfer {
     /// The member who becomes owner.
     username: String,
-    /// What the current owner becomes: "editor", "viewer", or "leave" (no longer a member).
+    /// What the current owner becomes: "editor", "viewer", "guest", or "leave" (no longer a
+    /// member).
     then: String,
 }
 
@@ -216,7 +217,7 @@ pub async fn transfer(
         role => Some(
             Role::parse(role)
                 .filter(|r| *r != Role::Owner)
-                .ok_or_else(|| ApiError::invalid("then: editor, viewer or leave"))?,
+                .ok_or_else(|| ApiError::invalid("then: editor, viewer, guest or leave"))?,
         ),
     };
     let mut tx = state.pg().begin().await?;

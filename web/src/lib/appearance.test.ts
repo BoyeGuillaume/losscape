@@ -10,7 +10,8 @@ describe('parseAppearance', () => {
 			curve: 'smooth',
 			chartSize: 'large',
 			columns: '3',
-			dots: false
+			dots: false,
+			checkpoints: false
 		};
 		expect(parseAppearance(all)).toEqual(all);
 	});
@@ -24,6 +25,7 @@ describe('parseAppearance', () => {
 				chartSize: 'constructor',
 				columns: 3,
 				dots: 'yes',
+				checkpoints: 'no',
 				other: 1
 			})
 		).toEqual({});

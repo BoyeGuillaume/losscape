@@ -14,10 +14,10 @@ Only the standard library is needed, except for ``to_pandas()`` and ``history()`
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,10 +26,16 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
+from lsc import _native
+
 __all__ = ["Api", "ApiError", "Checkpoint", "CheckpointFile", "Point", "Run", "Runs"]
 
 #: Query strings are kept under this, as servers and proxies limit URLs.
 _MAX_QUERY_BYTES = 6000
+_CHECKPOINT_ID = re.compile(r"[0-9a-fA-F]{8}-?(?:[0-9a-fA-F]{4}-?){3}[0-9a-fA-F]{12}")
+#: `<project>/<run>:<step, latest or best>[/<file>]`, as after `/ckpt/` in a link.
+_NAMED_CHECKPOINT = re.compile(r"[^/:]+/[^/]+:[^/]+(/.*)?$")
+_CHECKPOINT_LINK = re.compile(rf"/ckpt/({_CHECKPOINT_ID.pattern})(?:/|$)")
 
 
 class ApiError(Exception):
@@ -52,11 +58,11 @@ class Point(NamedTuple):
 
 class CheckpointFile(NamedTuple):
     """A file of a checkpoint: its path in the checkpoint's folder, size in bytes and the
-    SHA-256 of its content (hex)."""
+    BLAKE3 of its content (hex, as ``b3sum`` gives it), computed by the server as it arrived."""
 
     path: str
     size: int
-    sha256: str
+    blake3: str
 
 
 class Api:
@@ -96,16 +102,44 @@ class Api:
         detail = self._json(f"/runs/{_quote(run_id)}")
         return Run(self, detail["project"], detail, detail=detail)
 
+    def checkpoint(self, link: str) -> Checkpoint:
+        """A checkpoint by its link, as copied from its run's Checkpoints tab:
+        ``https://…/ckpt/<project>/<run>:<step>`` (or ``:latest``, ``:best``; the run by name,
+        ``@alias`` or id), ``https://…/ckpt/<id>``, the part after ``/ckpt/``, or its id."""
+        link = link.strip()
+        found = _CHECKPOINT_LINK.search(link)
+        if found or _CHECKPOINT_ID.fullmatch(link):
+            checkpoint_id = found.group(1) if found else link
+            return Checkpoint(self, self._json(f"/checkpoints/{checkpoint_id}"))
+        if "/ckpt/" in link:
+            named = link.split("/ckpt/", 1)[1]
+        elif "://" in link:
+            raise ValueError(f"{link!r}: not a checkpoint link (…/ckpt/…) or id")
+        else:
+            named = link
+        if not _NAMED_CHECKPOINT.match(named):
+            raise ValueError(f"{link!r}: not a checkpoint link or id")
+        return Checkpoint(self, self._json("/checkpoints/resolve", {"ref": named}))
+
     # ---- HTTP
 
     def _open(
-        self, path: str, params: Iterable[tuple[str, Any]] = (), *, method: str = "GET"
+        self,
+        path: str,
+        params: Iterable[tuple[str, Any]] = (),
+        *,
+        method: str = "GET",
+        body: Any = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Any:
         query = urllib.parse.urlencode(list(params))
         url = f"{self.server}/api/v0{path}" + (f"?{query}" if query else "")
-        req = urllib.request.Request(
-            url, headers={"Authorization": f"Bearer {self._key}"}, method=method
-        )
+        all_headers = {"Authorization": f"Bearer {self._key}", **(headers or {})}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            all_headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=all_headers, method=method)
         try:
             return urllib.request.urlopen(req, timeout=self.timeout)  # noqa: S310 - http(s) only
         except urllib.error.HTTPError as err:
@@ -228,10 +262,23 @@ class Run:
 
 class Checkpoint:
     """A checkpoint of a run: the files saved at a step, as uploaded with
-    :meth:`lsc.Run.log_checkpoint`. ``size`` is in bytes (``stored_size``: compressed)."""
+    :meth:`lsc.Run.log_checkpoint`. ``size`` is in bytes (``stored_size``: compressed).
+
+    ``url`` is its link by name, through the server (``…/ckpt/<project>/<run>:<step>``): the
+    whole checkpoint as a tar archive, and ``<url>/<path>`` one file (with an API key:
+    ``Authorization: Bearer …``); ``permanent_url`` is by id. ``important`` ones are never
+    deleted by the project's retention; ``expires_at`` is when retention deletes it, if it
+    does; ``best`` says it's its run's best. ``digest`` is the BLAKE3 of its files listed as
+    ``b3sum`` lists them (``<hash>  <path>``, by path): it changes with any of them.
+    ``corrupt`` says what storage gave back changed, if it ever did (downloads then fail rather
+    than give it)."""
 
     def __init__(self, api: Api, data: dict[str, Any]):
         self._api = api
+        self._update(data)
+        self._files: list[dict[str, Any]] | None = data.get("files")
+
+    def _update(self, data: dict[str, Any]) -> None:
         self.id: str = data["id"]
         self.run_id: str = data["run"].replace("-", "")
         self.step: int = data["step"]
@@ -239,7 +286,20 @@ class Checkpoint:
         self.stored_size: int = data["stored_size"]
         self.file_count: int = data["file_count"]
         self.created_at = _from_ms(data["created_at_ms"])
-        self._files: list[dict[str, Any]] | None = data.get("files")
+        self.important: bool = data.get("important", False)
+        self.expires_at = _from_ms(data.get("expires_at_ms"))
+        self.permanent_url: str = self._api.server + data.get("permanent_url", f"/ckpt/{self.id}")
+        self.url: str = self._api.server + data.get("url", f"/ckpt/{self.id}")
+        self.best: bool = data.get("best", False)
+        self.digest: str | None = data.get("digest")
+        self.corrupt: str | None = data.get("corrupt")
+
+    def set_important(self, important: bool = True) -> None:
+        """Marks it important (never deleted by retention), or not (needs edit rights)."""
+        with self._api._open(
+            f"/checkpoints/{_quote(self.id)}", method="PATCH", body={"important": important}
+        ) as res:
+            self._update(json.load(res))
 
     def __repr__(self) -> str:
         return f"<Checkpoint step {self.step} of run {self.run_id}, {self.file_count} files>"
@@ -251,14 +311,14 @@ class Checkpoint:
 
     @property
     def files(self) -> list[CheckpointFile]:
-        return [CheckpointFile(f["path"], f["size"], f["sha256"]) for f in self._file_list()]
+        return [CheckpointFile(f["path"], f["size"], f["blake3"]) for f in self._file_list()]
 
     def download(
         self, to: str | os.PathLike[str] | None = None, files: str | Iterable[str] | None = None
     ) -> Path:
         """Downloads the checkpoint's files (or only ``files``, paths as in :attr:`files`)
         into the folder ``to`` (default ``checkpoints/<run id>/<step>``), checking each
-        against its SHA-256. Returns the folder."""
+        against its BLAKE3. Returns the folder."""
         folder = Path(to) if to is not None else Path("checkpoints", self.run_id, str(self.step))
         wanted = None if files is None else {files} if isinstance(files, str) else set(files)
         chosen = [f for f in self._file_list() if wanted is None or f["path"] in wanted]
@@ -272,17 +332,28 @@ class Checkpoint:
     def _download_file(self, f: dict[str, Any], target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         partial = target.with_name(target.name + ".part")
-        digest = hashlib.sha256()
-        with (
-            self._api._open(f"/checkpoints/{_quote(self.id)}/files/{f['index']}") as res,
-            open(partial, "wb") as out,
-        ):
-            while chunk := res.read(1 << 20):
-                digest.update(chunk)
-                out.write(chunk)
-        if digest.hexdigest() != f["sha256"]:
+        digest = _native.Blake3()
+        # What an interrupted download left is kept: the rest is asked for.
+        have = partial.stat().st_size if partial.exists() else 0
+        if have >= f["size"]:
+            have = 0
+        if have:
+            with open(partial, "rb") as done:
+                while chunk := done.read(1 << 20):
+                    digest.update(chunk)
+        headers = {"Range": f"bytes={have}-"} if have else None
+        with self._api._open(
+            f"/checkpoints/{_quote(self.id)}/files/{f['index']}", headers=headers
+        ) as res:
+            if have and res.status != 206:  # the whole file after all
+                have, digest = 0, _native.Blake3()
+            with open(partial, "ab" if have else "wb") as out:
+                while chunk := res.read(1 << 20):
+                    digest.update(chunk)
+                    out.write(chunk)
+        if digest.hexdigest() != f["blake3"]:
             partial.unlink()
-            raise ApiError(f"{f['path']}: downloaded content doesn't match its SHA-256")
+            raise ApiError(f"{f['path']}: downloaded content doesn't match its BLAKE3")
         os.replace(partial, target)
 
     def delete(self) -> None:

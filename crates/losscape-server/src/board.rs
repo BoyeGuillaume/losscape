@@ -78,7 +78,7 @@ pub async fn get(
     Path(project): Path<String>,
 ) -> Result<Json<Versioned>, UiError> {
     let id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, id, Role::Guest, unknown_project).await?;
     let (board, version): (Option<SqlJson<Board>>, i64) =
         sqlx::query_as("SELECT board, board_version FROM projects WHERE id = $1")
             .bind(id)

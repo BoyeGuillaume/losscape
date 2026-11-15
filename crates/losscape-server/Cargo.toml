@@ -44,6 +44,8 @@ object_store = { version = "0.14", default-features = false, features = ["fs", "
 tokio-util = { version = "0.7", features = ["io"] }
 async-compression = { version = "0.4", features = ["tokio", "zstd"] }
 futures-util = "0.3"
+percent-encoding = "2.3.2"
+blake3 = "1.8.7"
 
 [features]
 # `losscape_server::testing`: run a server on fresh databases from other crates' tests.

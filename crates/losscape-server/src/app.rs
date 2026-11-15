@@ -11,6 +11,7 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::RequestBodyTimeoutLayer;
 
@@ -20,7 +21,7 @@ use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
 use crate::{
-    auth, board, checkpoints, history, ingest, live, metric_defs, projects, read, runs, tags,
+    auth, board, checkpoints, history, ingest, links, live, metric_defs, projects, read, runs, tags,
 };
 
 /// Between two parts of a request's body. Responses have no such limit: live streams never end.
@@ -100,12 +101,21 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         )
         .route(
             "/checkpoints/{id}",
-            get(checkpoints::detail).delete(checkpoints::delete),
+            get(checkpoints::detail)
+                .patch(checkpoints::update)
+                .delete(checkpoints::delete),
         )
         .route(
             "/checkpoints/{id}/files/{file}/parts/{part}",
             put(checkpoints::upload_part)
                 .layer(DefaultBodyLimit::max(checkpoints::MAX_STORED_PART)),
+        )
+        .route("/checkpoints/resolve", get(links::resolve_ref))
+        .route("/runs/{run}/checkpoints/brief", get(checkpoints::brief))
+        .route("/runs/{run}/checkpoints/prune", post(checkpoints::prune))
+        .route(
+            "/runs/{run}/checkpoints/important",
+            post(checkpoints::mark_all),
         )
         .route("/checkpoints/{id}/commit", post(checkpoints::commit))
         .route("/checkpoints/{id}/files/{file}", get(checkpoints::download))
@@ -126,6 +136,14 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
             get(account::list_api_keys).post(account::create_api_key),
         )
         .route("/me/api-keys/{id}", delete(account::revoke_api_key))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_user,
+        ));
+
+    // Short links to checkpoints, for scripts and sharing: whatever the storage, through here.
+    let checkpoint_links = Router::new()
+        .route("/ckpt/{*link}", get(links::serve))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_user,
@@ -153,6 +171,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/branding/favicon", get(favicon))
         .route("/branding/auth-background", get(auth_background))
         .nest("/api/v0", user_api.merge(public_api))
+        .merge(checkpoint_links)
         .route("/api/{*rest}", any(unknown_endpoint))
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state);
@@ -172,8 +191,16 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .layer(middleware::map_response(move |response| {
             security_headers(response, policy.current())
         }))
-        // Run lists and tiles shrink ~10x; event streams and small bodies are left alone.
-        .layer(CompressionLayer::new())
+        // Run lists and tiles shrink ~10x; event streams and small bodies are left alone, and
+        // checkpoint files: compressing them is slow and saves little, and loses their length
+        // (needed for progress and ranges).
+        .layer(
+            CompressionLayer::new().compress_when(
+                DefaultPredicate::new()
+                    .and(NotForContentType::new("application/octet-stream"))
+                    .and(NotForContentType::new("application/x-tar")),
+            ),
+        )
 }
 
 /// The Content-Security-Policy, recomputed when the built app's `index.html` changes (its

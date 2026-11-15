@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { ChartMarker } from '#lib/charts/markers.js';
 	import ChartLine from '@lucide/svelte/icons/chart-line';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -55,7 +56,10 @@
 		onRename,
 		only,
 		importantOnly = false,
-		highlight = null
+		highlight = null,
+		markers,
+		selectedMarker = null,
+		onMarker
 	}: {
 		project: string;
 		/** Lines to draw (runs, or groups of runs), in legend order. */
@@ -87,6 +91,10 @@
 		importantOnly?: boolean;
 		/** The series to pick out in the charts, fading the others. */
 		highlight?: string | null;
+		/** Steps to mark on the charts (a run's checkpoints), the one chosen, and a click on one. */
+		markers?: ChartMarker[];
+		selectedMarker?: number | null;
+		onMarker?: (step: number) => void;
 	} = $props();
 
 	const sep = '\u0000';
@@ -284,6 +292,9 @@
 				override={overrides[only]}
 				onOverride={(o) => setOverride(only, o)}
 				{xOptions}
+				{markers}
+				{selectedMarker}
+				{onMarker}
 				bind:view
 			/>
 		</ChartGroup>
@@ -434,6 +445,9 @@
 							href={metricHref(project, key)}
 							{source}
 							{onRename}
+							{markers}
+							{selectedMarker}
+							{onMarker}
 							{settings}
 							override={overrides[key]}
 							onOverride={(o) => setOverride(key, o)}

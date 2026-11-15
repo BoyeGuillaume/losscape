@@ -13,6 +13,7 @@
 		CURVES,
 		DEFAULTS,
 		DOTS_BELOW,
+		MAX_CHECKPOINT_LINES,
 		PALETTES,
 		THEMES,
 		type Appearance
@@ -25,10 +26,10 @@
 	/** Which settings are being changed: the account's, or this browser's over them. */
 	let scope = $state<'account' | 'browser'>('account');
 
-	// Settings are strings in the controls; dots is the one boolean.
+	// Settings are strings in the controls; the on/off ones are booleans.
 	const toText = (v: Appearance[Key]) => String(v);
 	const fromText = (key: Key, text: string) =>
-		(key === 'dots' ? text === 'true' : text) as Appearance[Key];
+		(typeof DEFAULTS[key] === 'boolean' ? text === 'true' : text) as Appearance[Key];
 
 	const accountValue = (key: Key) => appearance.account[key] ?? DEFAULTS[key];
 	/** What's selected: the scope's value, or "same" for a browser following the account. */
@@ -145,6 +146,24 @@
 					fill="var(--chart-1)"
 				/>{/each}
 		{/if}
+	</svg>
+{/snippet}
+
+{#snippet checkpointsPreview(value: string)}
+	<svg class="h-14 w-24 rounded-md border bg-background" viewBox="0 0 96 48" aria-hidden="true">
+		{#if value === 'true'}
+			{#each [30, 54, 78] as x (x)}<line
+					x1={x}
+					x2={x}
+					y1="4"
+					y2="44"
+					stroke="var(--muted-foreground)"
+					stroke-width="1"
+					stroke-dasharray="3 3"
+					opacity="0.6"
+				/>{/each}
+		{/if}
+		<path d={straight} fill="none" stroke="var(--chart-1)" stroke-width="1.5" />
 	</svg>
 {/snippet}
 
@@ -303,6 +322,15 @@
 				[
 					{ value: 'false', label: 'Hidden', preview: dotsPreview },
 					{ value: 'true', label: 'Shown', preview: dotsPreview }
+				]
+			)}
+			{@render setting(
+				'checkpoints',
+				'Checkpoints',
+				`A run's checkpoint steps as lines on its charts, when ${MAX_CHECKPOINT_LINES} or fewer are in view; hover one to see it, click it to open it`,
+				[
+					{ value: 'false', label: 'Hidden', preview: checkpointsPreview },
+					{ value: 'true', label: 'Shown', preview: checkpointsPreview }
 				]
 			)}
 		</div>

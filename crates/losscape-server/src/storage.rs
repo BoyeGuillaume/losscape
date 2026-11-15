@@ -82,28 +82,56 @@ impl Storage {
             .map_err(|err| unavailable("writing", key, err))
     }
 
-    /// The objects at `keys`, one after the other, as one stream.
-    pub fn read(&self, keys: Vec<Path>) -> BoxStream<'static, std::io::Result<Bytes>> {
+    /// The objects at `keys`, one after the other, as one stream, each checked against its
+    /// BLAKE3 (taken when it was stored) before any of it is given out: storage isn't trusted to
+    /// give back what it was given. One that doesn't match, or can't be read, ends the stream
+    /// with an error; `corrupt` is told which, for a mismatch.
+    pub fn read_checked(
+        &self,
+        keys: Vec<(Path, [u8; 32])>,
+        corrupt: Arc<dyn Fn(&Path) + Send + Sync>,
+    ) -> BoxStream<'static, std::io::Result<Bytes>> {
         let store = self.store.clone();
         futures_util::stream::iter(keys)
-            .then(move |key| {
+            .then(move |(key, want)| {
                 let store = store.clone();
+                let corrupt = corrupt.clone();
                 async move {
-                    match store.get(&key).await {
-                        Ok(object) => Ok(object.into_stream()),
-                        Err(err) => {
-                            tracing::warn!(%key, %err, "reading checkpoint storage failed");
-                            Err(object_store::Error::Generic {
-                                store: "checkpoints",
-                                source: "reading failed".into(),
-                            })
-                        }
+                    let fetched = match store.get(&key).await {
+                        Ok(object) => object.bytes().await,
+                        Err(err) => Err(err),
+                    };
+                    let bytes = fetched.map_err(|err| {
+                        tracing::warn!(%key, %err, "reading checkpoint storage failed");
+                        std::io::Error::other("reading checkpoint storage failed")
+                    })?;
+                    if blake3::hash(&bytes).as_bytes() != &want {
+                        tracing::error!(%key, "checkpoint storage gave back something else than was stored");
+                        corrupt(&key);
+                        return Err(std::io::Error::other(
+                            "checkpoint storage gave back a part that isn't what was uploaded",
+                        ));
                     }
+                    Ok(bytes)
                 }
             })
-            .try_flatten()
-            .map_err(std::io::Error::other)
             .boxed()
+    }
+
+    /// Every key it holds, as text (for tests).
+    pub async fn keys(&self) -> Result<Vec<String>, ApiError> {
+        let mut listed = self.store.list(None);
+        let mut keys = Vec::new();
+        while let Some(meta) = listed.next().await {
+            let meta = meta.map_err(|err| unavailable("listing", &Path::default(), err))?;
+            keys.push(meta.location.to_string());
+        }
+        Ok(keys)
+    }
+
+    /// Writes `data` at a key given as text (for tests: changing what was stored).
+    pub async fn put_at(&self, key: &str, data: Bytes) -> Result<(), ApiError> {
+        self.put(&Path::from(key), data).await
     }
 
     /// How many objects it holds (for tests).
@@ -172,17 +200,36 @@ mod tests {
             .await
             .unwrap();
 
+        let hash = |s: &str| *blake3::hash(s.as_bytes()).as_bytes();
+        let none: Arc<dyn Fn(&Path) + Send + Sync> = Arc::new(|_| {});
         let read: Vec<Bytes> = storage
-            .read(vec![key("1/a/0"), key("1/a/1")])
+            .read_checked(
+                vec![
+                    (key("1/a/0"), hash("hello ")),
+                    (key("1/a/1"), hash("world")),
+                ],
+                none.clone(),
+            )
             .try_collect()
             .await
             .unwrap();
         assert_eq!(read.concat(), b"hello world");
+        // Changed in storage: refused, and told.
+        let told = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = told.clone();
+        let report: Arc<dyn Fn(&Path) + Send + Sync> =
+            Arc::new(move |k: &Path| seen.lock().unwrap().push(k.to_string()));
+        let wrong = storage
+            .read_checked(vec![(key("1/a/0"), hash("hello!"))], report)
+            .try_collect::<Vec<Bytes>>()
+            .await;
+        assert!(wrong.is_err());
+        assert_eq!(*told.lock().unwrap(), ["1/a/0"]);
 
         assert_eq!(storage.delete_prefix(&key("1/a")).await.unwrap(), 2);
         assert_eq!(storage.delete_prefix(&key("1/a")).await.unwrap(), 0, "gone");
         let rest: Vec<Bytes> = storage
-            .read(vec![key("1/b/0")])
+            .read_checked(vec![(key("1/b/0"), hash("other"))], none)
             .try_collect()
             .await
             .unwrap();

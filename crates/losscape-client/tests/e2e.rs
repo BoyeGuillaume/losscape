@@ -376,8 +376,7 @@ async fn checkpoint_upload_cut_short_resumes_with_sync() {
     log_steps(&run, 0, 10);
     let (weights, _) = checkpoint_folder(&src, 3);
     run.log_checkpoint(&src, 5, false).unwrap();
-    // Let some of it upload, then stop as if killed.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Stopped as if killed, before its upload could end (uploads are fast).
     tokio::task::spawn_blocking(move || drop(run))
         .await
         .unwrap();

@@ -36,6 +36,9 @@ const ROLE_CACHE_TTL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Role {
+    /// Reads runs, charts and metrics; not checkpoints.
+    Guest,
+    /// Reads everything, checkpoints included.
     Viewer,
     Editor,
     Owner,
@@ -44,6 +47,7 @@ pub enum Role {
 impl Role {
     pub fn as_str(self) -> &'static str {
         match self {
+            Role::Guest => "guest",
             Role::Viewer => "viewer",
             Role::Editor => "editor",
             Role::Owner => "owner",
@@ -52,6 +56,7 @@ impl Role {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "guest" => Some(Role::Guest),
             "viewer" => Some(Role::Viewer),
             "editor" => Some(Role::Editor),
             "owner" => Some(Role::Owner),
@@ -605,6 +610,8 @@ mod tests {
     #[test]
     fn roles_are_ordered() {
         assert!(Role::Owner > Role::Editor && Role::Editor > Role::Viewer);
+        assert!(Role::Viewer > Role::Guest);
+        assert_eq!(Role::parse("guest"), Some(Role::Guest));
         assert_eq!(Role::parse("editor"), Some(Role::Editor));
         assert_eq!(Role::parse("admin"), None);
     }

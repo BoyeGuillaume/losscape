@@ -264,7 +264,8 @@ compose.yaml            the whole thing, in Docker
   signed-in session, so that a leaked key can't keep itself alive or delete anything.
 - Projects: created in the UI (New project), never by the SDK; the creator is owner. One owner
   per project (manages members and settings; ownership moves only by transfer), editors (log
-  runs), viewers (read). Non-members get 404.
+  runs), viewers (read, checkpoints included), guests (read runs and charts, not checkpoints).
+  Non-members get 404.
 - External sign-in: OpenID Connect (PKCE, verified ID token) and GitHub; see
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - Behind a reverse proxy, client addresses come from `X-Forwarded-For` only if it's listed in

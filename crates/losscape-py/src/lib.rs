@@ -196,7 +196,7 @@ fn parse_object(json: &str) -> PyResult<Map<String, Value>> {
     *, project, root, server=None, api_key=None, run_id=None, resume=false, name=String::new(),
     group=String::new(), tags=Vec::new(), notes=String::new(), config_json=String::new(),
     python_version=String::new(), sdk_version=String::new(), console=false,
-    system_interval=None, python_path=Vec::new(), details_json=String::new(), git_diff=true,
+    system_interval=None, python_path=Vec::new(), details_json=String::new(), git_diff=true, code_dir=None, script_dir=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn start_run(
@@ -219,6 +219,8 @@ fn start_run(
     python_path: Vec<PathBuf>,
     details_json: String,
     git_diff: bool,
+    code_dir: Option<PathBuf>,
+    script_dir: Option<PathBuf>,
 ) -> PyResult<NativeRun> {
     let mode = match (server, api_key) {
         (Some(server), Some(api_key)) => Mode::Online { server, api_key },
@@ -254,6 +256,8 @@ fn start_run(
             parse_object(&details_json)?
         },
         skip_git_diff: !git_diff,
+        code_dir,
+        script_dir,
     };
 
     // Resuming may wait on the server.
@@ -291,6 +295,38 @@ fn sync(
         .collect())
 }
 
+/// BLAKE3, for checking checkpoint files as they download (Python has no BLAKE3 of its own).
+#[pyclass(module = "lsc._native")]
+struct Blake3 {
+    hasher: blake3::Hasher,
+}
+
+#[pymethods]
+impl Blake3 {
+    #[new]
+    fn new() -> Self {
+        Self {
+            hasher: blake3::Hasher::new(),
+        }
+    }
+
+    /// Adds bytes; releases the GIL while hashing large ones.
+    fn update(&mut self, py: Python<'_>, data: &[u8]) {
+        if data.len() > 64 * 1024 {
+            let hasher = &mut self.hasher;
+            py.detach(|| {
+                hasher.update(data);
+            });
+        } else {
+            self.hasher.update(data);
+        }
+    }
+
+    fn hexdigest(&self) -> String {
+        self.hasher.finalize().to_hex().to_string()
+    }
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", losscape_core::VERSION)?;
@@ -299,5 +335,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_run, m)?)?;
     m.add_function(wrap_pyfunction!(sync, m)?)?;
     m.add_class::<NativeRun>()?;
+    m.add_class::<Blake3>()?;
     Ok(())
 }

@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 bytes = "1.12.1"
+futures-util = "0.3"
 crc32fast = "1.5.3"
 losscape-core = { path = "../losscape-core" }
 gethostname = "1.1.0"
@@ -18,8 +19,8 @@ sysinfo = { version = "0.38.4", default-features = false, features = ["system", 
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt", "time", "sync", "macros"] }
 zstd = "0.14.3"
-sha2 = "0.11.1"
 serde = { version = "1", features = ["derive"] }
+blake3 = "1.8.7"
 
 [lints]
 workspace = true

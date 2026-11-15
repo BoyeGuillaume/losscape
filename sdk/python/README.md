@@ -51,6 +51,24 @@ if (ckpt := run.latest_checkpoint()) is not None:  # a local folder, or None
   delete it.
 - The server must have checkpoint storage (`LOSSCAPE_STORAGE`, see docs/DEPLOYMENT.md).
 
+Each checkpoint has a link of its own through the server, whatever the storage behind it (copy
+it from the run's Checkpoints tab): the whole checkpoint as a tar archive, and `<link>/<path>`
+one file, with HTTP ranges so downloads resume.
+
+```python
+ckpt = lsc.Api().checkpoint("https://losscape.example.com/ckpt/01a1e101-…")
+ckpt.download(files="model.pt")  # resumes an interrupted download, checks the BLAKE3
+ckpt.set_important()  # never deleted by the project's retention
+```
+
+```sh
+curl -H "Authorization: Bearer $LOSSCAPE_API_KEY" https://losscape.example.com/ckpt/01a1e101-… | tar -x
+```
+
+Projects keep checkpoints until they're deleted, or for a number of days (project settings),
+except the ones marked important and, if chosen, each run's last one and its best one by a
+metric.
+
 ## Reading runs back
 
 `lsc.Api()` reads what the server stored, for analysis in scripts and notebooks. It connects
@@ -77,9 +95,11 @@ for point in best.scan_history("train/loss"):  # streamed: metric, step, time, v
 - Without `keys`, history has every metric of the run except system metrics
   (`system=True` adds them). `min_step` and `max_step` limit the steps.
 - `api.run(run_id)` gets one run; ids are the ones `lsc.init()` gives (`run.id`).
-- `run.checkpoints` lists its checkpoints by step (`run.checkpoint(step)` for one), with
-  `step`, `size`, `files`; `checkpoint.download(to, files=...)` downloads all of its files or
-  some (checked against their SHA-256), and `checkpoint.delete()` deletes it.
+- `run.checkpoints` lists its checkpoints by step (`run.checkpoint(step)` for one;
+  `api.checkpoint(link)` by its link), with `step`, `size`, `files`, `url`, `important` and
+  `expires_at`; `checkpoint.download(to, files=...)` downloads all of its files or some
+  (checked against their BLAKE3, resuming), `set_important()` protects it from retention, and
+  `checkpoint.delete()` deletes it.
 - Metrics as logged: renames and computed metrics of the web UI aren't applied.
 
 ## How it works
@@ -125,6 +145,7 @@ this version on. If a folder above it was already there, it keeps its permission
 | `api_key` | `LOSSCAPE_API_KEY` | required online: create one in the web UI, Settings > API keys |
 | `console` | `LOSSCAPE_CONSOLE` | on: stdout and stderr are recorded (off on Windows and in Jupyter) |
 | `git_diff` | `LOSSCAPE_GIT_DIFF` | on: uncommitted changes are recorded (whether there are any always is) |
+| `code_dir` | `LOSSCAPE_CODE_DIR` | where the code's git repository is: the working directory, or the main script's folder if that isn't in one |
 | `system_metrics` | `LOSSCAPE_SYSTEM_METRICS` | on: CPU, memory, disk, network, NVIDIA GPUs |
 | | `LOSSCAPE_SYSTEM_INTERVAL` | 5 s |
 | `finish(timeout=)` | `LOSSCAPE_FINISH_TIMEOUT` | 60 s |

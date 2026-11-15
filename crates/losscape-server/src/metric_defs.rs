@@ -106,7 +106,7 @@ pub async fn list(
     Path(project): Path<String>,
 ) -> Result<Json<Definitions>, UiError> {
     let id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, id, Role::Guest, unknown_project).await?;
     let version =
         sqlx::query_scalar("SELECT metric_definitions_version FROM projects WHERE id = $1")
             .bind(id)
@@ -199,7 +199,7 @@ pub async fn keys(
     Path(project): Path<String>,
 ) -> Result<Json<Vec<String>>, UiError> {
     let id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, id, Role::Guest, unknown_project).await?;
     Ok(Json(
         sqlx::query_scalar(
             "SELECT key FROM project_metric_keys WHERE project_id = $1

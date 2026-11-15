@@ -1,6 +1,5 @@
 """The query API (lsc.Api) against a fake server answering as the real one does."""
 
-import hashlib
 import json
 import math
 import subprocess
@@ -12,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from lsc import _native
 from lsc.api import Api, ApiError, Point
 
 KEY = "df_test"
@@ -35,6 +35,12 @@ RUN_JSON = {
 }
 
 
+def b3(data: bytes) -> str:
+    h = _native.Blake3()
+    h.update(data)
+    return h.hexdigest()
+
+
 CKPT = "01a1a361-acce-72d1-ada3-000000000001"
 CKPT_FILES = {"model.pt": b"weights" * 1000, "tok/vocab.json": b"{}"}
 CKPT_JSON = {
@@ -47,11 +53,15 @@ CKPT_JSON = {
     "file_count": 2,
     "created_at_ms": 1_700_000_000_000,
     "committed_at_ms": 1_700_000_001_000,
+    "important": False,
+    "keep": [],
+    "expires_at_ms": None,
+    "url": f"/ckpt/{CKPT}",
 }
 CKPT_DETAIL = {
     **CKPT_JSON,
     "files": [
-        {"index": i, "path": p, "size": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+        {"index": i, "path": p, "size": len(b), "blake3": b3(b)}
         for i, (p, b) in enumerate(CKPT_FILES.items())
     ],
 }
@@ -103,15 +113,31 @@ class FakeServer(BaseHTTPRequestHandler):
                         time = f"2023-11-14 22:13:2{step}.000"
                         lines.append(f'"brave-falcon-1","{RUN}","{key}",{step},"{time}",{text}')
             return self.send(200, ("\n".join(lines) + "\n").encode(), "text/csv")
+        if url.path == "/api/v0/checkpoints/resolve":
+            FakeServer.resolved.append(query["ref"][0])
+            return self.send(200, FakeServer.detail)
         if url.path == f"/api/v0/runs/{RUN.replace('-', '')}/checkpoints":
             return self.send(200, [CKPT_JSON])
-        if url.path == f"/api/v0/checkpoints/{CKPT}":
+        if url.path in (
+            f"/api/v0/checkpoints/{CKPT}",
+            f"/api/v0/checkpoints/{CKPT.replace('-', '')}",
+        ):
             return self.send(200, FakeServer.detail)
         if url.path.startswith(f"/api/v0/checkpoints/{CKPT}/files/"):
             index = int(url.path.rsplit("/", 1)[1])
             body = FakeServer.served.get(index, list(CKPT_FILES.values())[index])
+            ranged = self.headers.get("Range")
+            if ranged:
+                FakeServer.ranges.append(ranged)
+                start = int(ranged.removeprefix("bytes=").rstrip("-"))
+                return self.send(206, body[start:], "application/octet-stream")
             return self.send(200, body, "application/octet-stream")
         return self.send(404, {"code": "unknown_endpoint", "message": "no such endpoint"})
+
+    def do_PATCH(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeServer.patched.append((self.path, body))
+        self.send(200, {**CKPT_JSON, "important": body["important"], "keep": ["important"]})
 
     def do_DELETE(self):
         FakeServer.deleted.append(self.path)
@@ -126,6 +152,9 @@ def api():
     FakeServer.requests = []
     FakeServer.served = {}
     FakeServer.deleted = []
+    FakeServer.patched = []
+    FakeServer.resolved = []
+    FakeServer.ranges = []
     FakeServer.detail = CKPT_DETAIL
     yield Api(f"http://127.0.0.1:{server.server_address[1]}", KEY)
     server.shutdown()
@@ -235,7 +264,7 @@ def test_checkpoints_download_and_delete(api, tmp_path):
 def test_checkpoint_downloads_are_checked(api, tmp_path):
     ckpt = api.run(RUN).checkpoints[0]
     FakeServer.served = {0: b"tampered"}
-    with pytest.raises(ApiError, match="SHA-256"):
+    with pytest.raises(ApiError, match="BLAKE3"):
         ckpt.download(tmp_path, files="model.pt")
     assert list(tmp_path.iterdir()) == [], "nothing left behind"
 
@@ -244,3 +273,39 @@ def test_checkpoint_downloads_are_checked(api, tmp_path):
         with pytest.raises(ApiError, match="outside"):
             api.run(RUN).checkpoints[0].download(tmp_path / "in")
     assert not (tmp_path / "escape").exists()
+
+
+def test_checkpoints_by_link_marked_important_and_resumed(api, tmp_path):
+    for link in [
+        f"{api.server}/ckpt/{CKPT}",
+        f"{api.server}/ckpt/{CKPT}/model.pt",
+        f"/ckpt/{CKPT}",
+        CKPT,
+        CKPT.replace("-", ""),
+        f"{api.server}/ckpt/mnist/brave-falcon-1:100",
+        f"{api.server}/ckpt/mnist/@best:latest/model.pt",
+        "mnist/brave-falcon-1:best",
+    ]:
+        ckpt = api.checkpoint(link)
+        assert (ckpt.id, ckpt.step) == (CKPT, 100), link
+    assert FakeServer.resolved == [
+        "mnist/brave-falcon-1:100",
+        "mnist/@best:latest/model.pt",
+        "mnist/brave-falcon-1:best",
+    ], "names are resolved by the server"
+    assert ckpt.url == f"{api.server}/ckpt/{CKPT}"
+    assert not ckpt.important
+    with pytest.raises(ValueError, match="not a checkpoint"):
+        api.checkpoint("https://example.com/runs/1")
+
+    ckpt.set_important()
+    assert FakeServer.patched == [(f"/api/v0/checkpoints/{CKPT}", {"important": True})]
+    assert ckpt.important
+
+    # An interrupted download: the rest is asked for, and the whole is checked.
+    weights = CKPT_FILES["model.pt"]
+    (tmp_path / "model.pt.part").write_bytes(weights[:1234])
+    ckpt.download(tmp_path, files="model.pt")
+    assert (tmp_path / "model.pt").read_bytes() == weights
+    assert FakeServer.ranges == ["bytes=1234-"]
+    assert not (tmp_path / "model.pt.part").exists()

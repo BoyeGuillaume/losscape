@@ -55,6 +55,8 @@ pub async fn purge_archived(state: &AppState) -> Result<u64, ApiError> {
             .execute(state.pg())
             .await?;
         state.forget_runs(|run, _| ids.contains(run));
+        // Their checkpoints went with them: their files go now.
+        state.clean_soon();
         total += runs.len() as u64;
     }
 }

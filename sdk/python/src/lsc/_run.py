@@ -532,6 +532,13 @@ def _python_details() -> dict[str, Any]:
     return details
 
 
+def _script_dir() -> str | None:
+    """The main script's folder, if there is one (not in a notebook or the REPL)."""
+    main = sys.modules.get("__main__")
+    path = getattr(main, "__file__", None)
+    return str(Path(path).resolve().parent) if path else None
+
+
 def init(
     project: str | None = None,
     *,
@@ -549,6 +556,7 @@ def init(
     console: bool | None = None,
     system_metrics: bool | None = None,
     git_diff: bool | None = None,
+    code_dir: str | os.PathLike[str] | None = None,
 ) -> Run:
     """Start a run. Returns immediately; the server is contacted in the background.
 
@@ -559,6 +567,10 @@ def init(
     except on Windows and in Jupyter), ``LOSSCAPE_SYSTEM_METRICS`` (CPU, memory, disk,
     network, NVIDIA GPUs; default on), ``LOSSCAPE_SYSTEM_INTERVAL`` (seconds, 5) and
     ``LOSSCAPE_GIT_DIFF`` (record uncommitted changes; default on).
+
+    Git's commit, remote and diff are read where the code is: ``code_dir`` (or
+    ``LOSSCAPE_CODE_DIR``) when set; otherwise the working directory, or, if that isn't in a git
+    repository, the main script's folder.
     """
     import lsc
 
@@ -614,6 +626,8 @@ def init(
         python_path=[p for p in sys.path if p],
         details_json=json.dumps(_jsonable(details)),
         git_diff=_flag(git_diff, "LOSSCAPE_GIT_DIFF", True),
+        code_dir=code_dir or os.environ.get("LOSSCAPE_CODE_DIR") or None,
+        script_dir=_script_dir(),
         **server_args,
     )
     start_step = native.next_step or 0

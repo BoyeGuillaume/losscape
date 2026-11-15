@@ -37,7 +37,7 @@ pub async fn list(
     Path(project): Path<String>,
 ) -> Result<Json<Vec<TagInfo>>, UiError> {
     let id = members::project_id(&state, &project).await?;
-    auth::require_role(&state, &user, id, Role::Viewer, unknown_project).await?;
+    auth::require_role(&state, &user, id, Role::Guest, unknown_project).await?;
     Ok(Json(
         sqlx::query_as(
             "WITH used AS (
