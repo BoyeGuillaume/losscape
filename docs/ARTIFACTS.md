@@ -99,7 +99,7 @@ trigger; the server deletes those files within a minute.
 1. **Server (done):** schema, storage on `object_store` (a folder or S3), the endpoints above,
    expiry of pending checkpoints, deletion with runs and projects. Tested end to end in
    crates/losscape-server/tests/checkpoints.rs: full cycle, resuming, corrupt parts, permissions,
-   paths, clean-up.
+   paths, clean-up; on a folder, and on S3 with `make test-s3` (a local S3 mock, moto).
 2. **SDK (done):** `log_checkpoint` (a copy or a move into the run's local log, offline too),
    the uploader in the Rust core (beside the metrics, 4 parts at a time, compression decided
    once per file, resuming), `finish()` and `sync`, `latest_checkpoint()` and `checkpoint(step)`

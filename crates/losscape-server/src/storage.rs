@@ -11,6 +11,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
+use object_store::prefix::PrefixStore;
 use object_store::{ObjectStore, ObjectStoreExt};
 use tokio::sync::Semaphore;
 
@@ -46,7 +47,12 @@ impl Storage {
                 .with_url(location)
                 .build()
                 .map_err(|e| failed(e.to_string()))?;
-            (Arc::new(store), location.to_owned())
+            // The builder takes the bucket from the URL, not the path after it.
+            let store: Arc<dyn ObjectStore> = match s3_prefix(location) {
+                "" => Arc::new(store),
+                prefix => Arc::new(PrefixStore::new(store, prefix)),
+            };
+            (store, location.to_owned())
         } else {
             let folder = location.strip_prefix("file://").unwrap_or(location);
             if !folder.starts_with('/') {
@@ -100,6 +106,17 @@ impl Storage {
             .boxed()
     }
 
+    /// How many objects it holds (for tests).
+    pub async fn count(&self) -> Result<u64, ApiError> {
+        let mut listed = self.store.list(None);
+        let mut count = 0;
+        while let Some(meta) = listed.next().await {
+            meta.map_err(|err| unavailable("listing", &Path::default(), err))?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Deletes everything under `prefix`. Returns how many objects.
     pub async fn delete_prefix(&self, prefix: &Path) -> Result<u64, ApiError> {
         let listed = self
@@ -118,6 +135,14 @@ impl Storage {
         }
         Ok(count)
     }
+}
+
+/// `a/b` of `s3://bucket/a/b/`: where in the bucket objects go.
+fn s3_prefix(location: &str) -> &str {
+    location
+        .strip_prefix("s3://")
+        .and_then(|rest| rest.split_once('/'))
+        .map_or("", |(_, path)| path.trim_matches('/'))
 }
 
 fn unavailable(doing: &str, key: &Path, err: object_store::Error) -> ApiError {
@@ -164,6 +189,14 @@ mod tests {
         assert_eq!(rest.concat(), b"other", "another prefix is left alone");
         assert!(dir.join("1/b/0").exists());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn s3_locations_keep_their_prefix() {
+        assert_eq!(s3_prefix("s3://bucket"), "");
+        assert_eq!(s3_prefix("s3://bucket/"), "");
+        assert_eq!(s3_prefix("s3://bucket/losscape"), "losscape");
+        assert_eq!(s3_prefix("s3://bucket/teams/ml/"), "teams/ml");
     }
 
     #[test]

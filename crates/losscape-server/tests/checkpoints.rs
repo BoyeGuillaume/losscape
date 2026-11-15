@@ -100,23 +100,9 @@ impl Client<'_> {
     }
 }
 
-/// Files under the server's storage folder.
-fn stored_files(server: &TestServer) -> usize {
-    fn count(dir: &std::path::Path) -> usize {
-        std::fs::read_dir(dir).map_or(0, |entries| {
-            entries
-                .flatten()
-                .map(|e| {
-                    if e.path().is_dir() {
-                        count(&e.path())
-                    } else {
-                        1
-                    }
-                })
-                .sum()
-        })
-    }
-    count(&server.storage_dir)
+/// Objects in the server's checkpoint storage.
+async fn stored_files(server: &TestServer) -> u64 {
+    server.state.storage().unwrap().count().await.unwrap()
 }
 
 #[tokio::test]
@@ -277,7 +263,7 @@ async fn upload_resume_commit_download_delete() {
         json!(model.len() + config.len())
     );
 
-    assert_eq!(stored_files(&server), 3, "a stored object per part");
+    assert_eq!(stored_files(&server).await, 3, "a stored object per part");
     let (status, _) = admin
         .json("DELETE", &format!("/api/v0/checkpoints/{id}"), None)
         .await;
@@ -290,7 +276,11 @@ async fn upload_resume_commit_download_delete() {
         checkpoints::collect_garbage(&server.state).await.unwrap(),
         3
     );
-    assert_eq!(stored_files(&server), 0, "its files are gone from storage");
+    assert_eq!(
+        stored_files(&server).await,
+        0,
+        "its files are gone from storage"
+    );
     server.stop().await;
 }
 
@@ -441,7 +431,7 @@ async fn files_go_with_runs_and_abandoned_uploads() {
     upload(deleted.clone(), 1, true).await;
     upload(deleted.clone(), 2, true).await;
     let abandoned = upload(kept.clone(), 2, false).await;
-    assert_eq!(stored_files(&server), 4);
+    assert_eq!(stored_files(&server).await, 4);
 
     // A run deleted any way (purged, its project deleted): its checkpoints' files follow.
     sqlx::query("DELETE FROM runs WHERE id = $1::uuid")
@@ -453,7 +443,7 @@ async fn files_go_with_runs_and_abandoned_uploads() {
         checkpoints::collect_garbage(&server.state).await.unwrap(),
         2
     );
-    assert_eq!(stored_files(&server), 2);
+    assert_eq!(stored_files(&server).await, 2);
 
     // Uploads left unfinished go after a day.
     assert_eq!(
@@ -481,7 +471,7 @@ async fn files_go_with_runs_and_abandoned_uploads() {
         1
     );
     assert_eq!(
-        stored_files(&server),
+        stored_files(&server).await,
         1,
         "only the committed one of the run kept"
     );

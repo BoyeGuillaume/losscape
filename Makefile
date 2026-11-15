@@ -1,7 +1,7 @@
 COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 PY := cd sdk/python && uv run
 
-.PHONY: help dev-db dev-db-down dev-server dev-web build test lint fmt bench crash-test up down deploy-test wheel notices server-notices bump
+.PHONY: help dev-db dev-db-down dev-server dev-web build test test-s3 lint fmt bench crash-test up down deploy-test wheel notices server-notices bump
 
 help: ## Show targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -27,6 +27,9 @@ test: ## Run all tests
 	cargo test --workspace
 	$(PY) pytest
 	cd web && npm test
+
+test-s3: ## Checkpoint tests against S3 (a local mock, moto, via uvx)
+	python3 scripts/test_s3.py
 
 lint: ## Lint and type-check everything
 	cargo fmt --all --check

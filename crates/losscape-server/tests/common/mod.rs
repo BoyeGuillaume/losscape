@@ -83,12 +83,7 @@ impl TestServer {
             web_dir: None,
             branding: Default::default(),
             live_recheck: Duration::from_millis(200),
-            storage: Some(
-                std::env::temp_dir()
-                    .join(&db)
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
+            storage: Some(storage_location(&db)),
             max_checkpoint_bytes: 1 << 30,
         };
         let storage_dir = std::env::temp_dir().join(&db);
@@ -122,6 +117,9 @@ impl TestServer {
             storage_dir,
             ..
         } = self;
+        if let Some(storage) = state.storage() {
+            storage.delete_prefix(&Default::default()).await.ok();
+        }
         std::fs::remove_dir_all(storage_dir).ok();
         let pg = state.pg().clone();
         drop((router, state));
@@ -199,4 +197,13 @@ pub async fn user(state: &AppState, username: &str) -> (i64, String) {
         id,
         account::issue_api_key(state, id, "test").await.unwrap().1,
     )
+}
+
+/// Checkpoint storage of a test server: under `LOSSCAPE_TEST_STORAGE` if set (an `s3://` URL,
+/// to test against S3), else in a temporary folder.
+fn storage_location(db: &str) -> String {
+    match std::env::var("LOSSCAPE_TEST_STORAGE") {
+        Ok(base) if !base.is_empty() => format!("{}/{db}", base.trim_end_matches('/')),
+        _ => std::env::temp_dir().join(db).to_string_lossy().into_owned(),
+    }
 }
