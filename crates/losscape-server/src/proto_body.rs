@@ -7,7 +7,7 @@ use axum::body::Bytes;
 use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use losscape_core::proto::v0::{Heartbeat, LogBatch, RunFinish, RunInit};
+use losscape_core::proto::v1::{Heartbeat, LogBatch, RunFinish, RunInit};
 use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
 use prost::Message;
 use tokio::sync::Semaphore;
@@ -252,7 +252,7 @@ fn too_large() -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use losscape_core::proto::v0::{ConsoleLine, ScalarColumns};
+    use losscape_core::proto::v1::{ConsoleLine, ScalarColumns};
 
     use super::*;
 

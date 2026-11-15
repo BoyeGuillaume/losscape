@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::{Ack, LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse};
+use losscape_core::proto::v1::{Ack, LogBatch, RunExitState, RunFinish, RunInit, RunInitResponse};
 use prost::Message;
 use serde_json::{Map, Value};
 use tokio::sync::{Notify, watch};
@@ -696,13 +696,13 @@ fn json_object(map: Map<String, Value>) -> String {
 /// Best effort, so a run that logs rarely isn't marked as crashed. The answer also says
 /// whether someone asked this run to stop.
 async fn heartbeat(client: &Client, run_id: &[u8], abort: &AtomicBool) {
-    let body = losscape_core::proto::v0::Heartbeat {
+    let body = losscape_core::proto::v1::Heartbeat {
         run_id: run_id.to_vec(),
         client_time_ms: 0,
     };
     loop {
         tokio::time::sleep(HEARTBEAT_EVERY).await;
-        let body = losscape_core::proto::v0::Heartbeat {
+        let body = losscape_core::proto::v1::Heartbeat {
             client_time_ms: now_ms(),
             ..body.clone()
         };

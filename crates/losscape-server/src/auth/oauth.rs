@@ -30,7 +30,7 @@ use crate::read::UiError;
 use crate::state::AppState;
 
 const STATE_COOKIE: &str = "losscape_oauth";
-const CALLBACK_PATH: &str = "/api/v0/auth/oauth";
+const CALLBACK_PATH: &str = "/api/v1/auth/oauth";
 const STATE_TTL_MINUTES: i64 = 10;
 const METADATA_TTL: Duration = Duration::from_secs(3600);
 
@@ -144,7 +144,7 @@ pub struct StartParams {
     return_to: Option<String>,
 }
 
-/// `GET /api/v0/auth/oauth/{provider}/start`: redirects to the provider. When already
+/// `GET /api/v1/auth/oauth/{provider}/start`: redirects to the provider. When already
 /// signed in, the external account is linked to the current user instead.
 pub async fn start(
     State(state): State<AppState>,
@@ -243,7 +243,7 @@ pub struct CallbackParams {
     error: Option<String>,
 }
 
-/// `GET /api/v0/auth/oauth/{provider}/callback`: finishes sign-in and redirects into the
+/// `GET /api/v1/auth/oauth/{provider}/callback`: finishes sign-in and redirects into the
 /// app (or to `/login?error=...`, with a fixed error code).
 pub async fn callback(
     State(state): State<AppState>,

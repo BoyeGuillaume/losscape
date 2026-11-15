@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use losscape_core::proto::v0;
+use losscape_core::proto::v1;
 
 use crate::proto_body::Proto;
 
@@ -66,7 +66,7 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = Proto(v0::Error {
+        let body = Proto(v1::Error {
             code: self.code.to_owned(),
             message: self.message,
         });

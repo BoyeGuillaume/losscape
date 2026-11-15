@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use clap::Parser;
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::{Ack, Error, LogBatch, RunInit, RunInitResponse, ScalarColumns};
+use losscape_core::proto::v1::{Ack, Error, LogBatch, RunInit, RunInitResponse, ScalarColumns};
 use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
 use prost::Message;
 use reqwest::{StatusCode, header};
@@ -134,7 +134,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 async fn create_project(client: &reqwest::Client, args: &Args) -> Result<(), BoxError> {
     let res = client
         .post(format!(
-            "{}/api/v0/projects",
+            "{}/api/v1/projects",
             args.server.trim_end_matches('/')
         ))
         .bearer_auth(&args.api_key)
@@ -279,7 +279,7 @@ async fn send(
     body: Bytes,
     zstd: bool,
 ) -> Result<(Bytes, Duration, u64), BoxError> {
-    let url = format!("{}/api/v0/{path}", args.server.trim_end_matches('/'));
+    let url = format!("{}/api/v1/{path}", args.server.trim_end_matches('/'));
     let first_attempt = Instant::now();
     let mut retries = 0;
     loop {

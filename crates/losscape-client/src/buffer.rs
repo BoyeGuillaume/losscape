@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use losscape_core::proto::v0::ScalarColumns;
+use losscape_core::proto::v1::ScalarColumns;
 use serde_json::{Map, Value};
 
 #[derive(Default)]

@@ -40,7 +40,7 @@ pub struct Member {
     added_at_ms: i64,
 }
 
-/// `GET /api/v0/projects/{project}/members` (any member).
+/// `GET /api/v1/projects/{project}/members` (any member).
 pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,
@@ -83,7 +83,7 @@ async fn owner_of(tx: &mut sqlx::PgConnection, project_id: i64) -> Result<Option
     .await?)
 }
 
-/// `PUT /api/v0/projects/{project}/members/{username}` (owners): adds a member or changes
+/// `PUT /api/v1/projects/{project}/members/{username}` (owners): adds a member or changes
 /// their role, as editor, viewer or guest.
 pub async fn set_role(
     State(state): State<AppState>,
@@ -136,7 +136,7 @@ pub async fn set_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `DELETE /api/v0/projects/{project}/members/{username}` (owners; anyone may leave).
+/// `DELETE /api/v1/projects/{project}/members/{username}` (owners; anyone may leave).
 pub async fn remove(
     State(state): State<AppState>,
     user: AuthUser,
@@ -201,7 +201,7 @@ pub struct Transfer {
     then: String,
 }
 
-/// `POST /api/v0/projects/{project}/transfer` (owners): makes another member owner and
+/// `POST /api/v1/projects/{project}/transfer` (owners): makes another member owner and
 /// steps the current owner down, in one transaction (also when an admin does it).
 pub async fn transfer(
     State(state): State<AppState>,

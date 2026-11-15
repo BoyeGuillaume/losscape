@@ -11,7 +11,7 @@ use std::time::Duration;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use losscape_core::proto::v0::{ConsoleLine, ScalarColumns};
+use losscape_core::proto::v1::{ConsoleLine, ScalarColumns};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
@@ -180,7 +180,7 @@ async fn watch_access(
     }
 }
 
-/// `GET /api/v0/projects/{project}/live?runs=<id>,<id>`: events `points`, `console` and
+/// `GET /api/v1/projects/{project}/live?runs=<id>,<id>`: events `points`, `console` and
 /// `state` (JSON, each with its `run`), and `reset` (some events were missed; reload). Runs of
 /// other projects are ignored.
 pub async fn live(

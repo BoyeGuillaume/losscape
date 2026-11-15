@@ -142,7 +142,7 @@
 							<!-- eslint-disable svelte/no-navigation-without-resolve -- an API file, not a page -->
 							<a
 								class="underline"
-								href={`/api/v0/runs/${encodeURIComponent(run)}/files/git.diff`}
+								href={`/api/v1/runs/${encodeURIComponent(run)}/files/git.diff`}
 								target="_blank"
 								rel="noopener">Open as text</a
 							>

@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use losscape_core::PROTOCOL_HEADER;
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::{
+use losscape_core::proto::v1::{
     Ack, ConsoleLine, ConsoleStream, Heartbeat, LogBatch, RunEnvironment, RunExitState, RunFinish,
     RunInit, RunInitResponse, ScalarColumns,
 };
@@ -29,7 +29,7 @@ impl TestServer {
         ));
         let (status, body) = self
             .send(
-                "/api/v0/runs/init",
+                "/api/v1/runs/init",
                 RunInit {
                     run_id: run.as_bytes().to_vec(),
                     project: "test".into(),
@@ -47,7 +47,7 @@ impl TestServer {
     }
 
     async fn log(&self, batch: LogBatch) -> Ack {
-        let (status, body) = self.send("/api/v0/ingest", batch, false).await;
+        let (status, body) = self.send("/api/v1/ingest", batch, false).await;
         assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
         Ack::decode(body).unwrap()
     }
@@ -117,14 +117,14 @@ async fn run_lifecycle() {
 
     assert!(!server.log(batch(run, 0, 0, 100)).await.duplicate);
     let (status, _) = server
-        .send("/api/v0/ingest", batch(run, 1, 100, 100), true)
+        .send("/api/v1/ingest", batch(run, 1, 100, 100), true)
         .await;
     assert_eq!(status, StatusCode::OK, "zstd bodies are accepted");
     assert_eq!(server.stored_points(run).await, (400, 400));
 
     let (status, _) = server
         .send(
-            "/api/v0/runs/heartbeat",
+            "/api/v1/runs/heartbeat",
             Heartbeat {
                 run_id: run.as_bytes().to_vec(),
                 client_time_ms: 0,
@@ -141,7 +141,7 @@ async fn run_lifecycle() {
         ..Default::default()
     };
     assert_eq!(
-        server.send("/api/v0/runs/finish", finish, false).await.0,
+        server.send("/api/v1/runs/finish", finish, false).await.0,
         StatusCode::OK
     );
 
@@ -301,7 +301,7 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
         }),
         ..Default::default()
     };
-    let (status, body) = server.send("/api/v0/runs/init", init.clone(), false).await;
+    let (status, body) = server.send("/api/v1/runs/init", init.clone(), false).await;
     assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
 
     let mut first = batch(run, 0, 0, 1);
@@ -342,12 +342,12 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
             })
             .collect()
     };
-    let (status, tail) = get_json(&server, &format!("/api/v0/runs/{id}/logs?tail=2")).await;
+    let (status, tail) = get_json(&server, &format!("/api/v1/runs/{id}/logs?tail=2")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(tail["count"], 6);
     assert_eq!(texts(&tail), [(4, "epoch 2".into()), (5, "done".into())]);
 
-    let (_, page) = get_json(&server, &format!("/api/v0/runs/{id}/logs?from=1&to=4")).await;
+    let (_, page) = get_json(&server, &format!("/api/v1/runs/{id}/logs?from=1&to=4")).await;
     assert_eq!(
         texts(&page),
         [
@@ -361,17 +361,17 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
     assert_eq!(page["lines"][0]["ts_ms"], 1_700_000_000_001i64);
 
     // Search ignores colors: "ERROR: disk" spans an escape sequence.
-    let (_, found) = get_json(&server, &format!("/api/v0/runs/{id}/logs?q=error:%20DISK")).await;
+    let (_, found) = get_json(&server, &format!("/api/v1/runs/{id}/logs?q=error:%20DISK")).await;
     assert_eq!(texts(&found).iter().map(|l| l.0).collect::<Vec<_>>(), [1]);
 
-    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    let (_, detail) = get_json(&server, &format!("/api/v1/runs/{id}")).await;
     assert_eq!(
         detail["environment"]["hostname"], "gpu-node-1",
         "details can't override"
     );
     assert_eq!(detail["environment"]["packages"][0], "torch==2.5.1");
     assert_eq!(detail["environment"]["git"]["diff_bytes"], 44);
-    let req = Request::get(format!("/api/v0/runs/{id}/files/git.diff"))
+    let req = Request::get(format!("/api/v1/runs/{id}/files/git.diff"))
         .header(header::AUTHORIZATION, server.bearer())
         .body(Body::empty())
         .unwrap();
@@ -383,11 +383,11 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
         resume: true,
         ..init
     };
-    let (_, body) = server.send("/api/v0/runs/init", resumed, false).await;
+    let (_, body) = server.send("/api/v1/runs/init", resumed, false).await;
     let resumed = RunInitResponse::decode(body).unwrap();
     assert_eq!(resumed.next_console_line, 6);
     assert_eq!(resumed.last_step, Some(1), "system metrics ignored");
-    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    let (_, detail) = get_json(&server, &format!("/api/v1/runs/{id}")).await;
     assert_eq!(
         detail["last_step"], 1,
         "system metrics don't count as steps"
@@ -395,7 +395,7 @@ async fn console_lines_are_replaced_and_read_from_the_end() {
 
     // The whole log as a file: plain text, or with its colors.
     let download = |query: &str| {
-        Request::get(format!("/api/v0/runs/{id}/logs.txt{query}"))
+        Request::get(format!("/api/v1/runs/{id}/logs.txt{query}"))
             .header(header::AUTHORIZATION, server.bearer())
             .body(Body::empty())
             .unwrap()
@@ -423,7 +423,7 @@ async fn metric_ranges_names_definitions_and_renames() {
     server.log(b).await;
     server.log(batch(run, 1, 100, 100)).await;
 
-    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
+    let runs = get_json(&server, "/api/v1/projects/test/runs").await.1["runs"].clone();
     let r = &runs[0];
     assert_eq!(r["metric_min"]["loss"], 1.0 / 200.0, "across batches");
     assert_eq!(r["metric_max"]["loss"], 1.0);
@@ -445,10 +445,10 @@ async fn metric_ranges_names_definitions_and_renames() {
             .unwrap(),
         1
     );
-    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
+    let runs = get_json(&server, "/api/v1/projects/test/runs").await.1["runs"].clone();
     assert_eq!(runs[0]["metric_min"]["loss"], 1.0 / 200.0);
 
-    let (_, keys) = get_json(&server, "/api/v0/projects/test/metric-keys").await;
+    let (_, keys) = get_json(&server, "/api/v1/projects/test/metric-keys").await;
     assert_eq!(keys, serde_json::json!(["acc", "loss"]));
 
     let send = |method: &str, uri: String, body: serde_json::Value| {
@@ -461,7 +461,7 @@ async fn metric_ranges_names_definitions_and_renames() {
             .unwrap()
     };
     // The board: defaults until it's set; what's set comes back; limits are enforced.
-    let board_uri = "/api/v0/projects/test/board".to_owned();
+    let board_uri = "/api/v1/projects/test/board".to_owned();
     let (_, board) = get_json(&server, &board_uri).await;
     assert_eq!(
         board,
@@ -525,7 +525,7 @@ async fn metric_ranges_names_definitions_and_renames() {
         {"name": "val/*", "kind": "describe", "spec": {"direction": "max", "important": true}},
         {"name": "val/pck-{k}", "kind": "family", "spec": {"direction": "max", "bounds": [0, 1]}}
     ]);
-    let uri = "/api/v0/projects/test/metric-definitions".to_owned();
+    let uri = "/api/v1/projects/test/metric-definitions".to_owned();
     let versioned = |version: i64, definitions: &serde_json::Value| serde_json::json!({"version": version, "definitions": definitions});
     assert_eq!(
         get_json(&server, &uri).await.1,
@@ -590,7 +590,7 @@ async fn metric_ranges_names_definitions_and_renames() {
     );
 
     // Renaming a metric of one run; names may contain slashes.
-    let rename = format!("/api/v0/runs/{id}/metric-renames/val/pck-8");
+    let rename = format!("/api/v1/runs/{id}/metric-renames/val/pck-8");
     assert_eq!(
         server
             .call(send(
@@ -602,7 +602,7 @@ async fn metric_ranges_names_definitions_and_renames() {
             .0,
         StatusCode::NO_CONTENT
     );
-    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    let (_, detail) = get_json(&server, &format!("/api/v1/runs/{id}")).await;
     assert_eq!(
         (detail["renames"].clone(), detail["rename_scales"].clone()),
         (
@@ -626,7 +626,7 @@ async fn metric_ranges_names_definitions_and_renames() {
     );
 
     // Many runs at once, rescaled; runs of other projects are skipped.
-    let bulk = "/api/v0/projects/test/runs/metric-renames".to_owned();
+    let bulk = "/api/v1/projects/test/runs/metric-renames".to_owned();
     let runs = serde_json::json!([id, RunId::new().to_string()]);
     let (status, body) = server
         .call(send(
@@ -640,13 +640,13 @@ async fn metric_ranges_names_definitions_and_renames() {
         serde_json::from_slice::<serde_json::Value>(&body).unwrap()["changed"],
         1
     );
-    let (_, keys) = get_json(&server, "/api/v0/projects/test/metric-keys").await;
+    let (_, keys) = get_json(&server, "/api/v1/projects/test/metric-keys").await;
     assert_eq!(
         keys,
         serde_json::json!(["acc", "loss", "val/acc"]),
         "names shown by renames too"
     );
-    let listed = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"][0].clone();
+    let listed = get_json(&server, "/api/v1/projects/test/runs").await.1["runs"][0].clone();
     assert_eq!(
         (listed["renames"].clone(), listed["rename_scales"].clone()),
         (
@@ -695,19 +695,19 @@ async fn runs_list_pages_changes_and_tags() {
     };
 
     // Pages, newest first, then nothing more.
-    let all = listing(&server, "/api/v0/projects/test/runs").await;
+    let all = listing(&server, "/api/v1/projects/test/runs").await;
     assert_eq!(all["next"], serde_json::Value::Null);
-    let first = listing(&server, "/api/v0/projects/test/runs?limit=2").await;
+    let first = listing(&server, "/api/v1/projects/test/runs?limit=2").await;
     let next = first["next"].as_str().unwrap();
     let second = listing(
         &server,
-        &format!("/api/v0/projects/test/runs?limit=2&after={next}"),
+        &format!("/api/v1/projects/test/runs?limit=2&after={next}"),
     )
     .await;
     assert_eq!(second["next"], serde_json::Value::Null);
     assert_eq!([names(&first), names(&second)].concat(), names(&all));
     assert_eq!(
-        get_json(&server, "/api/v0/projects/test/runs?after=nope")
+        get_json(&server, "/api/v1/projects/test/runs?after=nope")
             .await
             .0,
         StatusCode::BAD_REQUEST
@@ -715,7 +715,7 @@ async fn runs_list_pages_changes_and_tags() {
 
     // Changes since a listing: none yet (past the overlap), then the runs tagged.
     let since = all["as_of_ms"].as_i64().unwrap() + 10_000;
-    let changed_since = format!("/api/v0/projects/test/runs?since_ms={since}");
+    let changed_since = format!("/api/v1/projects/test/runs?since_ms={since}");
     assert_eq!(
         names(&listing(&server, &changed_since).await),
         Vec::<String>::new()
@@ -734,7 +734,7 @@ async fn runs_list_pages_changes_and_tags() {
     let (status, body) = server
         .call(send(
             "POST",
-            "/api/v0/projects/test/runs/tags",
+            "/api/v1/projects/test/runs/tags",
             serde_json::json!({"runs": ids, "add": ["exp/a", "baseline"], "remove": []}),
         ))
         .await;
@@ -754,7 +754,7 @@ async fn runs_list_pages_changes_and_tags() {
     let (_, body) = server
         .call(send(
             "POST",
-            "/api/v0/projects/test/runs/tags",
+            "/api/v1/projects/test/runs/tags",
             serde_json::json!({"runs": one, "remove": ["baseline"]}),
         ))
         .await;
@@ -765,7 +765,7 @@ async fn runs_list_pages_changes_and_tags() {
     let (_, body) = server
         .call(send(
             "POST",
-            "/api/v0/projects/test/runs/tags",
+            "/api/v1/projects/test/runs/tags",
             serde_json::json!({"runs": one, "remove": ["baseline"]}),
         ))
         .await;
@@ -777,7 +777,7 @@ async fn runs_list_pages_changes_and_tags() {
         server
             .call(send(
                 "POST",
-                "/api/v0/projects/test/runs/tags",
+                "/api/v1/projects/test/runs/tags",
                 serde_json::json!({"runs": one, "add": [" padded"]}),
             ))
             .await
@@ -790,7 +790,7 @@ async fn runs_list_pages_changes_and_tags() {
         server
             .call(send(
                 "PUT",
-                "/api/v0/projects/test/tags/exp/a",
+                "/api/v1/projects/test/tags/exp/a",
                 serde_json::json!({"color": "blue", "description": "first try"}),
             ))
             .await
@@ -801,14 +801,14 @@ async fn runs_list_pages_changes_and_tags() {
         server
             .call(send(
                 "PUT",
-                "/api/v0/projects/test/tags/exp/a",
+                "/api/v1/projects/test/tags/exp/a",
                 serde_json::json!({"color": "#ff0000"}),
             ))
             .await
             .0,
         StatusCode::BAD_REQUEST
     );
-    let (_, tags) = get_json(&server, "/api/v0/projects/test/tags").await;
+    let (_, tags) = get_json(&server, "/api/v1/projects/test/tags").await;
     assert_eq!(
         tags,
         serde_json::json!([
@@ -830,11 +830,11 @@ async fn abort_reaches_the_run_through_its_heartbeat() {
         client_time_ms: 0,
     };
     let abort_asked = |body: axum::body::Bytes| Ack::decode(body).unwrap().abort;
-    let (_, body) = server.send("/api/v0/runs/heartbeat", beat(), false).await;
+    let (_, body) = server.send("/api/v1/runs/heartbeat", beat(), false).await;
     assert!(!abort_asked(body), "nobody asked yet");
 
     let abort = || {
-        Request::post("/api/v0/projects/test/runs/abort")
+        Request::post("/api/v1/projects/test/runs/abort")
             .header(header::AUTHORIZATION, server.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(serde_json::json!({"runs": [id]}).to_string()))
@@ -848,18 +848,18 @@ async fn abort_reaches_the_run_through_its_heartbeat() {
     let (_, body) = server.call(abort()).await;
     assert_eq!(changed(&body), 0, "already asked");
 
-    let (_, body) = server.send("/api/v0/runs/heartbeat", beat(), false).await;
+    let (_, body) = server.send("/api/v1/runs/heartbeat", beat(), false).await;
     assert!(abort_asked(body), "the SDK learns about it");
-    let listed = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"][0].clone();
+    let listed = get_json(&server, "/api/v1/projects/test/runs").await.1["runs"][0].clone();
     assert!(listed["abort_requested_at_ms"].as_i64().is_some());
 
     // Resuming starts over; a finished run can't be aborted.
     server.init(run, true).await;
-    let (_, body) = server.send("/api/v0/runs/heartbeat", beat(), false).await;
+    let (_, body) = server.send("/api/v1/runs/heartbeat", beat(), false).await;
     assert!(!abort_asked(body), "resuming clears the request");
     server
         .send(
-            "/api/v0/runs/finish",
+            "/api/v1/runs/finish",
             RunFinish {
                 run_id: run.as_bytes().to_vec(),
                 state: RunExitState::Killed as i32,
@@ -880,7 +880,7 @@ async fn model_descriptions_replace_by_name_and_stay_out_of_run_lists() {
     let run = RunId::new();
     server.init(run, false).await;
     let id = run.to_string();
-    let uri = format!("/api/v0/runs/{id}/models");
+    let uri = format!("/api/v1/runs/{id}/models");
     assert_eq!(get_json(&server, &uri).await.1, serde_json::json!({}));
 
     let models = |seq, json: &str| LogBatch {
@@ -904,12 +904,12 @@ async fn model_descriptions_replace_by_name_and_stay_out_of_run_lists() {
         "the latest of each name"
     );
 
-    let (status, _) = server.send("/api/v0/ingest", models(2, "[1]"), false).await;
+    let (status, _) = server.send("/api/v1/ingest", models(2, "[1]"), false).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let listed = listing(&server, "/api/v0/projects/test/runs").await;
+    let listed = listing(&server, "/api/v1/projects/test/runs").await;
     assert!(listed["runs"][0].get("models").is_none());
-    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    let (_, detail) = get_json(&server, &format!("/api/v1/runs/{id}")).await;
     assert!(detail.get("models").is_none());
 }
 
@@ -919,7 +919,7 @@ async fn rejects_bad_requests() {
     let run = RunId::new();
 
     let (status, body) = server
-        .send("/api/v0/ingest", batch(run, 0, 0, 1), false)
+        .send("/api/v1/ingest", batch(run, 0, 0, 1), false)
         .await;
     assert_eq!(
         (status, error_of(&body).starts_with("unknown_run")),
@@ -929,7 +929,7 @@ async fn rejects_bad_requests() {
     server.init(run, false).await;
     let (status, body) = server
         .send(
-            "/api/v0/runs/init",
+            "/api/v1/runs/init",
             RunInit {
                 run_id: run.as_bytes().to_vec(),
                 project: "test".into(),
@@ -946,24 +946,24 @@ async fn rejects_bad_requests() {
     let mut ragged = batch(run, 0, 0, 2);
     ragged.scalars.as_mut().unwrap().step.pop();
     assert_eq!(
-        server.send("/api/v0/ingest", ragged, false).await.0,
+        server.send("/api/v1/ingest", ragged, false).await.0,
         StatusCode::BAD_REQUEST
     );
 
     let far = batch(run, 1_000_000, 0, 1);
     assert_eq!(
-        server.send("/api/v0/ingest", far, false).await.0,
+        server.send("/api/v1/ingest", far, false).await.0,
         StatusCode::CONFLICT
     );
 
-    let no_auth = Request::post("/api/v0/ingest")
+    let no_auth = Request::post("/api/v1/ingest")
         .header(header::CONTENT_TYPE, "application/x-protobuf")
-        .header(PROTOCOL_HEADER, "0")
+        .header(PROTOCOL_HEADER, losscape_core::PROTOCOL_VERSION.to_string())
         .body(Body::empty())
         .unwrap();
     assert_eq!(server.call(no_auth).await.0, StatusCode::UNAUTHORIZED);
 
-    let wrong_protocol = Request::post("/api/v0/ingest")
+    let wrong_protocol = Request::post("/api/v1/ingest")
         .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(PROTOCOL_HEADER, "99")
@@ -983,22 +983,25 @@ async fn health_and_version() {
     let get = |uri: &str| Request::get(uri).body(Body::empty()).unwrap();
     assert_eq!(server.call(get("/healthz")).await.0, StatusCode::OK);
     assert_eq!(server.call(get("/readyz")).await.0, StatusCode::OK);
-    let (status, body) = server.call(get("/api/v0/version")).await;
+    let (status, body) = server.call(get("/api/v1/version")).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(String::from_utf8_lossy(&body).contains(r#""protocol":0"#));
+    assert!(String::from_utf8_lossy(&body).contains(&format!(
+        r#""protocol":{}"#,
+        losscape_core::PROTOCOL_VERSION
+    )));
     // For the sign-in and About pages, so without signing in; `get` sends no credentials.
-    let (status, body) = server.call(get("/api/v0/app")).await;
+    let (status, body) = server.call(get("/api/v1/app")).await;
     assert_eq!(status, StatusCode::OK);
     let app: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(app["name"], "losscape");
-    assert_eq!(app["protocol"], 0);
+    assert_eq!(app["protocol"], losscape_core::PROTOCOL_VERSION);
     assert!(app["favicon"].is_null() && app["auth_background"].is_null());
     assert_eq!(
         server.call(get("/branding/favicon")).await.0,
         StatusCode::NOT_FOUND
     );
     // Endpoints that don't exist say so, in the format of the others.
-    for uri in ["/api/v0/nope", "/api/v0/nope/further", "/api/v9/runs"] {
+    for uri in ["/api/v1/nope", "/api/v1/nope/further", "/api/v9/runs"] {
         let (status, body) = server.call(get(uri)).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1023,7 +1026,7 @@ async fn get_json(server: &TestServer, uri: &str) -> (StatusCode, serde_json::Va
 }
 
 async fn tiles(server: &TestServer, ranges: serde_json::Value) -> Vec<serde_json::Value> {
-    let req = Request::post("/api/v0/series?format=json")
+    let req = Request::post("/api/v1/series?format=json")
         .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -1047,16 +1050,16 @@ async fn read_api_lists_projects_runs_and_metrics() {
     server.init(run, false).await;
     server.log(batch(run, 0, 0, 5000)).await;
 
-    let (status, projects) = get_json(&server, "/api/v0/projects").await;
+    let (status, projects) = get_json(&server, "/api/v1/projects").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(projects[0]["name"], "test");
     assert_eq!(projects[0]["runs"], 1);
 
-    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
+    let runs = get_json(&server, "/api/v1/projects/test/runs").await.1["runs"].clone();
     assert_eq!(runs[0]["name"], "brave-falcon-1");
     assert_eq!(runs[0]["state"], "running");
     assert_eq!(runs[0]["config"]["lr"], 0.001);
-    let (status, _) = get_json(&server, "/api/v0/projects/nope/runs").await;
+    let (status, _) = get_json(&server, "/api/v1/projects/nope/runs").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     assert_eq!(runs[0]["aliases"], serde_json::json!([]));
@@ -1073,12 +1076,12 @@ async fn read_api_lists_projects_runs_and_metrics() {
             .unwrap(),
         1
     );
-    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
+    let runs = get_json(&server, "/api/v1/projects/test/runs").await.1["runs"].clone();
     assert_eq!(runs[0]["last_step"], 4999);
     assert!(runs[0]["start_ms"].as_i64().unwrap() > 0);
 
     // Metrics of several runs at once; ids of other projects or unknown runs are ignored.
-    let req = Request::post("/api/v0/projects/test/metrics")
+    let req = Request::post("/api/v1/projects/test/metrics")
         .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -1100,7 +1103,7 @@ async fn read_api_lists_projects_runs_and_metrics() {
     let alias = |method: &str, name: &str, run: Option<&str>| {
         Request::builder()
             .method(method)
-            .uri(format!("/api/v0/projects/test/aliases/{name}"))
+            .uri(format!("/api/v1/projects/test/aliases/{name}"))
             .header(header::AUTHORIZATION, server.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
@@ -1134,7 +1137,7 @@ async fn read_api_lists_projects_runs_and_metrics() {
             .0,
         StatusCode::NOT_FOUND
     );
-    let runs = get_json(&server, "/api/v0/projects/test/runs").await.1["runs"].clone();
+    let runs = get_json(&server, "/api/v1/projects/test/runs").await.1["runs"].clone();
     let aliases_of = |runs: &serde_json::Value, id: &str| {
         runs.as_array()
             .unwrap()
@@ -1145,7 +1148,7 @@ async fn read_api_lists_projects_runs_and_metrics() {
     };
     assert_eq!(aliases_of(&runs, &id), serde_json::json!([]), "moved");
     assert_eq!(aliases_of(&runs, &other_id), serde_json::json!(["best"]));
-    let (status, target) = get_json(&server, "/api/v0/projects/test/aliases/best").await;
+    let (status, target) = get_json(&server, "/api/v1/projects/test/aliases/best").await;
     assert_eq!(
         (status, target["run"].as_str().unwrap().replace('-', "")),
         (StatusCode::OK, other_id.clone())
@@ -1159,7 +1162,7 @@ async fn read_api_lists_projects_runs_and_metrics() {
         StatusCode::NOT_FOUND
     );
 
-    let (_, detail) = get_json(&server, &format!("/api/v0/runs/{id}")).await;
+    let (_, detail) = get_json(&server, &format!("/api/v1/runs/{id}")).await;
     assert_eq!(detail["tags"], serde_json::json!(["baseline"]));
     let metrics = detail["metrics"].as_array().unwrap();
     assert_eq!(metrics.len(), 2);
@@ -1221,7 +1224,7 @@ async fn tiles_aggregate_buckets_and_skip_nan() {
     );
 
     // The web UI reads fixed 64-byte little-endian rows (web/src/lib/charts/tiles.svelte.ts).
-    let req = Request::post("/api/v0/series?format=rowbinary")
+    let req = Request::post("/api/v1/series?format=rowbinary")
         .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -1251,7 +1254,7 @@ async fn live_pushes_stored_points_and_state() {
 
     let other = RunId::new();
     server.init(other, false).await;
-    let req = Request::get(format!("/api/v0/projects/test/live?runs={id}"))
+    let req = Request::get(format!("/api/v1/projects/test/live?runs={id}"))
         .header(header::AUTHORIZATION, server.bearer())
         .body(Body::empty())
         .unwrap();
@@ -1266,7 +1269,7 @@ async fn live_pushes_stored_points_and_state() {
         state: RunExitState::Finished as i32,
         ..Default::default()
     };
-    server.send("/api/v0/runs/finish", finish, false).await;
+    server.send("/api/v1/runs/finish", finish, false).await;
 
     let mut text = String::new();
     while !text.contains("event: state") {
@@ -1317,7 +1320,7 @@ async fn heartbeat_skips_runs_that_just_logged() {
     let before = heartbeat_at().await;
     assert_eq!(
         server
-            .send("/api/v0/runs/heartbeat", beat.clone(), false)
+            .send("/api/v1/runs/heartbeat", beat.clone(), false)
             .await
             .0,
         StatusCode::OK
@@ -1331,7 +1334,7 @@ async fn heartbeat_skips_runs_that_just_logged() {
         .unwrap();
     let stale = heartbeat_at().await;
     assert_eq!(
-        server.send("/api/v0/runs/heartbeat", beat, false).await.0,
+        server.send("/api/v1/runs/heartbeat", beat, false).await.0,
         StatusCode::OK
     );
     assert!(heartbeat_at().await > stale, "stale heartbeat is refreshed");
@@ -1342,7 +1345,7 @@ async fn heartbeat_skips_runs_that_just_logged() {
     };
     assert_eq!(
         server
-            .send("/api/v0/runs/heartbeat", unknown, false)
+            .send("/api/v1/runs/heartbeat", unknown, false)
             .await
             .0,
         StatusCode::NOT_FOUND
@@ -1378,7 +1381,7 @@ async fn nul_in_a_batch_is_dropped_and_harms_nobody() {
         }),
         ..Default::default()
     };
-    let (status, _) = server.send("/api/v0/ingest", batch, false).await;
+    let (status, _) = server.send("/api/v1/ingest", batch, false).await;
     assert_eq!(status, StatusCode::OK);
     let id = uuid::Uuid::from_bytes(*run.as_bytes());
     let (summary, config): (serde_json::Value, serde_json::Value) =
@@ -1406,7 +1409,7 @@ async fn nul_in_a_batch_is_dropped_and_harms_nobody() {
         config_json: "{}".into(),
         ..Default::default()
     };
-    let (status, _) = server.send("/api/v0/runs/init", init, false).await;
+    let (status, _) = server.send("/api/v1/runs/init", init, false).await;
     assert_eq!(status, StatusCode::OK);
     server.stop().await;
 }
@@ -1441,8 +1444,8 @@ async fn a_run_the_database_refuses_holds_up_only_itself() {
     // Sent together, to share a flush, repeatedly in case they didn't.
     for seq in 0..5 {
         let (bad, good) = tokio::join!(
-            server.send("/api/v0/ingest", batch(poisoned, seq), false),
-            server.send("/api/v0/ingest", batch(healthy, seq), false),
+            server.send("/api/v1/ingest", batch(poisoned, seq), false),
+            server.send("/api/v1/ingest", batch(healthy, seq), false),
         );
         assert_eq!(bad.0, StatusCode::BAD_REQUEST);
         assert_eq!(good.0, StatusCode::OK);
@@ -1457,11 +1460,11 @@ async fn bodies_that_would_decode_to_too_much_are_refused() {
     let bomb = [0x3au8, 0x00].repeat(32 * 1024 * 1024);
     let compressed = zstd::encode_all(&bomb[..], 3).unwrap();
     assert!(compressed.len() < 1024 * 1024);
-    let req = Request::post("/api/v0/ingest")
+    let req = Request::post("/api/v1/ingest")
         .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(header::CONTENT_ENCODING, "zstd")
-        .header(PROTOCOL_HEADER, "0")
+        .header(PROTOCOL_HEADER, losscape_core::PROTOCOL_VERSION.to_string())
         .body(Body::from(compressed))
         .unwrap();
     let (status, body) = server.call(req).await;
@@ -1487,11 +1490,11 @@ async fn series_requests_are_limited_and_streamed() {
         }),
         ..Default::default()
     };
-    server.send("/api/v0/ingest", batch, false).await;
+    server.send("/api/v1/ingest", batch, false).await;
     let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
     let series = |ranges: usize, to_tile: u64| {
         let range = serde_json::json!({"run": id, "key": "m", "level": 0, "from_tile": 0, "to_tile": to_tile});
-        Request::post("/api/v0/series?format=json")
+        Request::post("/api/v1/series?format=json")
             .header(header::AUTHORIZATION, server.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
@@ -1523,10 +1526,10 @@ async fn the_log_download_ends_whatever_the_line_numbers() {
         ],
         ..Default::default()
     };
-    let (status, _) = server.send("/api/v0/ingest", batch, false).await;
+    let (status, _) = server.send("/api/v1/ingest", batch, false).await;
     assert_eq!(status, StatusCode::OK);
     let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
-    let req = Request::get(format!("/api/v0/runs/{id}/logs.txt"))
+    let req = Request::get(format!("/api/v1/runs/{id}/logs.txt"))
         .header(header::AUTHORIZATION, server.bearer())
         .body(Body::empty())
         .unwrap();
@@ -1564,7 +1567,7 @@ async fn live_streams_end_when_access_does() {
     .await
     .unwrap();
     let id = uuid::Uuid::from_bytes(*run.as_bytes()).simple().to_string();
-    let req = Request::get(format!("/api/v0/projects/test/live?runs={id}"))
+    let req = Request::get(format!("/api/v1/projects/test/live?runs={id}"))
         .header(header::AUTHORIZATION, format!("Bearer {viewer_key}"))
         .body(Body::empty())
         .unwrap();
@@ -1605,7 +1608,7 @@ async fn a_tag_given_twice_is_one_tag() {
         ..Default::default()
     };
     assert_eq!(
-        server.send("/api/v0/runs/init", init, false).await.0,
+        server.send("/api/v1/runs/init", init, false).await.0,
         StatusCode::OK
     );
     let tags: Vec<String> = sqlx::query_scalar("SELECT tags FROM runs WHERE id = $1")
@@ -1627,7 +1630,7 @@ async fn history_streams_every_point_as_csv() {
     server.log(batch(run, 0, 0, 5)).await;
     let id = uuid::Uuid::from_bytes(*run.as_bytes());
     let get = |query: String| {
-        Request::get(format!("/api/v0/projects/test/history?{query}"))
+        Request::get(format!("/api/v1/projects/test/history?{query}"))
             .header(header::AUTHORIZATION, server.bearer())
             .body(Body::empty())
             .unwrap()
@@ -1689,7 +1692,7 @@ async fn history_streams_every_point_as_csv() {
     assert_eq!(server.create_project("other").await, StatusCode::CREATED);
     let (status, _) = server
         .call(
-            Request::get(format!("/api/v0/projects/other/history?run={id}&key=loss"))
+            Request::get(format!("/api/v1/projects/other/history?run={id}&key=loss"))
                 .header(header::AUTHORIZATION, server.bearer())
                 .body(Body::empty())
                 .unwrap(),
@@ -1713,7 +1716,7 @@ async fn metric_stats_are_over_every_point() {
     server.log(nan).await;
     let id = uuid::Uuid::from_bytes(*run.as_bytes());
     let stats = |items: serde_json::Value| {
-        Request::post("/api/v0/metric-stats")
+        Request::post("/api/v1/metric-stats")
             .header(header::AUTHORIZATION, server.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
@@ -1781,7 +1784,7 @@ async fn neighbors_reach_across_gaps_and_skip_nan() {
     server.log(batch(run, 2, 1000, 2)).await; // steps 1000-1001
     let id = uuid::Uuid::from_bytes(*run.as_bytes()).to_string();
     let ask = |items: serde_json::Value| {
-        Request::post("/api/v0/neighbors")
+        Request::post("/api/v1/neighbors")
             .header(header::AUTHORIZATION, server.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
@@ -1835,13 +1838,13 @@ async fn preferences_follow_the_user() {
         return;
     };
     let put = |body: String| {
-        Request::put("/api/v0/me/preferences")
+        Request::put("/api/v1/me/preferences")
             .header(header::AUTHORIZATION, server.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap()
     };
-    let (_, me) = get_json(&server, "/api/v0/auth/me").await;
+    let (_, me) = get_json(&server, "/api/v1/auth/me").await;
     assert_eq!(
         me["preferences"],
         serde_json::json!({}),
@@ -1851,7 +1854,7 @@ async fn preferences_follow_the_user() {
     let saved = serde_json::json!({"appearance": {"theme": "dark", "columns": 2}});
     let (status, body) = server.call(put(saved.to_string())).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{}", error_of(&body));
-    let (_, me) = get_json(&server, "/api/v0/auth/me").await;
+    let (_, me) = get_json(&server, "/api/v1/auth/me").await;
     assert_eq!(me["preferences"], saved);
 
     let (status, _) = server.call(put("[1, 2]".into())).await;
@@ -1859,7 +1862,7 @@ async fn preferences_follow_the_user() {
     let big = serde_json::json!({ "x": "y".repeat(10_000) });
     let (status, _) = server.call(put(big.to_string())).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "bounded");
-    let (_, me) = get_json(&server, "/api/v0/auth/me").await;
+    let (_, me) = get_json(&server, "/api/v1/auth/me").await;
     assert_eq!(me["preferences"], saved, "refusals change nothing");
     server.stop().await;
 }

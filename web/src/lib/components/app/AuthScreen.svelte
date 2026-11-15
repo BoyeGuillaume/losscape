@@ -92,7 +92,7 @@
 	}
 
 	const oauthHref = (id: string) =>
-		`/api/v0/auth/oauth/${encodeURIComponent(id)}/start?return_to=${encodeURIComponent(returnTo)}`;
+		`/api/v1/auth/oauth/${encodeURIComponent(id)}/start?return_to=${encodeURIComponent(returnTo)}`;
 </script>
 
 {#snippet providers(verb: string)}

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use losscape_core::proto::v0::{Error as ProtoError, RunExitState, RunFinish, RunInit};
+use losscape_core::proto::v1::{Error as ProtoError, RunExitState, RunFinish, RunInit};
 use losscape_core::{PART_HASH_HEADER, PROTOCOL_HEADER, PROTOCOL_VERSION};
 use prost::Message;
 use reqwest::{Method, StatusCode, header};
@@ -90,7 +90,7 @@ impl Client {
             .map_err(|e| UploadError::Local(format!("HTTP client: {e}")))?;
         Ok(Self {
             http,
-            base: format!("{}/api/v0", server.trim_end_matches('/')),
+            base: format!("{}/api/v1", server.trim_end_matches('/')),
             api_key: api_key.to_owned(),
             retry_for,
             last_error: Arc::default(),

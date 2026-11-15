@@ -1,5 +1,5 @@
-//! Protocol messages generated from `proto/losscape/v0`.
+//! Protocol messages generated from `proto/losscape/v1`.
 
-pub mod v0 {
-    include!(concat!(env!("OUT_DIR"), "/losscape.v0.rs"));
+pub mod v1 {
+    include!(concat!(env!("OUT_DIR"), "/losscape.v1.rs"));
 }

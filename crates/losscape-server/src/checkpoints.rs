@@ -453,7 +453,7 @@ fn ms(column: &str) -> String {
     format!("(extract(epoch from {column}) * 1000)::bigint")
 }
 
-/// `POST /api/v0/runs/{run}/checkpoints` `{"step", "files": [{"path", "size", "blake3",
+/// `POST /api/v1/runs/{run}/checkpoints` `{"step", "files": [{"path", "size", "blake3",
 /// "compression", "parts"}]}` (editors): a pending checkpoint, with which parts it has. The
 /// same manifest again gives back the same checkpoint, to resume an upload; another one at the
 /// step of a pending checkpoint replaces it. A committed one has to be deleted first.
@@ -550,7 +550,7 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(describe(&state, id, true).await?)).into_response())
 }
 
-/// `PUT /api/v0/checkpoints/{id}/files/{file}/parts/{part}` (editors): a part of a file, as
+/// `PUT /api/v1/checkpoints/{id}/files/{file}/parts/{part}` (editors): a part of a file, as
 /// declared (compressed or not), with its BLAKE3 in `x-losscape-blake3`. Sending one again
 /// replaces it.
 pub async fn upload_part(
@@ -661,7 +661,7 @@ struct CommittedFile {
     parts: Vec<Vec<u8>>,
 }
 
-/// `POST /api/v0/checkpoints/{id}/commit` (editors): complete, once every part is there.
+/// `POST /api/v1/checkpoints/{id}/commit` (editors): complete, once every part is there.
 pub async fn commit(
     State(state): State<AppState>,
     user: AuthUser,
@@ -758,7 +758,7 @@ pub struct ListParams {
     metric: Vec<String>,
 }
 
-/// `GET /api/v0/runs/{run}/checkpoints[?pending=true | ?pending_only=true][&metric=…]`
+/// `GET /api/v1/runs/{run}/checkpoints[?pending=true | ?pending_only=true][&metric=…]`
 /// (viewers): committed checkpoints by step, with what retention does with them.
 pub async fn list(
     State(state): State<AppState>,
@@ -806,7 +806,7 @@ pub struct Brief {
     important: Vec<bool>,
 }
 
-/// `GET /api/v0/runs/{run}/checkpoints/brief` (viewers): every committed checkpoint of a run
+/// `GET /api/v1/runs/{run}/checkpoints/brief` (viewers): every committed checkpoint of a run
 /// in brief, for marking charts: small however many there are.
 pub async fn brief(
     State(state): State<AppState>,
@@ -837,7 +837,7 @@ pub async fn brief(
     Ok(Json(out))
 }
 
-/// `GET /api/v0/checkpoints/{id}` (viewers): with its files.
+/// `GET /api/v1/checkpoints/{id}` (viewers): with its files.
 pub async fn detail(
     State(state): State<AppState>,
     user: AuthUser,
@@ -846,7 +846,7 @@ pub async fn detail(
     Ok(Json(detail_of(&state, &user, id).await?))
 }
 
-/// A checkpoint with its files, as `GET /api/v0/checkpoints/{id}` gives it.
+/// A checkpoint with its files, as `GET /api/v1/checkpoints/{id}` gives it.
 pub(crate) async fn detail_of(
     state: &AppState,
     user: &AuthUser,
@@ -870,7 +870,7 @@ pub struct CheckpointUpdate {
     important: Option<bool>,
 }
 
-/// `PATCH /api/v0/checkpoints/{id}` `{"important": bool}` (editors): important checkpoints are
+/// `PATCH /api/v1/checkpoints/{id}` `{"important": bool}` (editors): important checkpoints are
 /// never deleted by retention.
 pub async fn update(
     State(state): State<AppState>,
@@ -920,7 +920,7 @@ pub struct Pruned {
     dry_run: bool,
 }
 
-/// `POST /api/v0/runs/{run}/checkpoints/prune` `{"spaced": n, "last", "best": {"metric",
+/// `POST /api/v1/runs/{run}/checkpoints/prune` `{"spaced": n, "last", "best": {"metric",
 /// "goal"}, "dry_run"}` (editors): deletes a run's checkpoints but about `n` spaced regularly,
 /// the last and the best if asked, and always the important ones. With `dry_run`, only counts.
 pub async fn prune(
@@ -989,7 +989,7 @@ pub struct MarkAll {
     important: bool,
 }
 
-/// `POST /api/v0/runs/{run}/checkpoints/important` `{"important": bool}` (editors): marks every
+/// `POST /api/v1/runs/{run}/checkpoints/important` `{"important": bool}` (editors): marks every
 /// committed checkpoint of a run important, or none. Returns how many changed.
 pub async fn mark_all(
     State(state): State<AppState>,
@@ -1069,7 +1069,7 @@ pub struct DownloadParams {
     stored: bool,
 }
 
-/// `GET /api/v0/checkpoints/{id}/files/{file}` (viewers): a file of a committed checkpoint, as a
+/// `GET /api/v1/checkpoints/{id}/files/{file}` (viewers): a file of a committed checkpoint, as a
 /// download (never shown in the page, whatever it contains).
 pub async fn download(
     State(state): State<AppState>,
@@ -1383,7 +1383,7 @@ fn report_corrupt(state: &AppState, id: Uuid) -> Corrupt {
     })
 }
 
-/// `GET /api/v0/checkpoints/{id}/archive`, and its short link `GET /ckpt/{id}`: all of its files
+/// `GET /api/v1/checkpoints/{id}/archive`, and its short link `GET /ckpt/{id}`: all of its files
 /// in one tar archive, as they were uploaded, streamed as a download (`<run>-step-<step>.tar`).
 pub async fn archive(
     State(state): State<AppState>,
@@ -1496,7 +1496,7 @@ fn download_name(path: &str) -> String {
     }
 }
 
-/// `DELETE /api/v0/checkpoints/{id}` (editors): the checkpoint, and its files from storage
+/// `DELETE /api/v1/checkpoints/{id}` (editors): the checkpoint, and its files from storage
 /// shortly after.
 pub async fn delete(
     State(state): State<AppState>,

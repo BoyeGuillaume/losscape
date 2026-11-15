@@ -66,7 +66,7 @@ pub fn normalize(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
     Ok(png)
 }
 
-/// `PUT /api/v0/me/avatar`: raw image bytes as the body.
+/// `PUT /api/v1/me/avatar`: raw image bytes as the body.
 pub async fn upload(
     State(state): State<AppState>,
     user: AuthUser,
@@ -86,7 +86,7 @@ pub async fn upload(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `DELETE /api/v0/me/avatar`.
+/// `DELETE /api/v1/me/avatar`.
 pub async fn remove(State(state): State<AppState>, user: AuthUser) -> Result<StatusCode, UiError> {
     sqlx::query("DELETE FROM user_avatars WHERE user_id = $1")
         .bind(user.id)
@@ -95,7 +95,7 @@ pub async fn remove(State(state): State<AppState>, user: AuthUser) -> Result<Sta
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/v0/users/{username}/avatar` (signed-in users). URLs carry a version query
+/// `GET /api/v1/users/{username}/avatar` (signed-in users). URLs carry a version query
 /// (`?v=<updated ms>`), so responses can be cached for long.
 pub async fn serve(
     State(state): State<AppState>,
@@ -123,7 +123,7 @@ pub async fn serve(
 /// SQL for a user's avatar URL (NULL without a picture), given `u` = users and `a` =
 /// user_avatars LEFT JOINed. Usernames are restricted to URL-safe characters.
 pub const AVATAR_URL_SQL: &str = "CASE WHEN a.user_id IS NULL THEN NULL
-     ELSE '/api/v0/users/' || u.username || '/avatar?v=' || (extract(epoch from a.updated_at) * 1000)::bigint END";
+     ELSE '/api/v1/users/' || u.username || '/avatar?v=' || (extract(epoch from a.updated_at) * 1000)::bigint END";
 
 #[cfg(test)]
 mod tests {

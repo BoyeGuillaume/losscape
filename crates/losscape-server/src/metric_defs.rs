@@ -99,7 +99,7 @@ pub struct Saved {
     version: i64,
 }
 
-/// `GET /api/v0/projects/{project}/metric-definitions` (members).
+/// `GET /api/v1/projects/{project}/metric-definitions` (members).
 pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,
@@ -123,7 +123,7 @@ pub async fn list(
     }))
 }
 
-/// `PUT /api/v0/projects/{project}/metric-definitions` `{"version", "definitions": [...]}`
+/// `PUT /api/v1/projects/{project}/metric-definitions` `{"version", "definitions": [...]}`
 /// (editors): replaces them all, in order (earlier definitions win when several match).
 /// Refused if `version` isn't the latest: someone changed them since this was read.
 pub async fn replace(
@@ -191,7 +191,7 @@ pub async fn replace(
     Ok(Json(Saved { version: saved }))
 }
 
-/// `GET /api/v0/projects/{project}/metric-keys` (members): every metric name logged, and
+/// `GET /api/v1/projects/{project}/metric-keys` (members): every metric name logged, and
 /// every name a run shows a metric under (renames).
 pub async fn keys(
     State(state): State<AppState>,
@@ -253,7 +253,7 @@ async fn store_renames(
     .rows_affected())
 }
 
-/// `PUT /api/v0/runs/{run}/metric-renames/{from}` `{"to": name, "scale"?}` (editors): shows
+/// `PUT /api/v1/runs/{run}/metric-renames/{from}` `{"to": name, "scale"?}` (editors): shows
 /// metric `from` of this run as `to` (times `scale`).
 pub async fn rename(
     State(state): State<AppState>,
@@ -283,7 +283,7 @@ pub struct BulkRename {
     scale: Option<f64>,
 }
 
-/// `POST /api/v0/projects/{project}/runs/metric-renames` `{"runs", "from", "to", "scale"?}`
+/// `POST /api/v1/projects/{project}/runs/metric-renames` `{"runs", "from", "to", "scale"?}`
 /// (editors): renames `from` in these runs, or (`to` null) removes their renames of it.
 pub async fn rename_many(
     State(state): State<AppState>,
@@ -332,7 +332,7 @@ pub async fn rename_many(
     Ok(Json(Changed { changed }))
 }
 
-/// `DELETE /api/v0/runs/{run}/metric-renames/{from}` (editors): back to the logged name.
+/// `DELETE /api/v1/runs/{run}/metric-renames/{from}` (editors): back to the logged name.
 pub async fn unrename(
     State(state): State<AppState>,
     user: AuthUser,

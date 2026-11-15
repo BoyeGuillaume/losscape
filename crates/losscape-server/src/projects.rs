@@ -35,7 +35,7 @@ pub struct Created {
     name: String,
 }
 
-/// `POST /api/v0/projects`: any signed-in user; the creator becomes its owner.
+/// `POST /api/v1/projects`: any signed-in user; the creator becomes its owner.
 pub async fn create(
     State(state): State<AppState>,
     user: AuthUser,
@@ -92,7 +92,7 @@ pub struct SetAlias {
     run: String,
 }
 
-/// `PUT /api/v0/projects/{project}/aliases/{alias}` `{"run": id}` (editors): points the
+/// `PUT /api/v1/projects/{project}/aliases/{alias}` `{"run": id}` (editors): points the
 /// alias at the run, moving it if another run had it.
 pub async fn set_alias(
     State(state): State<AppState>,
@@ -124,7 +124,7 @@ pub struct AliasTarget {
     run: uuid::Uuid,
 }
 
-/// `GET /api/v0/projects/{project}/aliases/{alias}`: the run it points to.
+/// `GET /api/v1/projects/{project}/aliases/{alias}`: the run it points to.
 pub async fn get_alias(
     State(state): State<AppState>,
     user: AuthUser,
@@ -146,7 +146,7 @@ fn unknown_alias() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "unknown_alias", "no such alias")
 }
 
-/// `DELETE /api/v0/projects/{project}/aliases/{alias}` (editors).
+/// `DELETE /api/v1/projects/{project}/aliases/{alias}` (editors).
 pub async fn remove_alias(
     State(state): State<AppState>,
     user: AuthUser,
@@ -180,7 +180,7 @@ pub struct Changed {
     pub(crate) changed: u64,
 }
 
-/// `POST /api/v0/projects/{project}/runs/archive` `{"runs": [...]}` (editors): hides the
+/// `POST /api/v1/projects/{project}/runs/archive` `{"runs": [...]}` (editors): hides the
 /// runs; they are deleted for good after the project's `archive_days`.
 pub async fn archive_runs(
     state: State<AppState>,
@@ -191,7 +191,7 @@ pub async fn archive_runs(
     set_archived(state, user, project, body, true).await
 }
 
-/// `POST /api/v0/projects/{project}/runs/restore` `{"runs": [...]}` (editors).
+/// `POST /api/v1/projects/{project}/runs/restore` `{"runs": [...]}` (editors).
 pub async fn restore_runs(
     state: State<AppState>,
     user: AuthUser,
@@ -201,7 +201,7 @@ pub async fn restore_runs(
     set_archived(state, user, project, body, false).await
 }
 
-/// `POST /api/v0/projects/{project}/runs/abort` `{"runs": [...]}` (editors): asks these
+/// `POST /api/v1/projects/{project}/runs/abort` `{"runs": [...]}` (editors): asks these
 /// running runs to stop. Their SDK learns about it from its next heartbeat and interrupts
 /// the script, so what was logged is kept.
 pub async fn abort_runs(
@@ -282,7 +282,7 @@ pub struct ProjectInfo {
     checkpoint_retention: Option<crate::retention::Retention>,
 }
 
-/// `GET /api/v0/projects/{project}` (members).
+/// `GET /api/v1/projects/{project}` (members).
 pub async fn project_info(
     State(state): State<AppState>,
     user: AuthUser,
@@ -312,7 +312,7 @@ pub struct ProjectUpdate {
     checkpoint_retention: Option<crate::retention::Retention>,
 }
 
-/// `PATCH /api/v0/projects/{project}` `{"archive_days": n, "checkpoint_retention": {"days",
+/// `PATCH /api/v1/projects/{project}` `{"archive_days": n, "checkpoint_retention": {"days",
 /// "keep_last", "best": {"metric", "goal"}}}` (owners), each optional.
 pub async fn update_project(
     State(state): State<AppState>,
@@ -349,7 +349,7 @@ pub async fn update_project(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `DELETE /api/v0/projects/{project}` (owners): the project, its runs and all their data.
+/// `DELETE /api/v1/projects/{project}` (owners): the project, its runs and all their data.
 pub async fn delete_project(
     State(state): State<AppState>,
     user: AuthUser,

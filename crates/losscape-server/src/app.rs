@@ -170,7 +170,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         .route("/readyz", get(readyz))
         .route("/branding/favicon", get(favicon))
         .route("/branding/auth-background", get(auth_background))
-        .nest("/api/v0", user_api.merge(public_api))
+        .nest("/api/v1", user_api.merge(public_api))
         .merge(checkpoint_links)
         .route("/api/{*rest}", any(unknown_endpoint))
         .layer(DefaultBodyLimit::max(max_body_bytes))

@@ -14,7 +14,7 @@ use base64::Engine;
 use common::{TestServer, error_of, user};
 use http_body_util::BodyExt;
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::{LogBatch, RunInit, ScalarColumns};
+use losscape_core::proto::v1::{LogBatch, RunInit, ScalarColumns};
 use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
 use losscape_server::config::{AuthConfig, OAuthKind, OAuthProvider, Signup};
 use prost::Message;
@@ -185,7 +185,7 @@ impl Response {
 
 async fn register(server: &TestServer, username: &str, password: &str) -> Response {
     Call::post(
-        "/api/v0/auth/register",
+        "/api/v1/auth/register",
         json!({"username": username, "password": password}),
     )
     .send(server)
@@ -194,7 +194,7 @@ async fn register(server: &TestServer, username: &str, password: &str) -> Respon
 
 async fn login(server: &TestServer, username: &str, password: &str) -> Response {
     Call::post(
-        "/api/v0/auth/login",
+        "/api/v1/auth/login",
         json!({"username": username, "password": password}),
     )
     .send(server)
@@ -220,7 +220,7 @@ async fn sdk(
 }
 
 async fn create_project(server: &TestServer, key: &str, name: &str) -> Response {
-    Call::post("/api/v0/projects", json!({ "name": name }))
+    Call::post("/api/v1/projects", json!({ "name": name }))
         .bearer(key)
         .send(server)
         .await
@@ -233,7 +233,7 @@ async fn init_run(server: &TestServer, key: &str, project: &str) -> (StatusCode,
         project: project.into(),
         ..Default::default()
     };
-    let (status, body) = sdk(server, key, "/api/v0/runs/init", init).await;
+    let (status, body) = sdk(server, key, "/api/v1/runs/init", init).await;
     (status, run, error_of(&body))
 }
 
@@ -250,7 +250,7 @@ async fn log_point(server: &TestServer, key: &str, run: RunId, seq: u64) -> (Sta
         }),
         ..Default::default()
     };
-    let (status, body) = sdk(server, key, "/api/v0/ingest", batch).await;
+    let (status, body) = sdk(server, key, "/api/v1/ingest", batch).await;
     (status, error_of(&body))
 }
 
@@ -270,7 +270,7 @@ macro_rules! server_with {
 #[tokio::test]
 async fn register_login_logout() {
     let server = server_with!(TestServer::start());
-    let settings = Call::get("/api/v0/auth/settings")
+    let settings = Call::get("/api/v1/auth/settings")
         .send(&server)
         .await
         .json();
@@ -310,7 +310,7 @@ async fn register_login_logout() {
         .unwrap();
     assert_eq!(stored, [Sha256::digest(token.as_bytes()).to_vec()]);
 
-    let me = Call::get("/api/v0/auth/me")
+    let me = Call::get("/api/v1/auth/me")
         .cookie(&cookie)
         .send(&server)
         .await;
@@ -349,7 +349,7 @@ async fn register_login_logout() {
     assert_eq!(ok.status, StatusCode::OK, "usernames are case-insensitive");
     let second = ok.cookie("losscape_session");
 
-    let out = Call::post("/api/v0/auth/logout", json!({}))
+    let out = Call::post("/api/v1/auth/logout", json!({}))
         .cookie(&cookie)
         .send(&server)
         .await;
@@ -360,7 +360,7 @@ async fn register_login_logout() {
             .contains("Max-Age=0")
     );
     assert_eq!(
-        Call::get("/api/v0/auth/me")
+        Call::get("/api/v1/auth/me")
             .cookie(&cookie)
             .send(&server)
             .await
@@ -368,7 +368,7 @@ async fn register_login_logout() {
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        Call::get("/api/v0/auth/me")
+        Call::get("/api/v1/auth/me")
             .cookie(&second)
             .send(&server)
             .await
@@ -408,7 +408,7 @@ async fn first_user_is_admin_and_adopts_projects() {
         .execute(server.state.pg())
         .await
         .unwrap();
-    let settings = Call::get("/api/v0/auth/settings")
+    let settings = Call::get("/api/v1/auth/settings")
         .send(&server)
         .await
         .json();
@@ -431,7 +431,7 @@ async fn first_user_is_admin_and_adopts_projects() {
     assert_eq!(role, "owner");
 
     assert_eq!(
-        Call::get("/api/v0/auth/settings")
+        Call::get("/api/v1/auth/settings")
             .send(&server)
             .await
             .json()["signup"],
@@ -453,7 +453,7 @@ async fn cross_site_requests_and_injection_are_rejected() {
         .await
         .cookie("losscape_session");
     let new_key = |site| {
-        Call::post("/api/v0/me/api-keys", json!({"name": "ci"}))
+        Call::post("/api/v1/me/api-keys", json!({"name": "ci"}))
             .cookie(&cookie)
             .site(site)
     };
@@ -474,7 +474,7 @@ async fn cross_site_requests_and_injection_are_rejected() {
         StatusCode::CREATED
     );
     let cross_login = Call::post(
-        "/api/v0/auth/login",
+        "/api/v1/auth/login",
         json!({"username": "alice", "password": "correct horse battery"}),
     )
     .site(Some("cross-site"))
@@ -503,7 +503,7 @@ async fn cross_site_requests_and_injection_are_rejected() {
     let (_, run, _) = init_run(&server, &server.api_key, "proj").await;
     let res = Call::new(
         Method::PUT,
-        "/api/v0/projects/proj/members/a'%3B%20DROP%20TABLE%20users%3B--",
+        "/api/v1/projects/proj/members/a'%3B%20DROP%20TABLE%20users%3B--",
     )
     .bearer(&server.api_key)
     .send(&server)
@@ -517,7 +517,7 @@ async fn cross_site_requests_and_injection_are_rejected() {
         body: Some(json!({"role": "viewer"})),
         ..Call::new(
             Method::PUT,
-            "/api/v0/projects/proj/members/a'%3B%20DROP%20TABLE%20users%3B--",
+            "/api/v1/projects/proj/members/a'%3B%20DROP%20TABLE%20users%3B--",
         )
     }
     .bearer(&server.api_key)
@@ -540,12 +540,12 @@ async fn cross_site_requests_and_injection_are_rejected() {
         ..Default::default()
     };
     assert_eq!(
-        sdk(&server, &server.api_key, "/api/v0/ingest", batch)
+        sdk(&server, &server.api_key, "/api/v1/ingest", batch)
             .await
             .0,
         StatusCode::OK
     );
-    let detail = Call::get(format!("/api/v0/runs/{}", run_path(run)))
+    let detail = Call::get(format!("/api/v1/runs/{}", run_path(run)))
         .bearer(&server.api_key)
         .send(&server)
         .await;
@@ -570,7 +570,7 @@ async fn api_keys_are_created_used_and_revoked() {
         .await
         .cookie("losscape_session");
 
-    let created = Call::post("/api/v0/me/api-keys", json!({"name": "laptop"}))
+    let created = Call::post("/api/v1/me/api-keys", json!({"name": "laptop"}))
         .cookie(&cookie)
         .send(&server)
         .await;
@@ -578,7 +578,7 @@ async fn api_keys_are_created_used_and_revoked() {
     let key = created.json()["secret"].as_str().unwrap().to_owned();
     assert!(key.starts_with("df_") && key.len() == 46);
 
-    let list = Call::get("/api/v0/me/api-keys")
+    let list = Call::get("/api/v1/me/api-keys")
         .cookie(&cookie)
         .send(&server)
         .await
@@ -603,7 +603,7 @@ async fn api_keys_are_created_used_and_revoked() {
     );
     // An API key can't change the password (that needs the web session).
     let res = Call::post(
-        "/api/v0/me/password",
+        "/api/v1/me/password",
         json!({"current": "correct horse battery", "new": "another long one"}),
     )
     .bearer(&key)
@@ -612,7 +612,7 @@ async fn api_keys_are_created_used_and_revoked() {
     assert_eq!(res.status, StatusCode::FORBIDDEN);
 
     let id = list[0]["id"].as_i64().unwrap();
-    let revoke = Call::new(Method::DELETE, format!("/api/v0/me/api-keys/{id}"))
+    let revoke = Call::new(Method::DELETE, format!("/api/v1/me/api-keys/{id}"))
         .cookie(&cookie)
         .send(&server)
         .await;
@@ -639,7 +639,7 @@ async fn password_change_signs_out_other_sessions() {
         .await
         .cookie("losscape_session");
     let wrong = Call::post(
-        "/api/v0/me/password",
+        "/api/v1/me/password",
         json!({"current": "nope nope nope", "new": "brand new password"}),
     )
     .cookie(&a)
@@ -647,7 +647,7 @@ async fn password_change_signs_out_other_sessions() {
     .await;
     assert_eq!(wrong.status, StatusCode::FORBIDDEN);
     let ok = Call::post(
-        "/api/v0/me/password",
+        "/api/v1/me/password",
         json!({"current": "correct horse battery", "new": "brand new password"}),
     )
     .cookie(&a)
@@ -655,7 +655,7 @@ async fn password_change_signs_out_other_sessions() {
     .await;
     assert_eq!(ok.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        Call::get("/api/v0/auth/me")
+        Call::get("/api/v1/auth/me")
             .cookie(&a)
             .send(&server)
             .await
@@ -663,7 +663,7 @@ async fn password_change_signs_out_other_sessions() {
         StatusCode::OK
     );
     assert_eq!(
-        Call::get("/api/v0/auth/me")
+        Call::get("/api/v1/auth/me")
             .cookie(&b)
             .send(&server)
             .await
@@ -679,7 +679,7 @@ async fn password_change_signs_out_other_sessions() {
 
 fn transfer_call<'a>(key: &'a str, to: &str, then: &str) -> Call<'a> {
     Call::post(
-        "/api/v0/projects/p/transfer",
+        "/api/v1/projects/p/transfer",
         json!({ "username": to, "then": then }),
     )
     .bearer(key)
@@ -689,14 +689,14 @@ fn transfer_call<'a>(key: &'a str, to: &str, then: &str) -> Call<'a> {
 fn role_call<'a>(key: &'a str, who: &str, role: &str) -> Call<'a> {
     Call {
         body: Some(json!({ "role": role })),
-        ..Call::new(Method::PUT, format!("/api/v0/projects/p/members/{who}"))
+        ..Call::new(Method::PUT, format!("/api/v1/projects/p/members/{who}"))
     }
     .bearer(key)
     .via_session()
 }
 
 async fn role_in_p(server: &TestServer, key: &str) -> Value {
-    Call::get("/api/v0/projects/p")
+    Call::get("/api/v1/projects/p")
         .bearer(key)
         .send(server)
         .await
@@ -777,7 +777,7 @@ async fn owners_transfer_ownership() {
     );
     assert_eq!(role_in_p(&server, &carol).await, "owner");
     assert_eq!(
-        Call::get("/api/v0/projects/p")
+        Call::get("/api/v1/projects/p")
             .bearer(&bob)
             .send(&server)
             .await
@@ -789,7 +789,7 @@ async fn owners_transfer_ownership() {
 }
 
 async fn list_runs(server: &TestServer, key: &str, archived: bool) -> Response {
-    Call::get(format!("/api/v0/projects/p/runs?archived={archived}"))
+    Call::get(format!("/api/v1/projects/p/runs?archived={archived}"))
         .bearer(key)
         .send(server)
         .await
@@ -797,7 +797,7 @@ async fn list_runs(server: &TestServer, key: &str, archived: bool) -> Response {
 
 fn archive_call<'a>(key: &'a str, action: &str, run: RunId) -> Call<'a> {
     Call::post(
-        format!("/api/v0/projects/p/runs/{action}"),
+        format!("/api/v1/projects/p/runs/{action}"),
         json!({ "runs": [run_path(run)] }),
     )
     .bearer(key)
@@ -806,7 +806,7 @@ fn archive_call<'a>(key: &'a str, action: &str, run: RunId) -> Call<'a> {
 fn patch<'a>(key: &'a str, days: i64) -> Call<'a> {
     Call {
         body: Some(json!({ "archive_days": days })),
-        ..Call::new(Method::PATCH, "/api/v0/projects/p")
+        ..Call::new(Method::PATCH, "/api/v1/projects/p")
     }
     .bearer(key)
     .via_session()
@@ -857,27 +857,27 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
     // Nor change tags; they can read them.
     let tag = |user| {
         Call::post(
-            "/api/v0/projects/p/runs/tags",
+            "/api/v1/projects/p/runs/tags",
             json!({"runs": [run_path(old)], "add": ["x"]}),
         )
         .bearer(user)
     };
     assert_eq!(tag(bob).send(&server).await.status, StatusCode::FORBIDDEN);
     let rename = Call::post(
-        "/api/v0/projects/p/runs/metric-renames",
+        "/api/v1/projects/p/runs/metric-renames",
         json!({"runs": [run_path(old)], "from": "loss", "to": "train/loss"}),
     )
     .bearer(bob);
     assert_eq!(rename.send(&server).await.status, StatusCode::FORBIDDEN);
     let abort = Call::post(
-        "/api/v0/projects/p/runs/abort",
+        "/api/v1/projects/p/runs/abort",
         json!({"runs": [run_path(old)]}),
     )
     .bearer(bob);
     assert_eq!(abort.send(&server).await.status, StatusCode::FORBIDDEN);
-    let style = Call::put("/api/v0/projects/p/tags/x", json!({"color": "red"})).bearer(bob);
+    let style = Call::put("/api/v1/projects/p/tags/x", json!({"color": "red"})).bearer(bob);
     assert_eq!(style.send(&server).await.status, StatusCode::FORBIDDEN);
-    let read = Call::get("/api/v0/projects/p/tags").bearer(bob);
+    let read = Call::get("/api/v1/projects/p/tags").bearer(bob);
     assert_eq!(read.send(&server).await.status, StatusCode::OK);
     assert_eq!(tag(alice).send(&server).await.json()["changed"], 1);
     let res = archive_call(alice, "archive", old).send(&server).await;
@@ -886,7 +886,7 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
     let archived = list(true).await.json()["runs"].clone();
     assert_eq!(names(&archived), [run_path(old)]);
     assert!(archived[0]["archived_at_ms"].as_i64().is_some());
-    let info = Call::get("/api/v0/projects/p")
+    let info = Call::get("/api/v1/projects/p")
         .bearer(alice)
         .send(&server)
         .await
@@ -920,7 +920,7 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
         patch(alice, 7).send(&server).await.status,
         StatusCode::NO_CONTENT
     );
-    let info = Call::get("/api/v0/projects/p")
+    let info = Call::get("/api/v1/projects/p")
         .bearer(alice)
         .send(&server)
         .await
@@ -956,7 +956,7 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
         .unwrap();
     assert_eq!(points, 0);
     assert_eq!(
-        Call::get(format!("/api/v0/runs/{}", run_path(old)))
+        Call::get(format!("/api/v1/runs/{}", run_path(old)))
             .bearer(alice)
             .send(&server)
             .await
@@ -966,7 +966,7 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
 
     // Deleting the project: owners only; runs and memberships go with it.
     let delete = |key| {
-        Call::new(Method::DELETE, "/api/v0/projects/p")
+        Call::new(Method::DELETE, "/api/v1/projects/p")
             .bearer(key)
             .via_session()
     };
@@ -979,7 +979,7 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        Call::get("/api/v0/projects")
+        Call::get("/api/v1/projects")
             .bearer(bob)
             .send(&server)
             .await
@@ -987,7 +987,7 @@ async fn archived_runs_are_hidden_restorable_then_purged() {
         json!([])
     );
     assert_eq!(
-        Call::get(format!("/api/v0/runs/{}", run_path(keep)))
+        Call::get(format!("/api/v1/runs/{}", run_path(keep)))
             .bearer(alice)
             .send(&server)
             .await
@@ -1053,24 +1053,24 @@ async fn project_roles_control_access() {
     );
 
     // Non-members don't see the project or its runs.
-    let projects = Call::get("/api/v0/projects")
+    let projects = Call::get("/api/v1/projects")
         .bearer(&bob)
         .send(&server)
         .await
         .json();
     assert_eq!(projects, json!([]));
     let hidden = [
-        Call::get("/api/v0/projects/alice-proj/runs"),
-        Call::get(format!("/api/v0/runs/{}", run_path(run))),
+        Call::get("/api/v1/projects/alice-proj/runs"),
+        Call::get(format!("/api/v1/runs/{}", run_path(run))),
         Call::get(format!(
-            "/api/v0/projects/alice-proj/live?runs={}",
+            "/api/v1/projects/alice-proj/live?runs={}",
             run_path(run)
         )),
         Call::post(
-            "/api/v0/projects/alice-proj/metrics",
+            "/api/v1/projects/alice-proj/metrics",
             json!({ "runs": [run_path(run)] }),
         ),
-        Call::get("/api/v0/projects/alice-proj/members"),
+        Call::get("/api/v1/projects/alice-proj/members"),
     ];
     for call in hidden {
         assert_eq!(
@@ -1080,7 +1080,7 @@ async fn project_roles_control_access() {
     }
     let series = json!({"ranges": [{"run": run_path(run), "key": "loss", "level": 0, "from_tile": 0, "to_tile": 1}]});
     assert_eq!(
-        Call::post("/api/v0/series?format=json", series.clone())
+        Call::post("/api/v1/series?format=json", series.clone())
             .bearer(&bob)
             .send(&server)
             .await
@@ -1094,7 +1094,7 @@ async fn project_roles_control_access() {
             body: Some(json!({ "role": role })),
             ..Call::new(
                 Method::PUT,
-                format!("/api/v0/projects/alice-proj/members/{who}"),
+                format!("/api/v1/projects/alice-proj/members/{who}"),
             )
         }
         .via_session()
@@ -1111,7 +1111,7 @@ async fn project_roles_control_access() {
         body: Some(
             json!({"version": 0, "query": "", "sort": {"id": "created", "desc": true}, "limit": 5}),
         ),
-        ..Call::new(Method::PUT, "/api/v0/projects/alice-proj/board")
+        ..Call::new(Method::PUT, "/api/v1/projects/alice-proj/board")
     };
     assert_eq!(
         put_board().bearer(&bob).send(&server).await.status,
@@ -1122,7 +1122,7 @@ async fn project_roles_control_access() {
         StatusCode::OK
     );
     assert_eq!(
-        Call::get("/api/v0/projects/alice-proj/board")
+        Call::get("/api/v1/projects/alice-proj/board")
             .bearer(&bob)
             .send(&server)
             .await
@@ -1130,7 +1130,7 @@ async fn project_roles_control_access() {
         StatusCode::OK
     );
     assert_eq!(
-        Call::get("/api/v0/projects/alice-proj/runs")
+        Call::get("/api/v1/projects/alice-proj/runs")
             .bearer(&bob)
             .send(&server)
             .await
@@ -1138,7 +1138,7 @@ async fn project_roles_control_access() {
         StatusCode::OK
     );
     assert_eq!(
-        Call::post("/api/v0/series?format=json", series)
+        Call::post("/api/v1/series?format=json", series)
             .bearer(&bob)
             .send(&server)
             .await
@@ -1157,7 +1157,7 @@ async fn project_roles_control_access() {
             .status,
         StatusCode::FORBIDDEN
     );
-    let projects = Call::get("/api/v0/projects")
+    let projects = Call::get("/api/v1/projects")
         .bearer(&bob)
         .send(&server)
         .await
@@ -1190,7 +1190,7 @@ async fn project_roles_control_access() {
     let leave = |who: &str| {
         Call::new(
             Method::DELETE,
-            format!("/api/v0/projects/alice-proj/members/{who}"),
+            format!("/api/v1/projects/alice-proj/members/{who}"),
         )
         .via_session()
     };
@@ -1240,7 +1240,7 @@ async fn project_roles_control_access() {
         leave("carol").bearer(&carol).send(&server).await.status,
         StatusCode::NO_CONTENT
     );
-    let members = Call::get("/api/v0/projects/alice-proj/members")
+    let members = Call::get("/api/v1/projects/alice-proj/members")
         .bearer(&alice)
         .send(&server)
         .await
@@ -1254,7 +1254,7 @@ async fn project_roles_control_access() {
     assert_eq!(names, [json!("alice"), json!("bob")], "owners first");
 
     // The admin sees every project.
-    let all = Call::get("/api/v0/projects")
+    let all = Call::get("/api/v1/projects")
         .bearer(&server.api_key)
         .send(&server)
         .await
@@ -1493,7 +1493,7 @@ async fn start_oauth(
     session: Option<&str>,
 ) -> (HashMap<String, String>, String) {
     let mut call = Call::get(format!(
-        "/api/v0/auth/oauth/{provider}/start?return_to=/p/demo"
+        "/api/v1/auth/oauth/{provider}/start?return_to=/p/demo"
     ));
     call.cookie = session;
     let res = call.send(server).await;
@@ -1504,7 +1504,7 @@ async fn start_oauth(
         String::from_utf8_lossy(&res.bytes)
     );
     let cookie = res.set_cookie("losscape_oauth").expect("state cookie");
-    for flag in ["HttpOnly", "SameSite=Lax", "Path=/api/v0/auth/oauth"] {
+    for flag in ["HttpOnly", "SameSite=Lax", "Path=/api/v1/auth/oauth"] {
         assert!(cookie.contains(flag), "{cookie}");
     }
     (query(&res.location()), res.cookie("losscape_oauth"))
@@ -1518,7 +1518,7 @@ async fn callback(
     cookie: &str,
 ) -> Response {
     Call::get(format!(
-        "/api/v0/auth/oauth/{provider}/callback?code={code}&state={state}"
+        "/api/v1/auth/oauth/{provider}/callback?code={code}&state={state}"
     ))
     .cookie(cookie)
     .site(Some("cross-site"))
@@ -1530,7 +1530,7 @@ async fn callback(
 async fn oidc_sign_in() {
     let (oidc, github) = (fake_oidc().await, fake_github().await);
     let server = server_with!(TestServer::start_with(auth_config(&oidc, &github)));
-    let providers = Call::get("/api/v0/auth/settings")
+    let providers = Call::get("/api/v1/auth/settings")
         .send(&server)
         .await
         .json()["providers"]
@@ -1547,7 +1547,7 @@ async fn oidc_sign_in() {
     assert_eq!(params["client_id"], "client");
     assert_eq!(
         params["redirect_uri"],
-        "http://losscape.test/api/v0/auth/oauth/corp/callback"
+        "http://losscape.test/api/v1/auth/oauth/corp/callback"
     );
     assert_eq!(params["code_challenge_method"], "S256");
     assert!(params["scope"].contains("openid") && params["scope"].contains("email"));
@@ -1567,7 +1567,7 @@ async fn oidc_sign_in() {
         (StatusCode::SEE_OTHER, "/p/demo".to_owned())
     );
     let session = res.cookie("losscape_session");
-    let me = Call::get("/api/v0/auth/me")
+    let me = Call::get("/api/v1/auth/me")
         .cookie(&session)
         .send(&server)
         .await
@@ -1596,7 +1596,7 @@ async fn oidc_sign_in() {
         ),
     );
     let again = callback(&server, "corp", "c2", &params["state"], &state_cookie).await;
-    let me = Call::get("/api/v0/auth/me")
+    let me = Call::get("/api/v1/auth/me")
         .cookie(&again.cookie("losscape_session"))
         .send(&server)
         .await
@@ -1650,7 +1650,7 @@ async fn oidc_sign_in() {
         ),
     );
     callback(&server, "corp", "c5", &params["state"], &state_cookie).await;
-    let me = Call::get("/api/v0/auth/me")
+    let me = Call::get("/api/v1/auth/me")
         .cookie(&alice)
         .send(&server)
         .await
@@ -1677,7 +1677,7 @@ async fn github_sign_in() {
 
     let res = callback(&server, "github", "g1", &params["state"], &state_cookie).await;
     assert_eq!(res.location(), "/p/demo");
-    let me = Call::get("/api/v0/auth/me")
+    let me = Call::get("/api/v1/auth/me")
         .cookie(&res.cookie("losscape_session"))
         .send(&server)
         .await
@@ -1706,7 +1706,7 @@ async fn github_sign_in() {
 async fn profiles_have_display_names_and_pictures() {
     let server = server_with!(TestServer::start());
     let res = Call::post(
-        "/api/v0/auth/register",
+        "/api/v1/auth/register",
         json!({"username": "alice", "password": "correct horse battery", "display_name": "  Alice Martin  "}),
     )
     .send(&server)
@@ -1718,7 +1718,7 @@ async fn profiles_have_display_names_and_pictures() {
 
     for bad in ["x\u{0}y", "line\nbreak", &"x".repeat(65)] {
         let res = Call::post(
-            "/api/v0/auth/register",
+            "/api/v1/auth/register",
             json!({"username": "bob", "password": "correct horse battery", "display_name": bad}),
         )
         .send(&server)
@@ -1728,7 +1728,7 @@ async fn profiles_have_display_names_and_pictures() {
     let patch = |body: Value| {
         Call {
             body: Some(body),
-            ..Call::new(Method::PATCH, "/api/v0/me")
+            ..Call::new(Method::PATCH, "/api/v1/me")
         }
         .cookie(&cookie)
     };
@@ -1749,7 +1749,7 @@ async fn profiles_have_display_names_and_pictures() {
 
     // Upload: any PNG/JPEG/WebP comes back as a 256x256 PNG.
     let upload = |bytes: Vec<u8>| async {
-        let req = Request::put("/api/v0/me/avatar")
+        let req = Request::put("/api/v1/me/avatar")
             .header(header::COOKIE, &cookie)
             .header("sec-fetch-site", "same-origin")
             .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -1775,13 +1775,13 @@ async fn profiles_have_display_names_and_pictures() {
         .unwrap();
     assert_eq!(upload(jpeg).await.0, StatusCode::NO_CONTENT);
 
-    let me = Call::get("/api/v0/auth/me")
+    let me = Call::get("/api/v1/auth/me")
         .cookie(&cookie)
         .send(&server)
         .await
         .json();
     let url = me["avatar_url"].as_str().expect("avatar url").to_owned();
-    assert!(url.starts_with("/api/v0/users/alice/avatar?v="), "{url}");
+    assert!(url.starts_with("/api/v1/users/alice/avatar?v="), "{url}");
     let res = Call::get(url.clone()).cookie(&cookie).send(&server).await;
     assert_eq!(res.headers[header::CONTENT_TYPE], "image/png");
     let stored = image::load_from_memory(&res.bytes).unwrap();
@@ -1815,7 +1815,7 @@ async fn profiles_have_display_names_and_pictures() {
         StatusCode::PAYLOAD_TOO_LARGE
     );
     assert_eq!(
-        Call::get("/api/v0/auth/me")
+        Call::get("/api/v1/auth/me")
             .cookie(&cookie)
             .send(&server)
             .await
@@ -1824,7 +1824,7 @@ async fn profiles_have_display_names_and_pictures() {
         "a refused upload keeps the current picture"
     );
 
-    let key = Call::post("/api/v0/me/api-keys", json!({"name": "k"}))
+    let key = Call::post("/api/v1/me/api-keys", json!({"name": "k"}))
         .cookie(&cookie)
         .send(&server)
         .await
@@ -1834,20 +1834,20 @@ async fn profiles_have_display_names_and_pictures() {
         .to_owned();
     create_project(&server, &key, "alice-proj").await;
     init_run(&server, &key, "alice-proj").await;
-    let members = Call::get("/api/v0/projects/alice-proj/members")
+    let members = Call::get("/api/v1/projects/alice-proj/members")
         .cookie(&cookie)
         .send(&server)
         .await
         .json();
     assert_eq!(members["members"][0]["avatar_url"], url.as_str());
 
-    let res = Call::new(Method::DELETE, "/api/v0/me/avatar")
+    let res = Call::new(Method::DELETE, "/api/v1/me/avatar")
         .cookie(&cookie)
         .send(&server)
         .await;
     assert_eq!(res.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        Call::get("/api/v0/auth/me")
+        Call::get("/api/v1/auth/me")
             .cookie(&cookie)
             .send(&server)
             .await
@@ -1870,21 +1870,21 @@ async fn api_keys_cant_manage_accounts_or_projects() {
     role_call(&alice, "bob", "viewer").send(&server).await;
 
     let by_key = [
-        Call::post("/api/v0/me/api-keys", json!({"name": "another"})),
-        Call::get("/api/v0/me/api-keys"),
-        Call::new(Method::DELETE, "/api/v0/me/api-keys/1"),
-        Call::new(Method::DELETE, "/api/v0/projects/p"),
+        Call::post("/api/v1/me/api-keys", json!({"name": "another"})),
+        Call::get("/api/v1/me/api-keys"),
+        Call::new(Method::DELETE, "/api/v1/me/api-keys/1"),
+        Call::new(Method::DELETE, "/api/v1/projects/p"),
         Call {
             body: Some(json!({"archive_days": 5})),
-            ..Call::new(Method::PATCH, "/api/v0/projects/p")
+            ..Call::new(Method::PATCH, "/api/v1/projects/p")
         },
         Call {
             body: Some(json!({"role": "editor"})),
-            ..Call::new(Method::PUT, "/api/v0/projects/p/members/bob")
+            ..Call::new(Method::PUT, "/api/v1/projects/p/members/bob")
         },
-        Call::new(Method::DELETE, "/api/v0/projects/p/members/bob"),
+        Call::new(Method::DELETE, "/api/v1/projects/p/members/bob"),
         Call::post(
-            "/api/v0/projects/p/transfer",
+            "/api/v1/projects/p/transfer",
             json!({"username": "bob", "then": "editor"}),
         ),
     ];
@@ -1898,7 +1898,7 @@ async fn api_keys_cant_manage_accounts_or_projects() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(log_point(&server, &alice, run, 0).await.0, StatusCode::OK);
     assert_eq!(
-        Call::get("/api/v0/projects/p")
+        Call::get("/api/v1/projects/p")
             .bearer(&bob)
             .send(&server)
             .await
@@ -1913,7 +1913,7 @@ async fn changing_the_password_revokes_api_keys() {
     let server = server_with!(TestServer::start());
     let res = register(&server, "alice", "first password").await;
     let cookie = res.cookie("losscape_session");
-    let key = Call::post("/api/v0/me/api-keys", json!({"name": "k"}))
+    let key = Call::post("/api/v1/me/api-keys", json!({"name": "k"}))
         .cookie(&cookie)
         .send(&server)
         .await
@@ -1921,10 +1921,10 @@ async fn changing_the_password_revokes_api_keys() {
         .as_str()
         .unwrap()
         .to_owned();
-    let projects = || Call::get("/api/v0/projects").bearer(&key);
+    let projects = || Call::get("/api/v1/projects").bearer(&key);
     assert_eq!(projects().send(&server).await.status, StatusCode::OK);
     let changed = Call::post(
-        "/api/v0/me/password",
+        "/api/v1/me/password",
         json!({"current": "first password", "new": "second password"}),
     )
     .cookie(&cookie)
@@ -1945,7 +1945,7 @@ async fn the_first_account_takes_the_setup_token() {
         setup_token: losscape_server::config::SetupToken::Fixed("the-token".into()),
         ..Default::default()
     }));
-    let settings = Call::get("/api/v0/auth/settings")
+    let settings = Call::get("/api/v1/auth/settings")
         .send(&server)
         .await
         .json();
@@ -1954,7 +1954,7 @@ async fn the_first_account_takes_the_setup_token() {
 
     let attempt = |token: Value| {
         Call::post(
-            "/api/v0/auth/register",
+            "/api/v1/auth/register",
             json!({"username": "alice", "password": "a password", "setup_token": token}),
         )
     };
@@ -1974,7 +1974,7 @@ async fn the_first_account_takes_the_setup_token() {
     assert_eq!(res.json()["is_admin"], true);
 
     // Only for the first.
-    let settings = Call::get("/api/v0/auth/settings")
+    let settings = Call::get("/api/v1/auth/settings")
         .send(&server)
         .await
         .json();

@@ -35,7 +35,7 @@ lsc.Api().run(run_id).checkpoints[-1].download(files="model.pt")
   best one. The run is its name (if no other run of the project has it; otherwise the link
   says so), `@<alias>`, or its id. `/ckpt/<checkpoint id>` names one checkpoint for good (and
   is cached for good). The same whatever the storage, checked like the API (session or API
-  key), never compressed on the way. `GET /api/v0/checkpoints/resolve?ref=…` gives what a link
+  key), never compressed on the way. `GET /api/v1/checkpoints/resolve?ref=…` gives what a link
   names, for the SDK.
 - Hashes are BLAKE3, taken by the server as the upload goes through it, never read back from
   storage, which isn't trusted to give back what it was given: every read checks each part
@@ -98,22 +98,22 @@ server, which checks who asks: clients never reach the storage, or its credentia
 ## Protocol
 
 1. The SDK lists the folder, decides on compression, and hashes each file.
-2. `POST /api/v0/runs/{run}/checkpoints` `{"step", "files": [{"path", "size", "blake3",
+2. `POST /api/v1/runs/{run}/checkpoints` `{"step", "files": [{"path", "size", "blake3",
    "compression", "parts"}]}` (editors): a pending checkpoint, with the parts each file has. The
    same manifest again gives back the same checkpoint, to resume; another one at the step of a
    pending checkpoint replaces it; at the step of a committed one, it's refused (delete first).
-3. `PUT /api/v0/checkpoints/{id}/files/{file}/parts/{part}`, the part as declared (compressed or
+3. `PUT /api/v1/checkpoints/{id}/files/{file}/parts/{part}`, the part as declared (compressed or
    not), its BLAKE3 in `x-losscape-blake3`: several at a time, again if they fail.
-4. `POST /api/v0/checkpoints/{id}/commit`, once all parts are there: each file's BLAKE3, from
+4. `POST /api/v1/checkpoints/{id}/commit`, once all parts are there: each file's BLAKE3, from
    its parts', must be the one declared (else `hash_mismatch`). Pending checkpoints never
    committed expire after a day, with what was uploaded.
 
-Reading: `GET /api/v0/runs/{run}/checkpoints` (committed ones, by step; `?pending=true` for the
-others; `&metric=<name>` repeated for metrics' latest values at their steps), `GET /api/v0/checkpoints/{id}` (with its files), and
-`GET /api/v0/checkpoints/{id}/files/{file}`: decompressed, or as stored with `?stored=true`,
-always as a download; `GET /api/v0/checkpoints/{id}/archive`: all of its files, decompressed, as
+Reading: `GET /api/v1/runs/{run}/checkpoints` (committed ones, by step; `?pending=true` for the
+others; `&metric=<name>` repeated for metrics' latest values at their steps), `GET /api/v1/checkpoints/{id}` (with its files), and
+`GET /api/v1/checkpoints/{id}/files/{file}`: decompressed, or as stored with `?stored=true`,
+always as a download; `GET /api/v1/checkpoints/{id}/archive`: all of its files, decompressed, as
 one tar archive (pax headers: long paths and files over 8 GiB), streamed with its length known
-up front. `DELETE /api/v0/checkpoints/{id}` (editors).
+up front. `DELETE /api/v1/checkpoints/{id}` (editors).
 
 ## Data (Postgres)
 
@@ -153,8 +153,8 @@ trigger; the server deletes those files within a minute.
 4. **Docs (done):** the SDK README, storage in docs/DEPLOYMENT.md (the volume or S3 settings,
    backing it up with the databases, sizing the disk).
 
-`PATCH /api/v0/checkpoints/{id}` `{"important": bool}` (editors); a project's retention in
-`PATCH /api/v0/projects/{project}` `{"checkpoint_retention": {"days", "keep_last", "best":
+`PATCH /api/v1/checkpoints/{id}` `{"important": bool}` (editors); a project's retention in
+`PATCH /api/v1/projects/{project}` `{"checkpoint_retention": {"days", "keep_last", "best":
 {"metric", "goal"}}}` (owners, signed in).
 
 Later: keeping the last few, shards uploaded from every GPU, general artifacts with versions and lineage, logged images and

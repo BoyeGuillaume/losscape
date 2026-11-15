@@ -31,7 +31,7 @@ pytestmark = pytest.mark.skipif(not SERVER, reason="set LOSSCAPE_TEST_SERVER to 
 def project():
     """The SDK only logs to existing projects: creates "pytest-e2e" unless it exists."""
     req = urllib.request.Request(
-        f"{SERVER}/api/v0/projects",
+        f"{SERVER}/api/v1/projects",
         data=b'{"name": "pytest-e2e"}',
         headers={
             "Authorization": f"Bearer {os.environ['LOSSCAPE_API_KEY']}",
@@ -172,7 +172,7 @@ sys.__stderr__.write(f"RESULT {run.id} {outcome}\n")
 
 def api(path: str):
     req = urllib.request.Request(
-        f"{SERVER}/api/v0{path}",
+        f"{SERVER}/api/v1{path}",
         headers={"Authorization": f"Bearer {os.environ['LOSSCAPE_API_KEY']}"},
     )
     return json.loads(urllib.request.urlopen(req, timeout=10).read())

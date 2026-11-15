@@ -419,7 +419,7 @@
 							<!-- eslint-disable svelte/no-navigation-without-resolve -->
 							<a
 								class={buttonVariants({ variant: 'outline', size: 'sm' })}
-								href={`/api/v0/auth/oauth/${encodeURIComponent(provider.id)}/start?return_to=/settings`}
+								href={`/api/v1/auth/oauth/${encodeURIComponent(provider.id)}/start?return_to=/settings`}
 								data-sveltekit-reload>Link</a
 							>
 							<!-- eslint-enable svelte/no-navigation-without-resolve -->

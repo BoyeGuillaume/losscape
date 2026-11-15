@@ -1,4 +1,4 @@
-// Server-sent events from GET /api/v0/projects/{project}/live?runs=..., read with fetch
+// Server-sent events from GET /api/v1/projects/{project}/live?runs=..., read with fetch
 // (one stream for many runs). Reconnects after errors; `onReset` then tells the caller
 // that events may have been missed.
 

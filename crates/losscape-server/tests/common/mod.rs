@@ -8,7 +8,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use losscape_core::proto::v0::Error;
+use losscape_core::proto::v1::Error;
 use losscape_core::{PROTOCOL_HEADER, PROTOCOL_VERSION};
 use losscape_server::app;
 use losscape_server::auth::account;
@@ -155,9 +155,9 @@ impl TestServer {
         self.call(req.body(Body::from(bytes)).unwrap()).await
     }
 
-    /// Creates a project as the admin (`POST /api/v0/projects`); returns the status.
+    /// Creates a project as the admin (`POST /api/v1/projects`); returns the status.
     pub async fn create_project(&self, name: &str) -> StatusCode {
-        let req = Request::post("/api/v0/projects")
+        let req = Request::post("/api/v1/projects")
             .header(header::AUTHORIZATION, self.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(serde_json::json!({ "name": name }).to_string()))

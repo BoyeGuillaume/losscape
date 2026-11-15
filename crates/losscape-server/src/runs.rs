@@ -2,7 +2,7 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use losscape_core::proto::v0::{
+use losscape_core::proto::v1::{
     Ack, Heartbeat, RunEnvironment, RunExitState, RunFinish, RunInit, RunInitResponse,
 };
 use serde_json::{Value, json};

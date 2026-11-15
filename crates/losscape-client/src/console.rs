@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use losscape_core::proto::v0::{ConsoleLine, ConsoleStream};
+use losscape_core::proto::v1::{ConsoleLine, ConsoleStream};
 
 /// Lines per stream that cursor-up can still reach and rewrite.
 const WINDOW: usize = 200;
@@ -359,7 +359,7 @@ mod capture {
     use std::thread::JoinHandle;
     use std::time::{Duration, Instant};
 
-    use losscape_core::proto::v0::ConsoleStream;
+    use losscape_core::proto::v1::ConsoleStream;
     use rustix::fs::{Mode, OFlags};
     use rustix::io::Errno;
     use rustix::pty::OpenptFlags;

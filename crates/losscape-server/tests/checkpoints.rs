@@ -6,7 +6,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use losscape_core::PROTOCOL_HEADER;
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::RunInit;
+use losscape_core::proto::v1::RunInit;
 use losscape_server::checkpoints::{self, PART_SIZE};
 use prost::Message;
 use std::collections::BTreeMap;
@@ -40,7 +40,7 @@ async fn new_run(server: &TestServer) -> String {
         name: "ckpt-run".into(),
         ..Default::default()
     };
-    let req = Request::post("/api/v0/runs/init")
+    let req = Request::post("/api/v1/runs/init")
         .header(header::AUTHORIZATION, server.bearer())
         .header(header::CONTENT_TYPE, "application/x-protobuf")
         .header(PROTOCOL_HEADER, losscape_core::PROTOCOL_VERSION.to_string())
@@ -81,7 +81,7 @@ impl Client<'_> {
         hash: &str,
     ) -> StatusCode {
         let req = Request::put(format!(
-            "/api/v0/checkpoints/{id}/files/{file}/parts/{part}"
+            "/api/v1/checkpoints/{id}/files/{file}/parts/{part}"
         ))
         .header(header::AUTHORIZATION, format!("Bearer {}", self.key))
         .header("x-losscape-blake3", hash)
@@ -125,7 +125,7 @@ async fn upload_resume_commit_download_delete() {
         {"path": "cfg/config.json", "size": config.len(), "blake3": sha(&config), "compression": "zstd", "parts": 1},
         {"path": "empty.txt", "size": 0, "blake3": sha(b""), "compression": "none", "parts": 0},
     ]});
-    let path = format!("/api/v0/runs/{run}/checkpoints");
+    let path = format!("/api/v1/runs/{run}/checkpoints");
     let (status, created) = admin.json("POST", &path, Some(manifest.clone())).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().unwrap().to_owned();
@@ -144,7 +144,7 @@ async fn upload_resume_commit_download_delete() {
     assert_eq!(again["files"][0]["uploaded"], json!([0]));
 
     let (status, body) = admin
-        .json("POST", &format!("/api/v0/checkpoints/{id}/commit"), None)
+        .json("POST", &format!("/api/v1/checkpoints/{id}/commit"), None)
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "parts are missing: {body}");
     assert_eq!(body["code"], "incomplete");
@@ -178,7 +178,7 @@ async fn upload_resume_commit_download_delete() {
     );
 
     let (status, done) = admin
-        .json("POST", &format!("/api/v0/checkpoints/{id}/commit"), None)
+        .json("POST", &format!("/api/v1/checkpoints/{id}/commit"), None)
         .await;
     assert_eq!(status, StatusCode::OK, "{done}");
     assert_eq!(done["state"], "committed");
@@ -204,7 +204,7 @@ async fn upload_resume_commit_download_delete() {
     assert_eq!(list[0]["file_count"], 3);
 
     // Downloads: as uploaded, or as stored for the SDK.
-    let file = |n: usize| format!("/api/v0/checkpoints/{id}/files/{n}");
+    let file = |n: usize| format!("/api/v1/checkpoints/{id}/files/{n}");
     let (status, headers, body) = admin.download(&file(0)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body == model, "the file as it was");
@@ -224,7 +224,7 @@ async fn upload_resume_commit_download_delete() {
 
     // All of it as one tar archive, decompressed.
     let (status, headers, body) = admin
-        .download(&format!("/api/v0/checkpoints/{id}/archive"))
+        .download(&format!("/api/v1/checkpoints/{id}/archive"))
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -252,7 +252,7 @@ async fn upload_resume_commit_download_delete() {
     assert_eq!(files[1].1, config);
 
     // The run list counts committed checkpoints.
-    let (_, runs) = admin.json("GET", "/api/v0/projects/test/runs", None).await;
+    let (_, runs) = admin.json("GET", "/api/v1/projects/test/runs", None).await;
     let listed = runs["runs"]
         .as_array()
         .unwrap()
@@ -267,11 +267,11 @@ async fn upload_resume_commit_download_delete() {
 
     assert_eq!(stored_files(&server).await, 3, "a stored object per part");
     let (status, _) = admin
-        .json("DELETE", &format!("/api/v0/checkpoints/{id}"), None)
+        .json("DELETE", &format!("/api/v1/checkpoints/{id}"), None)
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = admin
-        .json("GET", &format!("/api/v0/checkpoints/{id}"), None)
+        .json("GET", &format!("/api/v1/checkpoints/{id}"), None)
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
@@ -294,7 +294,7 @@ async fn manifests_and_access_are_checked() {
         server: &server,
         key: server.api_key.clone(),
     };
-    let path = format!("/api/v0/runs/{run}/checkpoints");
+    let path = format!("/api/v1/runs/{run}/checkpoints");
     let one = |p: &str| json!({"step": 5, "files": [{"path": p, "size": 3, "blake3": sha(b"abc"), "compression": "none", "parts": 1}]});
     for bad in ["../../etc/passwd", "/abs", "a/./b"] {
         let (status, body) = admin.json("POST", &path, Some(one(bad))).await;
@@ -308,7 +308,7 @@ async fn manifests_and_access_are_checked() {
         StatusCode::NO_CONTENT
     );
     let (status, _) = admin
-        .json("POST", &format!("/api/v0/checkpoints/{id}/commit"), None)
+        .json("POST", &format!("/api/v1/checkpoints/{id}/commit"), None)
         .await;
     assert_eq!(status, StatusCode::OK);
 
@@ -333,12 +333,12 @@ async fn manifests_and_access_are_checked() {
     admin
         .json(
             "POST",
-            &format!("/api/v0/checkpoints/{big_id}/commit"),
+            &format!("/api/v1/checkpoints/{big_id}/commit"),
             None,
         )
         .await;
     let (status, headers, body) = admin
-        .download(&format!("/api/v0/checkpoints/{big_id}/files/0"))
+        .download(&format!("/api/v1/checkpoints/{big_id}/files/0"))
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body == big, "both frames, decompressed, in order");
@@ -367,28 +367,28 @@ async fn manifests_and_access_are_checked() {
         key: outsider_key,
     };
     let (status, _, body) = viewer
-        .download(&format!("/api/v0/checkpoints/{id}/files/0"))
+        .download(&format!("/api/v1/checkpoints/{id}/files/0"))
         .await;
     assert_eq!(
         (status, body.as_slice()),
         (StatusCode::OK, b"abc".as_slice())
     );
     let (status, _) = viewer
-        .json("DELETE", &format!("/api/v0/checkpoints/{id}"), None)
+        .json("DELETE", &format!("/api/v1/checkpoints/{id}"), None)
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "viewers don't delete");
     let (status, _) = viewer.json("POST", &path, Some(one("x.bin"))).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "viewers don't upload");
     for (method, url) in [
-        ("GET", format!("/api/v0/checkpoints/{id}")),
-        ("DELETE", format!("/api/v0/checkpoints/{id}")),
+        ("GET", format!("/api/v1/checkpoints/{id}")),
+        ("DELETE", format!("/api/v1/checkpoints/{id}")),
         ("GET", path.clone()),
     ] {
         let (status, _) = outsider.json(method, &url, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{method} {url}");
     }
     let (status, _, _) = outsider
-        .download(&format!("/api/v0/checkpoints/{id}/files/0"))
+        .download(&format!("/api/v1/checkpoints/{id}/files/0"))
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -409,11 +409,11 @@ async fn manifests_and_access_are_checked() {
     };
     let reads = [
         path.clone(),
-        format!("/api/v0/runs/{run}/checkpoints/brief"),
-        format!("/api/v0/checkpoints/{id}"),
-        format!("/api/v0/checkpoints/{id}/files/0"),
-        format!("/api/v0/checkpoints/{id}/archive"),
-        "/api/v0/checkpoints/resolve?ref=test/ckpt-run:5".to_owned(),
+        format!("/api/v1/runs/{run}/checkpoints/brief"),
+        format!("/api/v1/checkpoints/{id}"),
+        format!("/api/v1/checkpoints/{id}/files/0"),
+        format!("/api/v1/checkpoints/{id}/archive"),
+        "/api/v1/checkpoints/resolve?ref=test/ckpt-run:5".to_owned(),
         format!("/ckpt/{id}"),
         format!("/ckpt/{id}/weights.bin"),
         "/ckpt/test/ckpt-run:5".to_owned(),
@@ -443,12 +443,12 @@ async fn manifests_and_access_are_checked() {
         );
     }
     // A guest still reads the run itself.
-    let (status, _, _) = guest.download(&format!("/api/v0/runs/{run}")).await;
+    let (status, _, _) = guest.download(&format!("/api/v1/runs/{run}")).await;
     assert_eq!(status, StatusCode::OK);
     for (method, url) in [
-        ("POST", format!("/api/v0/runs/{run}/checkpoints/prune")),
-        ("POST", format!("/api/v0/runs/{run}/checkpoints/important")),
-        ("PATCH", format!("/api/v0/checkpoints/{id}")),
+        ("POST", format!("/api/v1/runs/{run}/checkpoints/prune")),
+        ("POST", format!("/api/v1/runs/{run}/checkpoints/important")),
+        ("PATCH", format!("/api/v1/checkpoints/{id}")),
     ] {
         let (status, _) = viewer
             .json(method, &url, Some(json!({"important": true})))
@@ -478,7 +478,7 @@ async fn files_go_with_runs_and_abandoned_uploads() {
             let (_, created) = admin
                 .json(
                     "POST",
-                    &format!("/api/v0/runs/{run}/checkpoints"),
+                    &format!("/api/v1/runs/{run}/checkpoints"),
                     Some(manifest),
                 )
                 .await;
@@ -489,7 +489,7 @@ async fn files_go_with_runs_and_abandoned_uploads() {
             );
             if commit {
                 admin
-                    .json("POST", &format!("/api/v0/checkpoints/{id}/commit"), None)
+                    .json("POST", &format!("/api/v1/checkpoints/{id}/commit"), None)
                     .await;
             }
             id
@@ -564,7 +564,7 @@ async fn commit_checkpoint(
     let (status, created) = admin
         .json(
             "POST",
-            &format!("/api/v0/runs/{run}/checkpoints"),
+            &format!("/api/v1/runs/{run}/checkpoints"),
             Some(manifest),
         )
         .await;
@@ -582,7 +582,7 @@ async fn commit_checkpoint(
         }
     }
     let (status, _) = admin
-        .json("POST", &format!("/api/v0/checkpoints/{id}/commit"), None)
+        .json("POST", &format!("/api/v1/checkpoints/{id}/commit"), None)
         .await;
     assert_eq!(status, StatusCode::OK);
     id
@@ -609,7 +609,7 @@ async fn short_links_serve_files_and_ranges() {
     )
     .await;
     let (_, listed) = admin
-        .json("GET", &format!("/api/v0/runs/{run}/checkpoints"), None)
+        .json("GET", &format!("/api/v1/runs/{run}/checkpoints"), None)
         .await;
     // Its link names it; its permanent one is by id.
     assert_eq!(listed[0]["url"], "/ckpt/test/ckpt-run:10");
@@ -734,7 +734,7 @@ async fn short_links_serve_files_and_ranges() {
     let (status, resolved) = admin
         .json(
             "GET",
-            "/api/v0/checkpoints/resolve?ref=http://x/ckpt/test/ckpt-run:latest",
+            "/api/v1/checkpoints/resolve?ref=http://x/ckpt/test/ckpt-run:latest",
             None,
         )
         .await;
@@ -752,7 +752,7 @@ async fn short_links_serve_files_and_ranges() {
         String::from_utf8_lossy(&body)
     );
     let (_, listed) = admin
-        .json("GET", &format!("/api/v0/runs/{run}/checkpoints"), None)
+        .json("GET", &format!("/api/v1/runs/{run}/checkpoints"), None)
         .await;
     assert_eq!(
         listed[0]["url"],
@@ -778,7 +778,7 @@ async fn short_links_serve_files_and_ranges() {
     // Hashed by the server as it arrived: each file's BLAKE3 (as b3sum gives it), and the
     // checkpoint's digest of them, which also names its archive.
     let (_, detail) = admin
-        .json("GET", &format!("/api/v0/checkpoints/{id}"), None)
+        .json("GET", &format!("/api/v1/checkpoints/{id}"), None)
         .await;
     let files = detail["files"].as_array().unwrap();
     assert_eq!(files[0]["blake3"], sha(&weights));
@@ -828,7 +828,7 @@ async fn short_links_serve_files_and_ranges() {
     let mut marked = Value::Null;
     for _ in 0..50 {
         marked = admin
-            .json("GET", &format!("/api/v0/checkpoints/{corrupt}"), None)
+            .json("GET", &format!("/api/v1/checkpoints/{corrupt}"), None)
             .await
             .1;
         if !marked["corrupt"].is_null() {
@@ -845,7 +845,7 @@ async fn short_links_serve_files_and_ranges() {
 
 /// Logs `metric` at each of `points` (step, value) for `run`.
 async fn log_metric(server: &TestServer, run: &str, metric: &str, points: &[(u64, f64)]) {
-    use losscape_core::proto::v0::{LogBatch, ScalarColumns};
+    use losscape_core::proto::v1::{LogBatch, ScalarColumns};
     let id = uuid::Uuid::parse_str(run).unwrap();
     let batch = LogBatch {
         run_id: id.as_bytes().to_vec(),
@@ -862,7 +862,7 @@ async fn log_metric(server: &TestServer, run: &str, metric: &str, points: &[(u64
         }),
         ..Default::default()
     };
-    let (status, body) = server.send("/api/v0/ingest", batch, false).await;
+    let (status, body) = server.send("/api/v1/ingest", batch, false).await;
     assert_eq!(status, StatusCode::OK, "{}", error_of(&body));
 }
 
@@ -896,7 +896,7 @@ async fn retention_keeps_the_important_last_and_best() {
             commit_checkpoint(&admin, &run, step, &[("m.bin", b"w", false)]).await,
         );
     }
-    let listing = format!("/api/v0/runs/{run}/checkpoints?metric=val/acc&metric=missing");
+    let listing = format!("/api/v1/runs/{run}/checkpoints?metric=val/acc&metric=missing");
     // Metrics reach ClickHouse shortly after they're logged.
     let mut listed = Value::Null;
     for _ in 0..100 {
@@ -925,7 +925,7 @@ async fn retention_keeps_the_important_last_and_best() {
     let (status, marked) = admin
         .json(
             "PATCH",
-            &format!("/api/v0/checkpoints/{}", ids[&100]),
+            &format!("/api/v1/checkpoints/{}", ids[&100]),
             Some(json!({"important": true})),
         )
         .await;
@@ -939,7 +939,7 @@ async fn retention_keeps_the_important_last_and_best() {
     let (status, _) = admin
         .json(
             "PATCH",
-            "/api/v0/projects/test",
+            "/api/v1/projects/test",
             Some(json!({"checkpoint_retention": retention})),
         )
         .await;
@@ -956,7 +956,7 @@ async fn retention_keeps_the_important_last_and_best() {
     losscape_server::retention::save(&server.state, project_id, &policy)
         .await
         .unwrap();
-    let (_, info) = admin.json("GET", "/api/v0/projects/test", None).await;
+    let (_, info) = admin.json("GET", "/api/v1/projects/test", None).await;
     assert_eq!(info["checkpoint_retention"], retention);
     let (_, listed) = admin.json("GET", &listing, None).await;
     let keep: Vec<Value> = listed
@@ -1026,7 +1026,7 @@ async fn ten_thousand_checkpoints_list_and_expire_quickly() {
         .map(|s| (s, 1.0 - ((s as f64 - 10_000.0) / 10_000.0).powi(2)))
         .collect();
     log_metric(&server, &run, "val/acc", &points).await;
-    let listing = format!("/api/v0/runs/{run}/checkpoints?metric=val/acc");
+    let listing = format!("/api/v1/runs/{run}/checkpoints?metric=val/acc");
     let mut listed = Value::Null;
     for _ in 0..200 {
         listed = admin.json("GET", &listing, None).await.1;
@@ -1120,7 +1120,7 @@ async fn pruning_keeps_spaced_last_best_and_important() {
     .fetch_one(server.state.pg())
     .await
     .unwrap();
-    let prune_url = format!("/api/v0/runs/{run}/checkpoints/prune");
+    let prune_url = format!("/api/v1/runs/{run}/checkpoints/prune");
     let prune = |body: Value| admin.json("POST", &prune_url, Some(body));
     let spec = json!({"spaced": 100, "last": true, "best": {"metric": "val/loss", "goal": "min"}});
 
@@ -1174,12 +1174,12 @@ async fn pruning_keeps_spaced_last_best_and_important() {
         (json!(101), json!(1))
     );
     let (_, listed) = admin
-        .json("GET", &format!("/api/v0/runs/{run}/checkpoints"), None)
+        .json("GET", &format!("/api/v1/runs/{run}/checkpoints"), None)
         .await;
     assert_eq!(listed[0]["id"], important.as_str());
 
     // Marking all, then none (one left: the important one).
-    let mark_url = format!("/api/v0/runs/{run}/checkpoints/important");
+    let mark_url = format!("/api/v1/runs/{run}/checkpoints/important");
     let mark =
         |important: bool| admin.json("POST", &mark_url, Some(json!({"important": important})));
     assert_eq!(mark(false).await.1["changed"], 1);

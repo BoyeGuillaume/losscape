@@ -23,7 +23,7 @@ export async function loadMe(): Promise<void> {
 }
 
 export async function signOut(): Promise<void> {
-	await fetch('/api/v0/auth/logout', { method: 'POST' }).catch(() => {});
+	await fetch('/api/v1/auth/logout', { method: 'POST' }).catch(() => {});
 	auth.user = null;
 	auth.expired = false;
 }

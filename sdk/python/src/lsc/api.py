@@ -133,7 +133,7 @@ class Api:
         headers: Mapping[str, str] | None = None,
     ) -> Any:
         query = urllib.parse.urlencode(list(params))
-        url = f"{self.server}/api/v0{path}" + (f"?{query}" if query else "")
+        url = f"{self.server}/api/v1{path}" + (f"?{query}" if query else "")
         all_headers = {"Authorization": f"Bearer {self._key}", **(headers or {})}
         data = None
         if body is not None:

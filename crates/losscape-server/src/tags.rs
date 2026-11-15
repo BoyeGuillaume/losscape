@@ -29,7 +29,7 @@ pub struct TagInfo {
     runs: i64,
 }
 
-/// `GET /api/v0/projects/{project}/tags` (members): tags in use or described, most used
+/// `GET /api/v1/projects/{project}/tags` (members): tags in use or described, most used
 /// first.
 pub async fn list(
     State(state): State<AppState>,
@@ -64,7 +64,7 @@ pub struct TagStyle {
     description: String,
 }
 
-/// `PUT /api/v0/projects/{project}/tags/{name}` `{"color", "description"}` (editors).
+/// `PUT /api/v1/projects/{project}/tags/{name}` `{"color", "description"}` (editors).
 pub async fn describe(
     State(state): State<AppState>,
     user: AuthUser,
@@ -109,7 +109,7 @@ pub struct TagChange {
     remove: Vec<String>,
 }
 
-/// `POST /api/v0/projects/{project}/runs/tags` `{"runs", "add", "remove"}` (editors): adds
+/// `POST /api/v1/projects/{project}/runs/tags` `{"runs", "add", "remove"}` (editors): adds
 /// and removes tags on these runs, keeping the order of the others.
 pub async fn change(
     State(state): State<AppState>,

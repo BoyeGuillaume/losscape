@@ -120,7 +120,7 @@ Register an application with the provider, with this redirect URI, where `<id>` 
 give it:
 
 ```
-<LOSSCAPE_PUBLIC_URL>/api/v0/auth/oauth/<id>/callback
+<LOSSCAPE_PUBLIC_URL>/api/v1/auth/oauth/<id>/callback
 ```
 
 Then in `.env`:
@@ -200,7 +200,7 @@ in progress lose nothing while it's down, whether it's restarting or being upgra
 Instead of building, you can run the [image from Docker Hub](https://hub.docker.com/r/madproton/losscape). In `.env`, with the version you want:
 
 ```sh
-LOSSCAPE_IMAGE=madproton/losscape:0.1.4
+LOSSCAPE_IMAGE=madproton/losscape:0.2.0
 ```
 
 ```sh
@@ -228,8 +228,8 @@ It needs setting up once:
    `madproton/losscape`.
 
 ```sh
-git tag server-v0.1.4
-git push origin server-v0.1.4
+git tag server-v0.2.0
+git push origin server-v0.2.0
 ```
 
 ### Upgrading
@@ -342,8 +342,8 @@ Also create the `pypi` environment under the repository's Settings → Environme
 reviewer there means every release waits for your approval.
 
 ```sh
-git tag sdk-v0.1.4
-git push origin sdk-v0.1.4
+git tag sdk-v0.2.0
+git push origin sdk-v0.2.0
 ```
 
 ## Troubleshooting
@@ -360,7 +360,7 @@ git push origin sdk-v0.1.4
 - **Everyone gets "too many attempts" behind a proxy:** see `LOSSCAPE_TRUSTED_PROXIES` above.
 - **Charts stop updating live behind a proxy:** it's buffering. See the nginx example above.
 - **Sign-in with a provider says "redirect URI mismatch":** it must match
-  `<LOSSCAPE_PUBLIC_URL>/api/v0/auth/oauth/<id>/callback` exactly.
+  `<LOSSCAPE_PUBLIC_URL>/api/v1/auth/oauth/<id>/callback` exactly.
 
 ## Licenses of what's inside
 

@@ -17,7 +17,7 @@ export const app = $state<{ info: AppInfo | null; name: string }>({ info: null, 
 
 export async function loadApp(): Promise<void> {
 	try {
-		const res = await fetch('/api/v0/app');
+		const res = await fetch('/api/v1/app');
 		if (res.ok) {
 			const before = app.info?.version;
 			app.info = (await res.json()) as AppInfo;

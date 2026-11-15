@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use losscape_client::{FinishOutcome, Mode, Run, RunOptions, SyncStatus, sync};
-use losscape_core::proto::v0::RunExitState;
+use losscape_core::proto::v1::RunExitState;
 use losscape_server::testing::{PROJECT, TestServer};
 use serde_json::json;
 
@@ -245,7 +245,7 @@ fn checkpoint_folder(dir: &Path, seed: u64) -> (Vec<u8>, Vec<u8>) {
 
 async fn api(server: &TestServer, path: &str) -> reqwest::Response {
     reqwest::Client::new()
-        .get(format!("{}/api/v0/{path}", server.url))
+        .get(format!("{}/api/v1/{path}", server.url))
         .bearer_auth(&server.api_key)
         .send()
         .await

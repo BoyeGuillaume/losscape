@@ -92,17 +92,17 @@ class FakeServer(BaseHTTPRequestHandler):
             return self.send(
                 401, {"code": "unauthorized", "message": "sign in, or send an API key"}
             )
-        if url.path == "/api/v0/projects":
+        if url.path == "/api/v1/projects":
             return self.send(200, [{"name": "mnist", "role": "owner", "runs": 1}])
-        if url.path == "/api/v0/projects/mnist/runs":
+        if url.path == "/api/v1/projects/mnist/runs":
             archived = query.get("archived") == ["true"]
             return self.send(200, {"runs": [] if archived else [RUN_JSON], "next": None})
-        if url.path in (f"/api/v0/runs/{RUN}", f"/api/v0/runs/{RUN.replace('-', '')}"):
+        if url.path in (f"/api/v1/runs/{RUN}", f"/api/v1/runs/{RUN.replace('-', '')}"):
             metrics = [{"key": k, "points": len(v)} for k, v in sorted(POINTS.items())]
             return self.send(
                 200, {**RUN_JSON, "project": "mnist", "notes": "hi", "metrics": metrics}
             )
-        if url.path == "/api/v0/projects/mnist/history":
+        if url.path == "/api/v1/projects/mnist/history":
             lo = int(query.get("min_step", ["0"])[0])
             hi = int(query.get("max_step", [str(2**64)])[0])
             lines = ['"run","run_id","metric","step","time_utc","value"']
@@ -113,17 +113,17 @@ class FakeServer(BaseHTTPRequestHandler):
                         time = f"2023-11-14 22:13:2{step}.000"
                         lines.append(f'"brave-falcon-1","{RUN}","{key}",{step},"{time}",{text}')
             return self.send(200, ("\n".join(lines) + "\n").encode(), "text/csv")
-        if url.path == "/api/v0/checkpoints/resolve":
+        if url.path == "/api/v1/checkpoints/resolve":
             FakeServer.resolved.append(query["ref"][0])
             return self.send(200, FakeServer.detail)
-        if url.path == f"/api/v0/runs/{RUN.replace('-', '')}/checkpoints":
+        if url.path == f"/api/v1/runs/{RUN.replace('-', '')}/checkpoints":
             return self.send(200, [CKPT_JSON])
         if url.path in (
-            f"/api/v0/checkpoints/{CKPT}",
-            f"/api/v0/checkpoints/{CKPT.replace('-', '')}",
+            f"/api/v1/checkpoints/{CKPT}",
+            f"/api/v1/checkpoints/{CKPT.replace('-', '')}",
         ):
             return self.send(200, FakeServer.detail)
-        if url.path.startswith(f"/api/v0/checkpoints/{CKPT}/files/"):
+        if url.path.startswith(f"/api/v1/checkpoints/{CKPT}/files/"):
             index = int(url.path.rsplit("/", 1)[1])
             body = FakeServer.served.get(index, list(CKPT_FILES.values())[index])
             ranged = self.headers.get("Range")
@@ -258,7 +258,7 @@ def test_checkpoints_download_and_delete(api, tmp_path):
         ckpt.download(tmp_path / "x", files=["nope"])
 
     ckpt.delete()
-    assert FakeServer.deleted == [f"/api/v0/checkpoints/{CKPT}"]
+    assert FakeServer.deleted == [f"/api/v1/checkpoints/{CKPT}"]
 
 
 def test_checkpoint_downloads_are_checked(api, tmp_path):
@@ -299,7 +299,7 @@ def test_checkpoints_by_link_marked_important_and_resumed(api, tmp_path):
         api.checkpoint("https://example.com/runs/1")
 
     ckpt.set_important()
-    assert FakeServer.patched == [(f"/api/v0/checkpoints/{CKPT}", {"important": True})]
+    assert FakeServer.patched == [(f"/api/v1/checkpoints/{CKPT}", {"important": True})]
     assert ckpt.important
 
     # An interrupted download: the rest is asked for, and the whole is checked.

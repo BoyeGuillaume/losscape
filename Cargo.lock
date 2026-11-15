@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-client"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -2014,7 +2014,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-loadgen"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "clap",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-py"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "losscape-client",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "losscape-server"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-compression",

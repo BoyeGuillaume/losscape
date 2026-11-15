@@ -32,7 +32,7 @@ function messageFor(res: Response): string {
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
 	let res: Response;
 	try {
-		res = await fetch(`/api/v0${path}`, {
+		res = await fetch(`/api/v1${path}`, {
 			...init,
 			signal: init.signal ?? AbortSignal.timeout(REQUEST_LIMIT_MS)
 		});

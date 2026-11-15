@@ -33,7 +33,7 @@ pub struct HistoryParams {
     max_step: Option<u64>,
 }
 
-/// `GET /api/v0/projects/{project}/history?run=&key=`: one CSV row per logged point,
+/// `GET /api/v1/projects/{project}/history?run=&key=`: one CSV row per logged point,
 /// `run,run_id,metric,step,time_utc,value`, by run, metric and step. Streamed: it can be
 /// millions of rows. Values are as logged (`nan` and `inf` included); `time_utc` is the
 /// client's clock.
@@ -136,7 +136,7 @@ pub struct MetricStats {
     median: Option<f64>,
 }
 
-/// `POST /api/v0/metric-stats` `{"items": [{"run", "key"}]}`: count, min, max, mean and
+/// `POST /api/v1/metric-stats` `{"items": [{"run", "key"}]}`: count, min, max, mean and
 /// exact median over every logged point of each, for formulas over a whole run. Metrics a
 /// run doesn't have are left out.
 pub async fn stats(
@@ -217,7 +217,7 @@ pub struct Neighbor {
     time_ms: i64,
 }
 
-/// `POST /api/v0/neighbors` `{"items": [{"run", "key", "step", "side"}]}`: the nearest finite
+/// `POST /api/v1/neighbors` `{"items": [{"run", "key", "step", "side"}]}`: the nearest finite
 /// point before or after a step, for each. Lets a chart draw the line through a view that
 /// falls between two logged points. Items with none are left out.
 pub async fn neighbors(

@@ -1,5 +1,5 @@
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::{LogBatch, ScalarColumns};
+use losscape_core::proto::v1::{LogBatch, ScalarColumns};
 use prost::Message;
 
 #[test]

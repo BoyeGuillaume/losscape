@@ -9,7 +9,7 @@ use serde_json::Value;
 use sqlx::types::Json as SqlJson;
 use uuid::Uuid;
 
-use losscape_core::proto::v0::{ConsoleLine, ConsoleStream};
+use losscape_core::proto::v1::{ConsoleLine, ConsoleStream};
 
 use crate::auth::{self, AuthUser, Role, members};
 use crate::error::ApiError;
@@ -189,7 +189,7 @@ fn parse_cursor(cursor: &str) -> Result<(i64, Uuid), ApiError> {
     ))
 }
 
-/// `GET /api/v0/projects/{project}/runs`: runs, newest first; paged with `limit` and
+/// `GET /api/v1/projects/{project}/runs`: runs, newest first; paged with `limit` and
 /// `after`, or only those changed since `since_ms`.
 pub async fn project_runs(
     State(state): State<AppState>,
@@ -362,7 +362,7 @@ pub struct RunMetricInfo {
     max_step: u64,
 }
 
-/// `POST /api/v0/projects/{project}/metrics` `{"runs": [...]}`: the metrics each run
+/// `POST /api/v1/projects/{project}/metrics` `{"runs": [...]}`: the metrics each run
 /// logged, with step ranges. Runs of other projects are left out.
 pub async fn project_metrics(
     State(state): State<AppState>,
@@ -406,7 +406,7 @@ pub struct TileRange {
     to_tile: u64,
 }
 
-/// `POST /api/v0/series`: one row per non-empty bucket (Arrow by default, see `format`):
+/// `POST /api/v1/series`: one row per non-empty bucket (Arrow by default, see `format`):
 /// `req` (index into `ranges`), `bucket` (bucket index, Float64), `n` (finite points),
 /// `v_min`, `v_max`, `v_sum`, `v_first`, `v_last`, `t_mean` (mean timestamp in epoch ms,
 /// client clock, for time x-axes). Built by ClickHouse directly.
@@ -594,7 +594,7 @@ const MAX_LOG_LINES: u64 = 2_000;
 /// ANSI escape sequences, removed before searching.
 const ANSI_PATTERN: &str = "\x1b\\[[0-9;?]*[A-Za-z]";
 
-/// `GET /api/v0/runs/{run}/logs?from=&to=` | `?tail=` | `?q=&limit=`: console output.
+/// `GET /api/v1/runs/{run}/logs?from=&to=` | `?tail=` | `?q=&limit=`: console output.
 pub async fn run_logs(
     State(state): State<AppState>,
     user: AuthUser,
@@ -672,7 +672,7 @@ pub struct DownloadParams {
     ansi: bool,
 }
 
-/// `GET /api/v0/runs/{run}/models`: what the run recorded about its models, by name. Apart
+/// `GET /api/v1/runs/{run}/models`: what the run recorded about its models, by name. Apart
 /// from the run's details since a description can be large and few pages need it.
 pub async fn run_models(
     State(state): State<AppState>,
@@ -689,7 +689,7 @@ pub async fn run_models(
     Ok(Json(models.0))
 }
 
-/// `GET /api/v0/runs/{run}/logs.txt` (`?ansi=true`): the whole console output as a text
+/// `GET /api/v1/runs/{run}/logs.txt` (`?ansi=true`): the whole console output as a text
 /// file, streamed page by page.
 pub async fn run_logs_file(
     State(state): State<AppState>,
@@ -784,7 +784,7 @@ pub async fn run_logs_file(
         .into_response())
 }
 
-/// `GET /api/v0/runs/{run}/files/{name}`: a text file captured with the run (`git.diff`).
+/// `GET /api/v1/runs/{run}/files/{name}`: a text file captured with the run (`git.diff`).
 pub async fn run_file(
     State(state): State<AppState>,
     user: AuthUser,

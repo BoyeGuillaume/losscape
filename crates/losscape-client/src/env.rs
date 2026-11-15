@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use losscape_core::proto::v0::RunEnvironment;
+use losscape_core::proto::v1::RunEnvironment;
 use serde_json::{Map, Value, json};
 
 use crate::redact::{HIDDEN, redact_str, scrub, secret_name};

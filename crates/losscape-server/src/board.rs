@@ -71,7 +71,7 @@ pub struct Saved {
     version: i64,
 }
 
-/// `GET /api/v0/projects/{project}/board` (members).
+/// `GET /api/v1/projects/{project}/board` (members).
 pub async fn get(
     State(state): State<AppState>,
     user: AuthUser,
@@ -90,7 +90,7 @@ pub async fn get(
     }))
 }
 
-/// `PUT /api/v0/projects/{project}/board` `{"version", "query", "sort": {"id", "desc"}, "limit",
+/// `PUT /api/v1/projects/{project}/board` `{"version", "query", "sort": {"id", "desc"}, "limit",
 /// "baseline", "explore", "columns"}` (editors). Refused if `version` isn't the latest.
 pub async fn put(
     State(state): State<AppState>,

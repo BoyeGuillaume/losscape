@@ -61,7 +61,7 @@ describe('shownCsv', () => {
 describe('historyUrl', () => {
 	it('asks for every run and metric', () => {
 		const url = historyUrl('mnist', ['r1', 'r2'], ['train/loss', 'a&b']);
-		expect(url).toBe('/api/v0/projects/mnist/history?run=r1&run=r2&key=train%2Floss&key=a%26b');
+		expect(url).toBe('/api/v1/projects/mnist/history?run=r1&run=r2&key=train%2Floss&key=a%26b');
 	});
 
 	it('gives up on what one request can’t ask', () => {

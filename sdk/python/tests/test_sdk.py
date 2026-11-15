@@ -15,7 +15,7 @@ from lsc.utils import random_name
 
 def test_version_and_ids():
     assert lsc.__version__
-    assert lsc.PROTOCOL_VERSION == 0
+    assert lsc.PROTOCOL_VERSION == 1
     ids = [lsc.new_run_id() for _ in range(100)]
     assert len(set(ids)) == 100
     assert ids == sorted(ids), "UUIDv7 ids sort by creation time"

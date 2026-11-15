@@ -110,7 +110,7 @@ pub struct RefParams {
     r#ref: String,
 }
 
-/// `GET /api/v0/checkpoints/resolve?ref=<project>/<run>:<selector>` (viewers): the checkpoint a
+/// `GET /api/v1/checkpoints/resolve?ref=<project>/<run>:<selector>` (viewers): the checkpoint a
 /// link names, with its files: for the SDK, given a link.
 pub async fn resolve_ref(
     State(state): State<AppState>,

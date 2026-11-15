@@ -89,17 +89,17 @@ def first_start(client: Client, state: Path) -> None:
         listed = client.json("GET", f"/third-party-{part}.json")["packages"]
         check(f"the About page has the {part}'s libraries", len(listed) > 0, f"{len(listed)}")
 
-    settings = client.json("GET", "/api/v0/auth/settings")
+    settings = client.json("GET", "/api/v1/auth/settings")
     check("the server is empty", settings["first_user"] is True, settings)
     check("it asks for the setup token", settings["setup_token_required"] is True)
     refused, _, _ = client.request(
-        "POST", "/api/v0/auth/register", {"username": "first-comer", "password": "a password"}
+        "POST", "/api/v1/auth/register", {"username": "first-comer", "password": "a password"}
     )
     check("whoever comes first doesn't become administrator", refused == 403, refused)
     password = secrets.token_urlsafe(24)
     me = client.json(
         "POST",
-        "/api/v0/auth/register",
+        "/api/v1/auth/register",
         {
             "username": "smoke-admin",
             "password": password,
@@ -107,8 +107,8 @@ def first_start(client: Client, state: Path) -> None:
         },
     )
     check("the first account is administrator", me["is_admin"] is True)
-    client.json("POST", "/api/v0/projects", {"name": PROJECT})
-    key = client.json("POST", "/api/v0/me/api-keys", {"name": "smoke"})["secret"]
+    client.json("POST", "/api/v1/projects", {"name": PROJECT})
+    key = client.json("POST", "/api/v1/me/api-keys", {"name": "smoke"})["secret"]
     check("project and API key created", key.startswith("df_"))
 
     run_id = log_a_run(client.base, key)
@@ -141,16 +141,16 @@ def log_a_run(base: str, key: str) -> str | None:
 def verify(client: Client, run_id: str | None) -> None:
     if run_id is None:
         return
-    runs = client.json("GET", f"/api/v0/projects/{PROJECT}/runs?limit=10")["runs"]
+    runs = client.json("GET", f"/api/v1/projects/{PROJECT}/runs?limit=10")["runs"]
     found = next((r for r in runs if r["id"].replace("-", "") == run_id.replace("-", "")), None)
     check("the run is listed", found is not None)
     check("finished", found["state"] == "finished", found["state"])
     check("every step is there", found["last_step"] == STEPS - 1, found["last_step"])
     check("with its config", found["config"]["model"]["depth"] == 3)
-    logs = client.json("GET", f"/api/v0/runs/{found['id']}/logs?tail=50")
+    logs = client.json("GET", f"/api/v1/runs/{found['id']}/logs?tail=50")
     check("its console too", any("printed by the run" in line["text"] for line in logs["lines"]))
     # The points themselves live in ClickHouse.
-    metrics = client.json("POST", f"/api/v0/projects/{PROJECT}/metrics", {"runs": [found["id"]]})
+    metrics = client.json("POST", f"/api/v1/projects/{PROJECT}/metrics", {"runs": [found["id"]]})
     loss = next(m for m in metrics if m["key"] == "train/loss")
     check("its points are in ClickHouse", loss["max_step"] == STEPS - 1, loss["max_step"])
 
@@ -158,10 +158,10 @@ def verify(client: Client, run_id: str | None) -> None:
 def after_restart(client: Client, state: Path) -> None:
     saved = json.loads(state.read_text())
     client.json(
-        "POST", "/api/v0/auth/login", {"username": "smoke-admin", "password": saved["password"]}
+        "POST", "/api/v1/auth/login", {"username": "smoke-admin", "password": saved["password"]}
     )
     check("the account survived", True)
-    projects = client.json("GET", "/api/v0/projects")
+    projects = client.json("GET", "/api/v1/projects")
     check("the project survived", any(p["name"] == PROJECT for p in projects))
     verify(client, saved["run"])
 

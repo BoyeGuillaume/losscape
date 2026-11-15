@@ -75,7 +75,7 @@ export function historyUrl(project: string, runs: string[], keys: string[]): str
 	const query = new URLSearchParams();
 	for (const run of runs) query.append('run', run);
 	for (const key of keys) query.append('key', key);
-	const url = `/api/v0/projects/${encodeURIComponent(project)}/history?${query}`;
+	const url = `/api/v1/projects/${encodeURIComponent(project)}/history?${query}`;
 	return url.length <= MAX_URL_LENGTH ? url : null;
 }
 

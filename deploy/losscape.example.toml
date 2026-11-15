@@ -38,7 +38,7 @@ flush_max_rows = 200000
 queue = 4096
 
 # Sign-in with external providers: one section each, named as in the redirect URI
-# <public_url>/api/v0/auth/oauth/<id>/callback
+# <public_url>/api/v1/auth/oauth/<id>/callback
 
 # Any OpenID Connect provider:
 # [oauth.google]

@@ -9,7 +9,7 @@ use losscape_client::{
     EnvExtra, FinishOutcome, Mode, Run, RunOptions, StartError, SyncStatus, now_ms,
 };
 use losscape_core::ids::RunId;
-use losscape_core::proto::v0::RunExitState;
+use losscape_core::proto::v1::RunExitState;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString};

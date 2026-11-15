@@ -69,7 +69,7 @@
 
 	/** The whole log as a file (streamed by the server), plain or with its colors. */
 	const downloadHref = (ansi: boolean) =>
-		`/api/v0/runs/${encodeURIComponent(runId)}/logs.txt${ansi ? '?ansi=true' : ''}`;
+		`/api/v1/runs/${encodeURIComponent(runId)}/logs.txt${ansi ? '?ansi=true' : ''}`;
 
 	// Progress bars are rewritten in place, and stay where they started as the log moves on:
 	// for instance tqdm's on stderr, its messages on stdout. They show pinned below the log,

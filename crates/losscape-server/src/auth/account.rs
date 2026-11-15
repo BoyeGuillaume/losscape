@@ -50,7 +50,7 @@ fn provider_icon(provider: &OAuthProvider) -> &'static str {
     }
 }
 
-/// `GET /api/v0/auth/settings` (public): what the sign-in page should offer.
+/// `GET /api/v1/auth/settings` (public): what the sign-in page should offer.
 pub async fn settings(State(state): State<AppState>) -> Result<Json<AuthSettings>, UiError> {
     let first_user = !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
         .fetch_one(state.pg())
@@ -214,7 +214,7 @@ fn check_may_sign_up(
     Ok(())
 }
 
-/// `POST /api/v0/auth/register` (public).
+/// `POST /api/v1/auth/register` (public).
 pub async fn register(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -252,7 +252,7 @@ pub async fn register(
     ))
 }
 
-/// `POST /api/v0/auth/login` (public). Same response and timing for unknown users and
+/// `POST /api/v1/auth/login` (public). Same response and timing for unknown users and
 /// wrong passwords; failed attempts are rate-limited per username and address.
 pub async fn login(
     State(state): State<AppState>,
@@ -301,7 +301,7 @@ pub async fn login(
     Ok((jar.add(cookie), Json(me_for(&state, id).await?)))
 }
 
-/// `POST /api/v0/auth/logout` (public; ends the current session if any).
+/// `POST /api/v1/auth/logout` (public; ends the current session if any).
 pub async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -362,7 +362,7 @@ pub struct ProfileUpdate {
     display_name: Option<String>,
 }
 
-/// `PATCH /api/v0/me`: the display name.
+/// `PATCH /api/v1/me`: the display name.
 pub async fn update_profile(
     State(state): State<AppState>,
     user: AuthUser,
@@ -379,7 +379,7 @@ pub async fn update_profile(
     Ok(Json(me_for(&state, user.id).await?))
 }
 
-/// `GET /api/v0/auth/me`.
+/// `GET /api/v1/auth/me`.
 pub async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me>, UiError> {
     Ok(Json(me_for(&state, user.id).await?))
 }
@@ -387,7 +387,7 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me
 /// Most a user's preferences may take, as JSON.
 pub const MAX_PREFERENCES_BYTES: usize = 8 * 1024;
 
-/// `PUT /api/v0/me/preferences`: replaces the user's preferences with a JSON object. What's
+/// `PUT /api/v1/me/preferences`: replaces the user's preferences with a JSON object. What's
 /// in it is the UI's business (it checks each value when reading them); here, only its size.
 pub async fn save_preferences(
     State(state): State<AppState>,
@@ -417,7 +417,7 @@ pub struct PasswordChange {
     new: String,
 }
 
-/// `POST /api/v0/me/password`: sets or changes the password and signs out other sessions.
+/// `POST /api/v1/me/password`: sets or changes the password and signs out other sessions.
 pub async fn change_password(
     State(state): State<AppState>,
     user: AuthUser,
@@ -485,7 +485,7 @@ const API_KEY_COLUMNS: &str =
     "id, name, prefix, (extract(epoch from created_at) * 1000)::bigint AS created_at_ms,
      (extract(epoch from last_used_at) * 1000)::bigint AS last_used_at_ms";
 
-/// `GET /api/v0/me/api-keys`: active keys (never the secrets).
+/// `GET /api/v1/me/api-keys`: active keys (never the secrets).
 pub async fn list_api_keys(
     State(state): State<AppState>,
     user: AuthUser,
@@ -515,7 +515,7 @@ pub struct NewKeyResponse {
     secret: String,
 }
 
-/// `POST /api/v0/me/api-keys`.
+/// `POST /api/v1/me/api-keys`.
 pub async fn create_api_key(
     State(state): State<AppState>,
     user: AuthUser,
@@ -563,7 +563,7 @@ pub async fn issue_api_key(
     Ok((info, key.secret))
 }
 
-/// `DELETE /api/v0/me/api-keys/{id}`.
+/// `DELETE /api/v1/me/api-keys/{id}`.
 pub async fn revoke_api_key(
     State(state): State<AppState>,
     user: AuthUser,

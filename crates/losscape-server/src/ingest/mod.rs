@@ -1,4 +1,4 @@
-//! `POST /api/v0/ingest`: validate a batch, queue it, answer once it is stored.
+//! `POST /api/v1/ingest`: validate a batch, queue it, answer once it is stored.
 
 mod flusher;
 pub mod window;
@@ -6,7 +6,7 @@ pub mod window;
 use std::sync::Arc;
 
 use axum::extract::State;
-use losscape_core::proto::v0::{Ack, ConsoleLine, ConsoleStream, LogBatch, ScalarColumns};
+use losscape_core::proto::v1::{Ack, ConsoleLine, ConsoleStream, LogBatch, ScalarColumns};
 use uuid::Uuid;
 
 pub use flusher::{IngestQueue, spawn_flusher};
