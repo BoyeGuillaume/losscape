@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{self, AuthUser, Role, members};
+use crate::config::ProjectPolicy;
 use crate::error::ApiError;
 use crate::read::{UiError, parse_run_id, unknown_project};
 use crate::state::AppState;
@@ -28,22 +29,53 @@ pub fn validate_name(project: &str) -> Result<(), ApiError> {
 #[derive(Deserialize)]
 pub struct NewProject {
     name: String,
+    /// What it's for: for the administrator, when creating projects takes their approval.
+    #[serde(default)]
+    note: String,
 }
 
 #[derive(Serialize)]
 pub struct Created {
     name: String,
+    /// Asked for: an administrator accepts or rejects it (`LOSSCAPE_PROJECTS=approval`).
+    pending: bool,
 }
 
-/// `POST /api/v1/projects`: any signed-in user; the creator becomes its owner.
+/// `POST /api/v1/projects` `{"name", "note"}`: any signed-in user; the creator becomes its
+/// owner. When projects take an administrator's approval, a request is filed instead (202),
+/// except for administrators.
 pub async fn create(
     State(state): State<AppState>,
     user: AuthUser,
     Json(body): Json<NewProject>,
 ) -> Result<(StatusCode, Json<Created>), UiError> {
     let name = body.name.trim().to_owned();
+    if state.auth_config().projects_locked() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "projects_locked",
+            "new projects are locked on this server: they take an administrator's approval, and there can be none (LOSSCAPE_ADMIN=forbidden)",
+        )
+        .into());
+    }
+    if state.auth_config().projects == ProjectPolicy::Approval && !user.is_admin {
+        crate::project_requests::ask(&state, &user, &name, &body.note).await?;
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(Created {
+                name,
+                pending: true,
+            }),
+        ));
+    }
     insert(&state, &name, user.id).await?;
-    Ok((StatusCode::CREATED, Json(Created { name })))
+    Ok((
+        StatusCode::CREATED,
+        Json(Created {
+            name,
+            pending: false,
+        }),
+    ))
 }
 
 /// Creates project `name` owned by user `owner`.

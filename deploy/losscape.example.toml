@@ -9,6 +9,11 @@ listen = "0.0.0.0:8080"
 # public_url = "https://losscape.example.com"
 # open: anyone who can reach the server may create an account; closed: only the first.
 signup = "open"
+# forbidden: no administrator account, ever (and one from before can't be used).
+admin = "allowed"
+# approval: users ask for new projects; the administrator accepts or rejects them. With admin
+# forbidden too, projects are locked: none can be created until restarted.
+projects = "open"
 # Reverse proxies whose X-Forwarded-For is believed, as addresses or networks.
 # trusted_proxies = ["127.0.0.1"]
 web_dir = "web/build"

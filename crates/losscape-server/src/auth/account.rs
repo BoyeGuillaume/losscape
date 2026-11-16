@@ -12,7 +12,7 @@ use super::{
     AuthUser, ClientIp, SESSION_COOKIE, Via, check_same_origin, removal_cookie, secrets,
     start_session,
 };
-use crate::config::{OAuthKind, OAuthProvider, Signup};
+use crate::config::{AdminPolicy, OAuthKind, OAuthProvider, ProjectPolicy, Signup};
 use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
@@ -29,6 +29,14 @@ pub struct AuthSettings {
     /// Creating that one takes the setup token from the server's log.
     setup_token_required: bool,
     providers: Vec<Provider>,
+    /// `false`: no administrator account can exist or be used (`LOSSCAPE_ADMIN=forbidden`).
+    admin_allowed: bool,
+    /// Accounts exist, but no administrator: one of them can become it with the setup token.
+    admin_claimable: bool,
+    /// Creating a project takes an administrator's approval (`LOSSCAPE_PROJECTS=approval`).
+    project_approval: bool,
+    /// No project can be created: it takes approval, and there can be no administrator.
+    projects_locked: bool,
 }
 
 #[derive(Serialize)]
@@ -52,14 +60,24 @@ fn provider_icon(provider: &OAuthProvider) -> &'static str {
 
 /// `GET /api/v1/auth/settings` (public): what the sign-in page should offer.
 pub async fn settings(State(state): State<AppState>) -> Result<Json<AuthSettings>, UiError> {
-    let first_user = !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
-        .fetch_one(state.pg())
-        .await?;
+    let (accounts, admin): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM users),
+                EXISTS (SELECT 1 FROM users WHERE is_admin AND disabled_at IS NULL)",
+    )
+    .fetch_one(state.pg())
+    .await?;
     let config = state.auth_config();
+    let admin_allowed = config.admin == AdminPolicy::Allowed;
+    // The first account is the administrator, unless there can be none.
+    let first_user = !accounts && admin_allowed;
     Ok(Json(AuthSettings {
         signup: first_user || config.signup == Signup::Open,
         first_user,
         setup_token_required: first_user && state.setup_token().is_some(),
+        admin_allowed,
+        admin_claimable: accounts && !admin && state.setup_token().is_some(),
+        project_approval: config.projects == ProjectPolicy::Approval,
+        projects_locked: config.projects_locked(),
         providers: config
             .oauth
             .iter()
@@ -70,6 +88,67 @@ pub async fn settings(State(state): State<AppState>) -> Result<Json<AuthSettings
             })
             .collect(),
     }))
+}
+
+#[derive(Deserialize)]
+pub struct ClaimAdmin {
+    setup_token: String,
+}
+
+/// `POST /api/v1/me/admin` `{"setup_token"}` (signed in, in the web interface): makes the
+/// caller the server's administrator, while it has none, with the setup token from its log
+/// (or its settings). Nobody becomes administrator without it.
+pub async fn claim_admin(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<ClaimAdmin>,
+) -> Result<StatusCode, UiError> {
+    user.require_session()?;
+    if state.auth_config().admin == AdminPolicy::Forbidden {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "admin_forbidden",
+            "this server has no administrator, by its settings (LOSSCAPE_ADMIN=forbidden)",
+        )
+        .into());
+    }
+    if state.setup_token().is_none() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "no_setup_token",
+            "this server has an administrator, or gave no setup token: restart it to get one in its log",
+        )
+        .into());
+    }
+    let mut tx = state.pg().begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('losscape.create_user'))")
+        .execute(&mut *tx)
+        .await?;
+    let admin: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE is_admin AND disabled_at IS NULL)",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if admin {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "admin_exists",
+            "this server already has an administrator",
+        )
+        .into());
+    }
+    state.check_setup_token(Some(&body.setup_token))?;
+    sqlx::query("UPDATE users SET is_admin = true WHERE id = $1")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    tracing::warn!(
+        user = user.id,
+        username = user.username,
+        "became administrator with the setup token"
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -141,9 +220,9 @@ fn validate_password(password: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Creates a user. The first account becomes admin and takes over projects that have no
-/// owner yet (created before accounts existed). A transaction-scoped advisory lock keeps
-/// two simultaneous first sign-ups from both becoming admin.
+/// Creates a user. The first account becomes admin (unless admin is forbidden) and takes over
+/// projects that have no owner yet (created before accounts existed). A transaction-scoped
+/// advisory lock keeps two simultaneous first sign-ups from both becoming admin.
 pub async fn create_user(
     state: &AppState,
     username: &str,
@@ -159,6 +238,8 @@ pub async fn create_user(
     let first: bool = !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
         .fetch_one(&mut *tx)
         .await?;
+    // Admin forbidden: the first account is like any other.
+    let first = first && state.auth_config().admin == AdminPolicy::Allowed;
     check_may_sign_up(state, first, setup_token)?;
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO users (username, password_hash, display_name, email, is_admin)

@@ -162,6 +162,40 @@ pub struct AuthConfig {
     pub setup_token: SetupToken,
     /// Reverse proxies whose `X-Forwarded-For` is believed, to tell clients apart.
     pub trusted_proxies: Vec<IpNet>,
+    /// Whether an administrator account may exist.
+    pub admin: AdminPolicy,
+    /// Who creates projects.
+    pub projects: ProjectPolicy,
+}
+
+/// `LOSSCAPE_ADMIN`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AdminPolicy {
+    /// One account administers the server: the first one, or whoever claims it with the setup
+    /// token if there's none.
+    #[default]
+    Allowed,
+    /// No account is ever made administrator, and those that are can't be used at all: no
+    /// sign-in, no session, no API key.
+    Forbidden,
+}
+
+/// `LOSSCAPE_PROJECTS`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ProjectPolicy {
+    /// Any signed-in user creates projects.
+    #[default]
+    Open,
+    /// Users ask for one; an administrator accepts or rejects it. With admin forbidden, nobody
+    /// can: projects are locked, until the server restarts with an administrator allowed.
+    Approval,
+}
+
+impl AuthConfig {
+    /// No project can be created: approval is needed, and there can be no administrator.
+    pub fn projects_locked(&self) -> bool {
+        self.projects == ProjectPolicy::Approval && self.admin == AdminPolicy::Forbidden
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -289,6 +323,26 @@ impl AuthConfig {
             Some(token) if !token.is_empty() => SetupToken::Fixed(token),
             _ => SetupToken::Generated,
         };
+        let admin = match settings.optional("LOSSCAPE_ADMIN", "allowed").as_str() {
+            "allowed" => AdminPolicy::Allowed,
+            "forbidden" => AdminPolicy::Forbidden,
+            other => {
+                return Err(invalid(
+                    "LOSSCAPE_ADMIN",
+                    format!("{other:?}: use allowed or forbidden"),
+                ));
+            }
+        };
+        let projects = match settings.optional("LOSSCAPE_PROJECTS", "open").as_str() {
+            "open" => ProjectPolicy::Open,
+            "approval" => ProjectPolicy::Approval,
+            other => {
+                return Err(invalid(
+                    "LOSSCAPE_PROJECTS",
+                    format!("{other:?}: use open or approval"),
+                ));
+            }
+        };
         let mut oauth = Vec::new();
         for id in settings
             .optional("LOSSCAPE_OAUTH", "")
@@ -359,6 +413,8 @@ impl AuthConfig {
             setup_token,
             oauth,
             trusted_proxies,
+            admin,
+            projects,
         })
     }
 }
@@ -371,6 +427,8 @@ impl Default for AuthConfig {
             oauth: Vec::new(),
             setup_token: SetupToken::default(),
             trusted_proxies: Vec::new(),
+            admin: AdminPolicy::default(),
+            projects: ProjectPolicy::default(),
         }
     }
 }
@@ -493,6 +551,8 @@ const TOML_KEYS: &[(&str, &str)] = &[
     ("public_url", "LOSSCAPE_PUBLIC_URL"),
     ("signup", "LOSSCAPE_SIGNUP"),
     ("setup_token", "LOSSCAPE_SETUP_TOKEN"),
+    ("admin", "LOSSCAPE_ADMIN"),
+    ("projects", "LOSSCAPE_PROJECTS"),
     ("trusted_proxies", "LOSSCAPE_TRUSTED_PROXIES"),
     ("web_dir", "LOSSCAPE_WEB_DIR"),
     ("app_name", "LOSSCAPE_APP_NAME"),
@@ -632,6 +692,36 @@ mod tests {
             let error = Config::from_settings(&settings(&rest)).err().unwrap();
             assert!(error.to_string().contains(missing.0), "{error}");
         }
+    }
+
+    #[test]
+    fn admin_and_project_policies() {
+        let with = |extra: &[(&str, &str)]| {
+            let mut pairs = REQUIRED.to_vec();
+            pairs.extend_from_slice(extra);
+            Config::from_settings(&settings(&pairs))
+        };
+        let config = with(&[]).unwrap();
+        assert_eq!(config.auth.admin, AdminPolicy::Allowed);
+        assert_eq!(config.auth.projects, ProjectPolicy::Open);
+        let config = with(&[("LOSSCAPE_ADMIN", "forbidden")]).unwrap();
+        assert_eq!(config.auth.admin, AdminPolicy::Forbidden);
+        let config = with(&[("LOSSCAPE_PROJECTS", "approval")]).unwrap();
+        assert_eq!(config.auth.projects, ProjectPolicy::Approval);
+        assert!(!config.auth.projects_locked());
+        for bad in [
+            &[("LOSSCAPE_ADMIN", "no")][..],
+            &[("LOSSCAPE_PROJECTS", "admins")],
+        ] {
+            assert!(with(bad).is_err(), "{bad:?}");
+        }
+        // Nobody to approve: projects are locked.
+        let config = with(&[
+            ("LOSSCAPE_ADMIN", "forbidden"),
+            ("LOSSCAPE_PROJECTS", "approval"),
+        ])
+        .unwrap();
+        assert!(config.auth.projects_locked());
     }
 
     #[test]

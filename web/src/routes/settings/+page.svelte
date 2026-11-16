@@ -30,6 +30,25 @@
 	const keys = poll(() => apiJson<ApiKey[]>('/me/api-keys'));
 	const settings = poll(() => apiJson<AuthSettings>('/auth/settings'));
 
+	// Becoming the server's administrator, while it has none, with the setup token.
+	let setupToken = $state('');
+	async function claimAdmin(event: SubmitEvent) {
+		event.preventDefault();
+		const ok = await withToast(
+			() => apiSend('POST', '/me/admin', { setup_token: setupToken.trim() }).then(() => true),
+			{
+				done: "You're this server's administrator",
+				detail: 'You own every project, and answer project requests (Settings, Administration).',
+				failed: "Couldn't make you administrator"
+			}
+		);
+		if (ok) {
+			setupToken = '';
+			await loadMe();
+			settings.refresh();
+		}
+	}
+
 	// Profile
 	let displayName = $state(auth.user?.display_name ?? '');
 	const profileChanged = $derived(displayName.trim() !== (auth.user?.display_name ?? ''));
@@ -180,6 +199,33 @@
 </script>
 
 <div class="grid gap-6">
+	{#if settings.data?.admin_claimable && !auth.user?.is_admin}
+		<Card.Root class="border-amber-500/40">
+			<Card.Header>
+				<Card.Title>This server has no administrator</Card.Title>
+				<Card.Description>
+					To become it, enter the setup token from the server's log (or its
+					<code class="font-mono text-xs">LOSSCAPE_SETUP_TOKEN</code>). Without it, nobody
+					can.
+				</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<form class="flex flex-wrap gap-2" onsubmit={claimAdmin}>
+					<Input
+						class="max-w-sm font-mono"
+						autocomplete="off"
+						spellcheck={false}
+						placeholder="Setup token"
+						aria-label="Setup token"
+						bind:value={setupToken}
+					/>
+					<Button type="submit" disabled={!setupToken.trim()}>Become administrator</Button
+					>
+				</form>
+			</Card.Content>
+		</Card.Root>
+	{/if}
+
 	<Card.Root>
 		<Card.Header>
 			<Card.Title>Profile</Card.Title>

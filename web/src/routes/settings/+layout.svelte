@@ -8,10 +8,13 @@
 
 	let { children }: LayoutProps = $props();
 
-	const tabs = [
+	const tabs = $derived([
 		{ id: '/settings', label: 'Account', href: resolve('/settings') },
-		{ id: '/settings/appearance', label: 'Appearance', href: resolve('/settings/appearance') }
-	];
+		{ id: '/settings/appearance', label: 'Appearance', href: resolve('/settings/appearance') },
+		...(auth.user?.is_admin
+			? [{ id: '/settings/admin', label: 'Administration', href: resolve('/settings/admin') }]
+			: [])
+	]);
 </script>
 
 <div class="mx-auto grid max-w-4xl gap-6">

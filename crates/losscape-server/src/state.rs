@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::auth::oauth::OAuthRuntime;
 use crate::auth::{AuthCaches, secrets};
-use crate::config::{AuthConfig, Branding, Config, SetupToken};
+use crate::config::{AdminPolicy, AuthConfig, Branding, Config, SetupToken, Signup};
 use crate::error::ApiError;
 use crate::ingest::{IngestQueue, spawn_flusher};
 use crate::live::LiveHub;
@@ -21,23 +21,37 @@ use crate::storage::Storage;
 const CLICKHOUSE_READ_MEMORY: &str = "2000000000";
 const CLICKHOUSE_READ_SECONDS: &str = "60";
 
-async fn setup_token(pg: &PgPool, setting: &SetupToken) -> Result<Option<String>, StartError> {
-    if matches!(setting, SetupToken::NotRequired) {
+/// The token that makes someone administrator: needed while there's none (and one is
+/// allowed), whether there are no accounts yet or only ordinary ones (after admin was
+/// forbidden, say). Shown in the log, or set in the settings.
+async fn setup_token(pg: &PgPool, auth: &AuthConfig) -> Result<Option<String>, StartError> {
+    if auth.admin == AdminPolicy::Forbidden || matches!(auth.setup_token, SetupToken::NotRequired) {
         return Ok(None);
     }
-    let accounts: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users)")
-        .fetch_one(pg)
-        .await?;
-    Ok(match setting {
-        _ if accounts => None,
+    let (accounts, admin): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM users),
+                EXISTS (SELECT 1 FROM users WHERE is_admin AND disabled_at IS NULL)",
+    )
+    .fetch_one(pg)
+    .await?;
+    if admin {
+        return Ok(None);
+    }
+    Ok(match &auth.setup_token {
         SetupToken::Fixed(token) => Some(token.clone()),
         _ => {
             let token = secrets::random_token();
             // Not through the log filter: this has to be seen, and only ever goes out while
-            // there's nothing yet to protect but this.
-            eprintln!(
-                "\n  No accounts yet. To create the first one, the administrator, use this setup token:\n\n      {token}\n"
-            );
+            // there's no administrator to protect.
+            if accounts {
+                eprintln!(
+                    "\n  This server has no administrator. To make an account its administrator, sign in\n  with it and use this setup token (Settings, Account):\n\n      {token}\n"
+                );
+            } else {
+                eprintln!(
+                    "\n  No accounts yet. To create the first one, the administrator, use this setup token:\n\n      {token}\n"
+                );
+            }
             Some(token)
         }
     })
@@ -93,7 +107,17 @@ impl AppState {
         sqlx::migrate!("./migrations/postgres").run(&pg).await?;
         let ch = crate::clickhouse_store::connect_and_migrate(&config.clickhouse).await?;
 
-        let setup_token = setup_token(&pg, &config.auth.setup_token).await?;
+        let setup_token = setup_token(&pg, &config.auth).await?;
+        if config.auth.projects_locked() {
+            tracing::info!(
+                "projects are locked: new ones take an administrator's approval, and there can be none (LOSSCAPE_ADMIN=forbidden, LOSSCAPE_PROJECTS=approval)"
+            );
+        }
+        if config.auth.admin == AdminPolicy::Forbidden && config.auth.signup == Signup::Closed {
+            tracing::warn!(
+                "LOSSCAPE_ADMIN=forbidden with LOSSCAPE_SIGNUP=closed: no new accounts can be made, only existing ones (and external sign-in links) are used"
+            );
+        }
         // Opened now, so that a wrong location stops the server right away.
         let storage = config.storage.as_deref().map(Storage::open).transpose()?;
         if let Some(storage) = &storage {
@@ -151,7 +175,7 @@ impl AppState {
         Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "setup_token_required",
-            "the first account needs the setup token from the server's log",
+            "this needs the setup token from the server's log",
         ))
     }
 

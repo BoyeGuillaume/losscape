@@ -21,7 +21,8 @@ use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
 use crate::{
-    auth, board, checkpoints, history, ingest, links, live, metric_defs, projects, read, runs, tags,
+    auth, board, checkpoints, history, ingest, links, live, metric_defs, project_requests,
+    projects, read, runs, tags,
 };
 
 /// Between two parts of a request's body. Responses have no such limit: live streams never end.
@@ -130,6 +131,21 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         )
         .route("/users/{username}/avatar", get(avatar::serve))
         .route("/me/password", post(account::change_password))
+        .route("/me/admin", post(account::claim_admin))
+        .route("/me/project-requests", get(project_requests::mine))
+        .route(
+            "/me/project-requests/{id}",
+            delete(project_requests::withdraw),
+        )
+        .route("/admin/project-requests", get(project_requests::pending))
+        .route(
+            "/admin/project-requests/{id}/accept",
+            post(project_requests::accept),
+        )
+        .route(
+            "/admin/project-requests/{id}/reject",
+            post(project_requests::reject),
+        )
         .route("/me/preferences", put(account::save_preferences))
         .route(
             "/me/api-keys",

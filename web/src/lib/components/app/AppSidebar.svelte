@@ -1,5 +1,9 @@
 <script lang="ts">
+	import Clock from '@lucide/svelte/icons/clock';
 	import FolderKanban from '@lucide/svelte/icons/folder-kanban';
+	import FolderX from '@lucide/svelte/icons/folder-x';
+	import Inbox from '@lucide/svelte/icons/inbox';
+	import X from '@lucide/svelte/icons/x';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import Plus from '@lucide/svelte/icons/plus';
@@ -14,8 +18,9 @@
 	import { page } from '$app/state';
 
 	import { appearance } from '#lib/appearance.svelte.js';
-	import { apiJson } from '#lib/api/client.js';
-	import type { ProjectSummary } from '#lib/api/types.js';
+	import { apiJson, apiSend } from '#lib/api/client.js';
+	import type { ProjectRequest, ProjectSummary } from '#lib/api/types.js';
+	import { notifyError } from '#lib/notify.js';
 	import { auth, signOut } from '#lib/auth.svelte.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
@@ -31,6 +36,31 @@
 		() => 15_000
 	);
 	onProjectsChanged(projects.refresh);
+
+	// Projects asked for (when they take an administrator's approval): one's own, and for
+	// administrators, how many wait for an answer.
+	const requests = poll(
+		() => apiJson<ProjectRequest[]>('/me/project-requests'),
+		() => 30_000
+	);
+	onProjectsChanged(requests.refresh);
+	const waiting = poll(
+		() =>
+			auth.user?.is_admin
+				? apiJson<ProjectRequest[]>('/admin/project-requests')
+				: Promise.resolve([]),
+		() => 30_000
+	);
+	onProjectsChanged(waiting.refresh);
+
+	async function dismiss(request: ProjectRequest) {
+		try {
+			await apiSend('DELETE', `/me/project-requests/${request.id}`);
+		} catch (err) {
+			notifyError(err, `Couldn't dismiss ${request.name}`);
+		}
+		requests.refresh();
+	}
 
 	let creating = $state(false);
 </script>
@@ -80,6 +110,48 @@
 					{#each [0, 1, 2] as i (i)}
 						<Sidebar.MenuItem><Skeleton class="h-7 w-full" /></Sidebar.MenuItem>
 					{/each}
+				{/if}
+				{#each requests.data ?? [] as request (request.id)}
+					<Sidebar.MenuItem>
+						<Sidebar.MenuButton
+							class="text-sidebar-foreground/60"
+							tooltipContent={request.state === 'pending'
+								? `${request.name}: waiting for an administrator`
+								: `${request.name}: rejected${request.reason ? `: ${request.reason}` : ''}`}
+						>
+							{#if request.state === 'pending'}<Clock />{:else}<FolderX
+									class="text-destructive"
+								/>{/if}
+							<span class="truncate">{request.name}</span>
+						</Sidebar.MenuButton>
+						{#if request.state === 'rejected'}
+							<Sidebar.MenuAction
+								title="Dismiss"
+								aria-label={`Dismiss the rejected request for ${request.name}`}
+								onclick={() => dismiss(request)}
+							>
+								<X />
+							</Sidebar.MenuAction>
+						{:else}
+							<Sidebar.MenuBadge class="text-[10px]">asked</Sidebar.MenuBadge>
+						{/if}
+					</Sidebar.MenuItem>
+				{/each}
+				{#if waiting.data?.length}
+					<Sidebar.MenuItem>
+						<Sidebar.MenuButton
+							class="text-sidebar-foreground/70"
+							tooltipContent="Projects asked for, waiting for your answer"
+						>
+							{#snippet child({ props })}
+								<a href={resolve('/settings/admin')} {...props}>
+									<Inbox />
+									<span>Project requests</span>
+								</a>
+							{/snippet}
+						</Sidebar.MenuButton>
+						<Sidebar.MenuBadge>{waiting.data.length}</Sidebar.MenuBadge>
+					</Sidebar.MenuItem>
 				{/if}
 				<Sidebar.MenuItem>
 					<Sidebar.MenuButton

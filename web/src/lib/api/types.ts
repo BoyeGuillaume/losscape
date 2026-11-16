@@ -129,6 +129,28 @@ export type AuthSettings = {
 	/** Creating the first account takes the token printed in the server's log. */
 	setup_token_required: boolean;
 	providers: { id: string; name: string; icon: ProviderIconName }[];
+	/** false: no administrator account can exist or be used (`LOSSCAPE_ADMIN=forbidden`). */
+	admin_allowed: boolean;
+	/** Accounts exist but no administrator: one can become it with the setup token. */
+	admin_claimable: boolean;
+	/** Creating a project takes an administrator's approval (`LOSSCAPE_PROJECTS=approval`). */
+	project_approval: boolean;
+	/** No project can be created: approval is needed, and there can be no administrator. */
+	projects_locked: boolean;
+};
+
+/** A project asked for, when creating one takes an administrator's approval. */
+export type ProjectRequest = {
+	id: number;
+	name: string;
+	note: string;
+	state: 'pending' | 'rejected';
+	/** Why it was rejected. */
+	reason: string;
+	requested_by: string;
+	requested_by_name: string | null;
+	created_at_ms: number;
+	decided_at_ms: number | null;
 };
 
 export type ApiKey = {

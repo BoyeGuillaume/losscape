@@ -13,6 +13,7 @@ pub mod ingest;
 pub mod links;
 pub mod live;
 pub mod metric_defs;
+pub mod project_requests;
 pub mod projects;
 pub mod proto_body;
 pub mod purge;

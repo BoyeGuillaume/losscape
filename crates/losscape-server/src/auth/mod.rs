@@ -24,7 +24,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 
-use crate::config::{AuthConfig, IpNet};
+use crate::config::{AdminPolicy, AuthConfig, IpNet};
 use crate::error::ApiError;
 use crate::read::UiError;
 use crate::state::AppState;
@@ -182,13 +182,28 @@ pub async fn authenticate(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    if let Some(key) = bearer {
-        return user_for_api_key(state, key.trim()).await.map(Some);
+    let user = match (bearer, CookieJar::from_headers(headers).get(SESSION_COOKIE)) {
+        (Some(key), _) => Some(user_for_api_key(state, key.trim()).await?),
+        (None, Some(cookie)) => user_for_session(state, cookie.value()).await?,
+        (None, None) => None,
+    };
+    // Admin forbidden: an administrator account can't do anything, whatever it holds.
+    if user.as_ref().is_some_and(|u| u.is_admin) && admin_forbidden(state) {
+        return Err(admin_disabled());
     }
-    match CookieJar::from_headers(headers).get(SESSION_COOKIE) {
-        Some(cookie) => user_for_session(state, cookie.value()).await,
-        None => Ok(None),
-    }
+    Ok(user)
+}
+
+fn admin_forbidden(state: &AppState) -> bool {
+    state.auth_config().admin == AdminPolicy::Forbidden
+}
+
+fn admin_disabled() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "admin_disabled",
+        "administrator accounts can't be used on this server (LOSSCAPE_ADMIN=forbidden)",
+    )
 }
 
 async fn user_for_api_key(state: &AppState, key: &str) -> Result<AuthUser, ApiError> {
@@ -290,12 +305,30 @@ pub fn removal_cookie(name: &'static str, path: &'static str) -> Cookie<'static>
     cookie
 }
 
-/// Creates a session and returns its cookie.
+/// Creates a session and returns its cookie. Every way of signing in ends here: an
+/// administrator account doesn't get one while admin is forbidden.
 pub async fn start_session(
     state: &AppState,
     user_id: i64,
     headers: &HeaderMap,
 ) -> Result<Cookie<'static>, ApiError> {
+    if admin_forbidden(state) {
+        let is_admin: bool = sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(state.pg())
+            .await?;
+        if is_admin {
+            tracing::warn!(
+                user_id,
+                "sign-in refused: administrator accounts are forbidden"
+            );
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "admin_disabled",
+                "administrator accounts can't be used on this server (LOSSCAPE_ADMIN=forbidden)",
+            ));
+        }
+    }
     let token = secrets::random_token();
     let user_agent = headers
         .get(header::USER_AGENT)

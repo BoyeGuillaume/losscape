@@ -1460,6 +1460,8 @@ fn auth_config(oidc: &Provider, github: &Provider) -> AuthConfig {
     AuthConfig {
         setup_token: Default::default(),
         trusted_proxies: Vec::new(),
+        admin: Default::default(),
+        projects: Default::default(),
         public_url: Some("http://losscape.test".into()),
         signup: Signup::Open,
         oauth: vec![
@@ -2018,5 +2020,329 @@ async fn sign_in_forms_take_no_large_bodies_or_impossible_names() {
             assert_eq!(res.code(), "invalid_credentials");
         }
     }
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn forbidden_admin_accounts_are_shut_out() {
+    let server = server_with!(TestServer::start_bare(AuthConfig {
+        admin: losscape_server::config::AdminPolicy::Forbidden,
+        setup_token: losscape_server::config::SetupToken::Fixed("the-token".into()),
+        ..Default::default()
+    }));
+    let settings = Call::get("/api/v1/auth/settings")
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(settings["admin_allowed"], false);
+    assert_eq!(
+        settings["first_user"], false,
+        "no account becomes administrator"
+    );
+    assert_eq!(settings["setup_token_required"], false);
+
+    // The first account is like any other, and takes no token.
+    let res = register(&server, "alice", "a password").await;
+    assert_eq!(res.status, StatusCode::CREATED);
+    assert_eq!(res.json()["is_admin"], false);
+
+    // An administrator from before: signed in, with a key, then admin is forbidden.
+    let cookie = register(&server, "bob", "a password")
+        .await
+        .cookie("losscape_session");
+    let (_, key) = user(&server.state, "carol").await;
+    sqlx::query("UPDATE users SET is_admin = true WHERE username IN ('bob', 'carol')")
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    let me = Call::get("/api/v1/auth/me")
+        .cookie(&cookie)
+        .send(&server)
+        .await;
+    assert_eq!(
+        (me.status, me.code()),
+        (StatusCode::UNAUTHORIZED, "admin_disabled".into())
+    );
+    let res = login(&server, "bob", "a password").await;
+    assert_eq!(
+        (res.status, res.code()),
+        (StatusCode::FORBIDDEN, "admin_disabled".into())
+    );
+    assert!(res.set_cookie("losscape_session").is_none(), "no session");
+    let res = Call::get("/api/v1/projects")
+        .bearer(&key)
+        .send(&server)
+        .await;
+    assert_eq!(
+        (res.status, res.code()),
+        (StatusCode::UNAUTHORIZED, "admin_disabled".into())
+    );
+    let res = sdk_init(&server, &key).await;
+    assert_eq!(res, StatusCode::UNAUTHORIZED, "nor through the SDK");
+
+    // Nobody becomes administrator either, token or not.
+    let alice = login(&server, "alice", "a password")
+        .await
+        .cookie("losscape_session");
+    let res = Call::post("/api/v1/me/admin", json!({"setup_token": "the-token"}))
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(
+        (res.status, res.code()),
+        (StatusCode::FORBIDDEN, "admin_forbidden".into())
+    );
+    server.stop().await;
+}
+
+/// `runs/init` with an API key: what the SDK does first.
+async fn sdk_init(server: &TestServer, key: &str) -> StatusCode {
+    let init = RunInit {
+        run_id: RunId::new().as_bytes().to_vec(),
+        project: "anything".into(),
+        ..Default::default()
+    };
+    let req = Request::post("/api/v1/runs/init")
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
+        .body(Body::from(init.encode_to_vec()))
+        .unwrap();
+    server.call(req).await.0
+}
+
+#[tokio::test]
+async fn an_administrator_is_made_only_with_the_setup_token() {
+    let server = server_with!(TestServer::start_bare(AuthConfig {
+        setup_token: losscape_server::config::SetupToken::Fixed("the-token".into()),
+        ..Default::default()
+    }));
+    let res = Call::post(
+        "/api/v1/auth/register",
+        json!({"username": "alice", "password": "a password", "setup_token": "the-token"}),
+    )
+    .send(&server)
+    .await;
+    assert_eq!(res.json()["is_admin"], true);
+    let bob = register(&server, "bob", "a password")
+        .await
+        .cookie("losscape_session");
+    // No administrator any more (it was forbidden for a while, say): accounts, but none is.
+    sqlx::query("UPDATE users SET is_admin = false")
+        .execute(server.state.pg())
+        .await
+        .unwrap();
+    let settings = Call::get("/api/v1/auth/settings")
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(settings["admin_claimable"], true);
+    assert_eq!(settings["first_user"], false);
+
+    let claim = |token: &'static str| {
+        Call::post("/api/v1/me/admin", json!({"setup_token": token})).cookie(&bob)
+    };
+    for wrong in ["", "wrong", "the-token-"] {
+        let res = claim(wrong).send(&server).await;
+        assert_eq!(res.code(), "setup_token_required", "{wrong:?}");
+    }
+    let me = Call::get("/api/v1/auth/me")
+        .cookie(&bob)
+        .send(&server)
+        .await;
+    assert_eq!(me.json()["is_admin"], false, "not without the token");
+    assert_eq!(
+        claim("the-token").send(&server).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let me = Call::get("/api/v1/auth/me")
+        .cookie(&bob)
+        .send(&server)
+        .await;
+    assert_eq!(me.json()["is_admin"], true);
+
+    // Once: then there is one.
+    let alice = login(&server, "alice", "a password")
+        .await
+        .cookie("losscape_session");
+    let res = Call::post("/api/v1/me/admin", json!({"setup_token": "the-token"}))
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(
+        (res.status, res.code()),
+        (StatusCode::CONFLICT, "admin_exists".into())
+    );
+    let settings = Call::get("/api/v1/auth/settings")
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(settings["admin_claimable"], false);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn projects_can_take_an_administrators_approval() {
+    let server = server_with!(TestServer::start_with(AuthConfig {
+        projects: losscape_server::config::ProjectPolicy::Approval,
+        ..Default::default()
+    }));
+    let settings = Call::get("/api/v1/auth/settings")
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(settings["project_approval"], true);
+    let alice = register(&server, "alice", "a password")
+        .await
+        .cookie("losscape_session");
+    let ask = |name: &str| {
+        Call::post(
+            "/api/v1/projects",
+            json!({"name": name, "note": "for the paper"}),
+        )
+        .cookie(&alice)
+    };
+    let res = ask("vision").send(&server).await;
+    assert_eq!(res.status, StatusCode::ACCEPTED);
+    assert_eq!(res.json()["pending"], true);
+    let res = ask("vision").send(&server).await;
+    assert_eq!(res.code(), "already_requested");
+    let res = Call::get("/api/v1/projects/vision")
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "not created yet");
+    let mine = Call::get("/api/v1/me/project-requests")
+        .cookie(&alice)
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(
+        (mine[0]["name"].clone(), mine[0]["state"].clone()),
+        (json!("vision"), json!("pending"))
+    );
+
+    // Only administrators answer.
+    let res = Call::get("/api/v1/admin/project-requests")
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    let key = server.api_key.clone();
+    let pending = as_admin(&key, Call::get("/api/v1/admin/project-requests"))
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(pending[0]["requested_by"], "alice");
+    assert_eq!(pending[0]["note"], "for the paper");
+    let id = pending[0]["id"].as_i64().unwrap();
+    let res = as_admin(
+        &key,
+        Call::post(
+            format!("/api/v1/admin/project-requests/{id}/accept"),
+            json!({}),
+        ),
+    )
+    .send(&server)
+    .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    let info = Call::get("/api/v1/projects/vision")
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(info.json()["role"], "owner", "who asked owns it");
+
+    // Rejected: shown with why, until dismissed.
+    ask("other").send(&server).await;
+    let pending = as_admin(&key, Call::get("/api/v1/admin/project-requests"))
+        .send(&server)
+        .await
+        .json();
+    let id = pending[0]["id"].as_i64().unwrap();
+    let res = as_admin(
+        &key,
+        Call::post(
+            format!("/api/v1/admin/project-requests/{id}/reject"),
+            json!({"reason": "use vision"}),
+        ),
+    )
+    .send(&server)
+    .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    let mine = Call::get("/api/v1/me/project-requests")
+        .cookie(&alice)
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(
+        (mine[0]["state"].clone(), mine[0]["reason"].clone()),
+        (json!("rejected"), json!("use vision"))
+    );
+    let res = Call::new(Method::DELETE, format!("/api/v1/me/project-requests/{id}"))
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+
+    // Administrators create projects directly.
+    let res = as_admin(
+        &key,
+        Call::post("/api/v1/projects", json!({"name": "direct"})),
+    )
+    .send(&server)
+    .await;
+    assert_eq!(res.status, StatusCode::CREATED);
+    server.stop().await;
+}
+
+/// As the administrator, signed in.
+fn as_admin<'a>(key: &'a str, call: Call<'a>) -> Call<'a> {
+    call.bearer(key).via_session()
+}
+
+#[tokio::test]
+async fn forbidding_admin_with_approval_locks_projects() {
+    // Made earlier with an administrator, then locked: admin forbidden, approval required.
+    let server = server_with!(TestServer::start_bare(AuthConfig {
+        admin: losscape_server::config::AdminPolicy::Forbidden,
+        projects: losscape_server::config::ProjectPolicy::Approval,
+        ..Default::default()
+    }));
+    let settings = Call::get("/api/v1/auth/settings")
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(settings["projects_locked"], true);
+    let alice = register(&server, "alice", "a password")
+        .await
+        .cookie("losscape_session");
+    let res = Call::post("/api/v1/projects", json!({"name": "new"}))
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(
+        (res.status, res.code()),
+        (StatusCode::FORBIDDEN, "projects_locked".into())
+    );
+    let mine = Call::get("/api/v1/me/project-requests")
+        .cookie(&alice)
+        .send(&server)
+        .await
+        .json();
+    assert_eq!(mine, json!([]), "no request left waiting for nobody");
+
+    // Projects made before still work.
+    let alice_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username = 'alice'")
+        .fetch_one(server.state.pg())
+        .await
+        .unwrap();
+    losscape_server::projects::insert(&server.state, "existing", alice_id)
+        .await
+        .unwrap();
+    let res = Call::get("/api/v1/projects/existing")
+        .cookie(&alice)
+        .send(&server)
+        .await;
+    assert_eq!(res.json()["role"], "owner");
     server.stop().await;
 }

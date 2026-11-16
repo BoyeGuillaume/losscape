@@ -52,6 +52,17 @@ By default it listens on this machine only. Before changing that:
    the server can.
 5. **Know the password policy.** Any non-empty password is accepted; people see a strength
    estimate and advice. If you need more than that, use external sign-in.
+6. **Decide on an administrator.** It owns every project. With `LOSSCAPE_ADMIN=forbidden`
+   there's none: the first account is like the others, and an administrator account from before
+   can't sign in, nor use its sessions or API keys. Allowed again with no administrator, the
+   server prints a setup token at startup (or takes `LOSSCAPE_SETUP_TOKEN`), and an account
+   becomes administrator with it (Settings, Account): nobody does without it.
+7. **Decide who creates projects.** Anyone signed in, by default. With
+   `LOSSCAPE_PROJECTS=approval`, people ask for one, and the administrator accepts or rejects it
+   (Settings, Administration); accepted, it's owned by who asked. With `LOSSCAPE_ADMIN=forbidden`
+   too, projects are locked: nobody can create one. That's a way to lock a server down: create
+   the administrator and the projects, then forbid admin; to add a project later, restart with
+   `LOSSCAPE_ADMIN=allowed`, add it, and lock again.
 
 ## HTTPS
 
@@ -160,7 +171,9 @@ so a typo can't quietly leave a setting at its default.
 | `LOSSCAPE_LISTEN` | `listen` | `0.0.0.0:8080` | |
 | `LOSSCAPE_PUBLIC_URL` | `public_url` | none | Required for OAuth; `https://` makes cookies `Secure` |
 | `LOSSCAPE_SIGNUP` | `signup` | `open` | `open` or `closed` |
-| `LOSSCAPE_SETUP_TOKEN` | `setup_token` | printed at startup | What creating the first account takes |
+| `LOSSCAPE_SETUP_TOKEN` | `setup_token` | printed at startup | What becoming administrator takes, while there's none |
+| `LOSSCAPE_ADMIN` | `admin` | `allowed` | `forbidden`: no administrator account, ever; existing ones can't be used |
+| `LOSSCAPE_PROJECTS` | `projects` | `open` | `approval`: new projects take an administrator's approval (with admin forbidden: none can be made) |
 | `LOSSCAPE_TRUSTED_PROXIES` | `trusted_proxies` | none | Addresses or networks, comma-separated |
 | `LOSSCAPE_OAUTH` | one `[oauth.<id>]` section each | none | Provider ids, comma-separated |
 | `LOSSCAPE_OAUTH_<ID>_*` | `oauth.<id>.*` | | `TYPE`, `ISSUER`, `URL`, `API_URL`, `CLIENT_ID`, `CLIENT_SECRET`, `NAME` |
@@ -356,7 +369,7 @@ git push origin sdk-v0.2.0
   database was created. Change it in the database too, or start again with `docker compose down -v`,
   which deletes everything.
 - **The setup token isn't accepted, or got lost:** a new one is printed at each start, while there
-  are no accounts. Restart, and use the latest.
+  is no administrator. Restart, and use the latest.
 - **Everyone gets "too many attempts" behind a proxy:** see `LOSSCAPE_TRUSTED_PROXIES` above.
 - **Charts stop updating live behind a proxy:** it's buffering. See the nginx example above.
 - **Sign-in with a provider says "redirect URI mismatch":** it must match
