@@ -50,7 +50,7 @@ def edits(old: str, new: str) -> dict[str, list[tuple[str, str, int]]]:
         "README.md": [(f"{image}{old}", f"{image}{new}", 1)],
         "deploy/env.example": [(f"{image}{old}", f"{image}{new}", 1)],
         "docs/DEPLOYMENT.md": [
-            (f"{image}{old}", f"{image}{new}", 1),
+            (f"{image}{old}", f"{image}{new}", 2),
             (f"server-v{old}", f"server-v{new}", 2),
             (f"sdk-v{old}", f"sdk-v{new}", 2),
         ],
