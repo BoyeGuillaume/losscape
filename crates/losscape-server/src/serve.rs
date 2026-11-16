@@ -17,14 +17,16 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
-use hyper_util::server::graceful::GracefulShutdown;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::{TcpListener, TcpStream};
+use hyper_util::server::graceful::{GracefulShutdown, Watcher};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, watch};
+use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
 use crate::auth::address_key;
 use crate::config::IpNet;
+use crate::tls;
 
 #[derive(Clone, Debug)]
 pub struct Limits {
@@ -84,20 +86,20 @@ impl Drop for AddressSlot {
 }
 
 /// A connection that remembers when something last went through it.
-struct Watched {
-    stream: TcpStream,
+struct Watched<S> {
+    stream: S,
     since: Instant,
     last_ms: Arc<AtomicU64>,
 }
 
-impl Watched {
+impl<S> Watched<S> {
     fn touch(&self) {
         let now = self.since.elapsed().as_millis() as u64;
         self.last_ms.store(now, Ordering::Relaxed);
     }
 }
 
-impl AsyncRead for Watched {
+impl<S: AsyncRead + Unpin> AsyncRead for Watched<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -112,7 +114,7 @@ impl AsyncRead for Watched {
     }
 }
 
-impl AsyncWrite for Watched {
+impl<S: AsyncWrite + Unpin> AsyncWrite for Watched<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -147,11 +149,44 @@ async fn until_idle(since: Instant, last_ms: Arc<AtomicU64>, limit: Duration) {
     }
 }
 
+/// Serves HTTP on one connection, until it's done or idle for `idle`.
+async fn serve_connection<S, F>(
+    builder: &Builder<TokioExecutor>,
+    stream: S,
+    service: F,
+    watcher: Watcher,
+    idle: Duration,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    F: hyper::service::Service<hyper::Request<Incoming>, Response = axum::response::Response>
+        + Clone
+        + Send
+        + 'static,
+    F::Future: Send + 'static,
+    F::Error: std::error::Error + Send + Sync + 'static,
+{
+    let since = Instant::now();
+    let last_ms = Arc::new(AtomicU64::new(0));
+    let io = Watched {
+        stream,
+        since,
+        last_ms: last_ms.clone(),
+    };
+    let connection = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
+    // Errors are clients going away, or being timed out: nothing to act on.
+    tokio::select! {
+        _ = watcher.watch(connection.into_owned()) => {}
+        () = until_idle(since, last_ms, idle) => {}
+    }
+}
+
 /// Serves `app` until `shutdown` completes and the connections open by then have finished.
+/// With `tls`, over HTTPS only.
 pub async fn serve(
     listener: TcpListener,
     app: Router,
     limits: Limits,
+    tls: Option<TlsAcceptor>,
     shutdown: impl Future<Output = ()>,
 ) {
     let mut builder = Builder::new(TokioExecutor::new());
@@ -206,6 +241,7 @@ pub async fn serve(
             app.clone().oneshot(request)
         });
         let builder = builder.clone();
+        let tls = tls.clone();
         let watcher = graceful.watcher();
         let mut stop_waiting = stop_waiting.clone();
         let (first_byte, idle) = (limits.header_read_timeout, limits.idle_timeout);
@@ -221,18 +257,24 @@ pub async fn serve(
                 }
                 _ = stop_waiting.changed() => return,
             }
-            let since = Instant::now();
-            let last_ms = Arc::new(AtomicU64::new(0));
-            let io = Watched {
-                stream,
-                since,
-                last_ms: last_ms.clone(),
+            let Some(tls) = tls else {
+                serve_connection(&builder, stream, service, watcher, idle).await;
+                return;
             };
-            let connection = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
-            // Errors are clients going away, or being timed out: nothing to act on.
-            tokio::select! {
-                _ = watcher.watch(connection.into_owned()) => {}
-                () = until_idle(since, last_ms, idle) => {}
+            if !tls::is_handshake(byte[0]) {
+                let mut stream = stream;
+                tokio::time::timeout(first_byte, stream.write_all(tls::PLAIN_HTTP_ANSWER))
+                    .await
+                    .ok();
+                return;
+            }
+            let accepted = tokio::select! {
+                accepted = tokio::time::timeout(first_byte, tls.accept(stream)) => accepted,
+                _ = stop_waiting.changed() => return,
+            };
+            // Failed handshakes are clients that don't trust the certificate, or scanners.
+            if let Ok(Ok(stream)) = accepted {
+                serve_connection(&builder, stream, service, watcher, idle).await;
             }
         });
     }
@@ -246,12 +288,20 @@ mod tests {
     use axum::body::Body;
     use axum::routing::get;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
     use tokio::sync::oneshot;
 
     use super::*;
 
     async fn start(
         limits: Limits,
+    ) -> (SocketAddr, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+        start_with(limits, None).await
+    }
+
+    async fn start_with(
+        limits: Limits,
+        tls: Option<TlsAcceptor>,
     ) -> (SocketAddr, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -280,7 +330,7 @@ mod tests {
                     }),
                 );
         let (stop, stopped) = oneshot::channel();
-        let server = tokio::spawn(serve(listener, app, limits, async {
+        let server = tokio::spawn(serve(listener, app, limits, tls, async {
             stopped.await.ok();
         }));
         (addr, stop, server)
@@ -295,6 +345,92 @@ mod tests {
             .expect("answered or closed in time")
             .ok();
         String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// A self-signed certificate for localhost, in files under a new folder.
+    fn certificate(name: &str) -> (std::path::PathBuf, tls::CertFiles) {
+        let dir =
+            std::env::temp_dir().join(format!("losscape-tls-{name}-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let made = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let files = tls::CertFiles {
+            cert: dir.join("cert.pem"),
+            key: dir.join("key.pem"),
+        };
+        std::fs::write(&files.cert, made.cert.pem()).unwrap();
+        std::fs::write(&files.key, made.signing_key.serialize_pem()).unwrap();
+        (dir, files)
+    }
+
+    #[tokio::test]
+    async fn serves_https_with_its_certificate_and_tells_plain_http_to_use_it() {
+        let (dir, files) = certificate("serve");
+        let acceptor = tls::acceptor(files.clone()).unwrap();
+        let (addr, stop, server) = start_with(Limits::default(), Some(acceptor)).await;
+
+        let client = tls::pinned_client(tls::leaf(&files.cert).unwrap()).unwrap();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+        let mut secure = connector.connect(name, stream).await.unwrap();
+        secure.write_all(REQUEST).await.unwrap();
+        let mut out = Vec::new();
+        secure.read_to_end(&mut out).await.ok();
+        let response = String::from_utf8_lossy(&out);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("127.0.0.1"), "{response}");
+
+        let mut plain = TcpStream::connect(addr).await.unwrap();
+        plain.write_all(REQUEST).await.unwrap();
+        let response = read_all(&mut plain).await;
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(
+            response.ends_with("only speaks HTTPS: use https://...\n"),
+            "{response}"
+        );
+
+        // Another certificate than the one pinned: refused.
+        let (other_dir, other) = certificate("other");
+        let client = tls::pinned_client(tls::leaf(&other.cert).unwrap()).unwrap();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+        assert!(connector.connect(name, stream).await.is_err());
+
+        stop.send(()).unwrap();
+        server.await.unwrap();
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(other_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_key_that_isnt_the_certificates_is_refused() {
+        let (dir, files) = certificate("a");
+        let (other_dir, other) = certificate("b");
+        let mixed = tls::CertFiles {
+            cert: files.cert.clone(),
+            key: other.key.clone(),
+        };
+        assert!(tls::load(&files).is_ok());
+        assert!(tls::load(&mixed).is_err());
+        let missing = tls::CertFiles {
+            cert: dir.join("nope.pem"),
+            key: files.key.clone(),
+        };
+        let err = tls::load(&missing).unwrap_err();
+        assert!(err.contains("nope.pem"), "{err}");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(other_dir).ok();
+    }
+
+    #[test]
+    fn plain_http_answer_is_well_formed() {
+        let answer = std::str::from_utf8(tls::PLAIN_HTTP_ANSWER).unwrap();
+        let (head, body) = answer.split_once("\r\n\r\n").unwrap();
+        assert!(
+            head.contains(&format!("Content-Length: {}", body.len())),
+            "{answer}"
+        );
     }
 
     #[tokio::test]

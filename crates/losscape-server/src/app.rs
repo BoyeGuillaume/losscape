@@ -31,6 +31,8 @@ const BODY_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const ACCOUNT_BODY_BYTES: usize = 16 * 1024;
 
 pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) -> Router {
+    // Reached over HTTPS (by its public URL): say so for good.
+    let hsts = state.auth_config().cookie_secure();
     // Signed-in users: session cookie (web UI) or API key (SDK).
     let user_api = Router::new()
         // SDK (protobuf)
@@ -205,7 +207,7 @@ pub fn router(state: AppState, max_body_bytes: usize, web_dir: Option<&Path>) ->
         // A bug in one request gets an answer, rather than looking like a lost connection.
         .layer(CatchPanicLayer::custom(panicked))
         .layer(middleware::map_response(move |response| {
-            security_headers(response, policy.current())
+            security_headers(response, policy.current(), hsts)
         }))
         // Run lists and tiles shrink ~10x; event streams and small bodies are left alone, and
         // checkpoint files: compressing them is slow and saves little, and loses their length
@@ -294,8 +296,15 @@ fn inline_scripts(html: &str) -> Vec<&str> {
     scripts
 }
 
-async fn security_headers(mut response: Response, policy: Arc<str>) -> Response {
+async fn security_headers(mut response: Response, policy: Arc<str>, hsts: bool) -> Response {
     let headers = response.headers_mut();
+    if hsts {
+        // Browsers then never try plain HTTP for this name again, for a year.
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000"),
+        );
+    }
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

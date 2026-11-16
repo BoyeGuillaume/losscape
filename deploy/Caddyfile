@@ -1,6 +1,32 @@
-# HTTPS in front of losscape, with a certificate from Let's Encrypt. Caddy adds
-# X-Forwarded-For, and the server trusts it from this container only (compose.yaml).
+# HTTPS in front of losscape, on port 443 only (deploy/compose.https.yaml publishes nothing
+# else). Caddy adds X-Forwarded-For, and the server believes it from this container only.
+{
+	# Port 80 isn't published: nothing to redirect from.
+	auto_https disable_redirects
+}
+
+# LOSSCAPE_CERTIFICATE=acme (the default): from Let's Encrypt, which checks over port 443
+# itself (TLS-ALPN), so the name must be public and point here. Renewed by Caddy.
+(certificate-acme) {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+}
+
+# LOSSCAPE_CERTIFICATE=files: your own, e.g. from your organization's CA for a name on
+# internal DNS. certs/cert.pem holds the certificate and its chain, certs/key.pem its key.
+# After renewing them: docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile --force
+(certificate-files) {
+	tls /certs/cert.pem /certs/key.pem
+}
+
 {$LOSSCAPE_DOMAIN} {
+	import certificate-{$LOSSCAPE_CERTIFICATE:acme}
 	encode zstd gzip
-	reverse_proxy losscape:8080
+	# Live charts are a long-lived stream, and checkpoints large: passed on as they come.
+	reverse_proxy losscape:8080 {
+		flush_interval -1
+	}
 }

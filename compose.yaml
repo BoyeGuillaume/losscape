@@ -4,7 +4,8 @@
 #
 # Then open http://localhost:8080: the first account created becomes administrator.
 # Settings go in .env (see deploy/env.example), all of it optional for a try on this machine.
-# Before opening it to others, read docs/DEPLOYMENT.md.
+# Before opening it to others, read docs/DEPLOYMENT.md: with HTTPS (deploy/compose.https.yaml),
+# only port 443 is open, and nothing but Caddy is reachable from outside.
 name: losscape
 
 services:
@@ -19,8 +20,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
-    # Listens on this machine only until you decide otherwise: anyone who can reach an open
-    # server first can create its administrator account.
+    # Plain HTTP, on this machine only until you decide otherwise. deploy/compose.https.yaml
+    # closes it: then only Caddy reaches the server.
     ports:
       - "${LOSSCAPE_BIND:-127.0.0.1}:${LOSSCAPE_PORT:-8080}:8080"
     env_file:
@@ -32,8 +33,8 @@ services:
       # For the first account; unset, the server makes one up and prints it.
       LOSSCAPE_SETUP_TOKEN: ${LOSSCAPE_SETUP_TOKEN:-}
       LOSSCAPE_WEB_DIR: /app/web
-      # By default the https profile's Caddy, below; docs/DEPLOYMENT.md for your own proxy.
-      LOSSCAPE_TRUSTED_PROXIES: ${LOSSCAPE_TRUSTED_PROXIES:-172.30.42.10}
+      # Your own reverse proxy, if any (deploy/compose.https.yaml sets its Caddy's).
+      LOSSCAPE_TRUSTED_PROXIES: ${LOSSCAPE_TRUSTED_PROXIES:-}
       DATABASE_URL: postgres://losscape:${LOSSCAPE_POSTGRES_PASSWORD:-losscape}@postgres:5432/losscape
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: losscape
@@ -94,31 +95,11 @@ services:
       retries: 30
     networks: [data]
 
-  # HTTPS with an automatic certificate: docker compose --profile https up -d
-  # Needs LOSSCAPE_DOMAIN and LOSSCAPE_PUBLIC_URL in .env, and ports 80 and 443 open.
-  caddy:
-    image: caddy:2-alpine
-    profiles: [https]
-    restart: unless-stopped
-    depends_on: [losscape]
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      LOSSCAPE_DOMAIN: ${LOSSCAPE_DOMAIN:-}
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      edge:
-        ipv4_address: 172.30.42.10
-
 networks:
   # The databases can't reach, or be reached from, outside these containers.
   data:
     internal: true
+  # The server and its proxy: what can be reached from outside is only what's published.
   edge:
     ipam:
       config:
@@ -128,5 +109,3 @@ volumes:
   postgres:
   clickhouse:
   checkpoints:
-  caddy_data:
-  caddy_config:

@@ -69,9 +69,11 @@ impl TestServer {
             user: std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into()),
             password: std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
             database: db.clone(),
+            tls: Default::default(),
         };
         let config = Config {
             listen: "127.0.0.1:0".parse().unwrap(),
+            tls: None,
             database_url: format!("{base}/{db}"),
             clickhouse: clickhouse.clone(),
             auth,

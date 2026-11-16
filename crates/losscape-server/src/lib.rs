@@ -27,3 +27,4 @@ pub mod tags;
 mod tar;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod tls;

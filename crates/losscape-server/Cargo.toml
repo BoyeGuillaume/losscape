@@ -20,10 +20,13 @@ losscape-core = { path = "../losscape-core" }
 dotenvy = "0.15.7"
 getrandom = "0.4"
 hyper = { version = "1.12.0", features = ["http1", "http2", "server"] }
-hyper-util = { version = "0.1.21", features = ["http1", "http2", "server-auto", "server-graceful", "service", "tokio"] }
+hyper-util = { version = "0.1.21", features = ["client-legacy", "http1", "http2", "server-auto", "server-graceful", "service", "tokio"] }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "ring", "tls12"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 openidconnect = "4.0.1"
 prost = "0.14.4"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -32,6 +35,7 @@ subtle = "2.6.1"
 thiserror = "2.0.21"
 time = "0.3.55"
 tokio = { version = "1.54.1", features = ["full"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 toml = "0.9"
 tower = { version = "0.5.3", features = ["util"] }
@@ -39,6 +43,7 @@ tower-http = { version = "0.7.1", features = ["catch-panic", "fs", "compression-
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.26.1", features = ["serde", "v7"] }
+webpki-roots = "1.0.11"
 zstd = "0.14.3"
 object_store = { version = "0.14", default-features = false, features = ["fs", "aws"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -52,6 +57,7 @@ blake3 = "1.8.7"
 testing = []
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 base64 = "0.23.1"
 http-body-util = "0.1.5"
 jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }

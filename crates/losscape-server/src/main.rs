@@ -2,11 +2,13 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use losscape_server::app;
 use losscape_server::config::{self, Config};
 use losscape_server::state::AppState;
+use losscape_server::tls;
 use tracing_subscriber::EnvFilter;
 
 /// Stopping normally takes moments. If something still hangs after this, the server exits
@@ -80,25 +82,48 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// For container health checks, whose images have no curl: `GET /readyz` on this machine.
 fn healthcheck(file: Option<PathBuf>) -> Result<(), Error> {
-    let listen = config::listen_address(file.as_deref())?;
+    let (listen, tls) = config::listen_address(file.as_deref())?;
     let host = match listen.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
         ip => ip,
     };
     let timeout = Duration::from_secs(3);
-    let mut stream = TcpStream::connect_timeout(&SocketAddr::new(host, listen.port()), timeout)?;
+    let stream = TcpStream::connect_timeout(&SocketAddr::new(host, listen.port()), timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
-    stream.write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+    let request = b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     let mut response = String::new();
-    stream.read_to_string(&mut response)?;
+    match tls {
+        // Itself, by its certificate: whatever name that is for, and whoever signed it.
+        Some(files) => {
+            let config = tls::pinned_client(tls::leaf(&files.cert)?)?;
+            let name = rustls_pki_types::ServerName::try_from("localhost")?;
+            let connection = rustls::ClientConnection::new(Arc::new(config), name)?;
+            let mut stream = rustls::StreamOwned::new(connection, stream);
+            stream.write_all(request)?;
+            read_until_closed(&mut stream, &mut response)?;
+        }
+        None => {
+            let mut stream = stream;
+            stream.write_all(request)?;
+            stream.read_to_string(&mut response)?;
+        }
+    }
     let status = response.lines().next().unwrap_or_default();
     if status.split_whitespace().nth(1) == Some("200") {
         Ok(())
     } else {
         let reason = response.rsplit("\r\n\r\n").next().unwrap_or_default();
         Err(format!("not ready: {status} {reason}").into())
+    }
+}
+
+/// TLS peers may close without saying so (`close_notify`): what came before still counts.
+fn read_until_closed(stream: &mut impl Read, out: &mut String) -> std::io::Result<()> {
+    match stream.read_to_string(out) {
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => Ok(()),
+        other => other.map(|_| ()),
     }
 }
 
@@ -128,8 +153,17 @@ async fn serve(file: Option<PathBuf>) -> Result<(), Error> {
         }
     });
 
+    let tls = match &config.tls {
+        Some(files) => Some(losscape_server::tls::acceptor(files.clone())?),
+        None => None,
+    };
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
-    tracing::info!(addr = %config.listen, version = losscape_core::VERSION, "losscape server listening");
+    tracing::info!(
+        addr = %config.listen,
+        https = tls.is_some(),
+        version = losscape_core::VERSION,
+        "losscape server listening"
+    );
     let auth = &config.auth;
     tracing::info!(
         signup = ?auth.signup,
@@ -147,7 +181,7 @@ async fn serve(file: Option<PathBuf>) -> Result<(), Error> {
         trusted_proxies: config.auth.trusted_proxies.clone(),
         ..Default::default()
     };
-    losscape_server::serve::serve(listener, app, limits, async move {
+    losscape_server::serve::serve(listener, app, limits, tls, async move {
         shutdown_signal().await;
         // Live streams never end by themselves, and connections are waited for.
         live.shutdown();

@@ -141,17 +141,21 @@ Run this on the training machine, and leave it running:
 ssh -N -L 8080:localhost:8080 you@your-server
 ```
 
-**With HTTPS**, for a team. Point a domain at the server, open ports 80 and 443, and add this to `.env`
-next to `compose.yaml`:
+**With HTTPS**, for a team. Point a domain at the server, open port 443 (only), and add this to
+`.env` next to `compose.yaml`:
 
 ```sh
+COMPOSE_FILE=compose.yaml:deploy/compose.https.yaml
 LOSSCAPE_DOMAIN=losscape.example.com
 LOSSCAPE_PUBLIC_URL=https://losscape.example.com
 ```
 
 ```sh
-docker compose --profile https up -d --wait --no-build
+docker compose up -d --wait --no-build
 ```
+
+Caddy then serves it on port 443 with a Let's Encrypt certificate, or your own for a name on
+internal DNS ([HTTPS](docs/DEPLOYMENT.md#https)).
 
 Then, on the training machine:
 

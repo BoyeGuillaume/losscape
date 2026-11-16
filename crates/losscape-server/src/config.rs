@@ -3,15 +3,19 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+pub use crate::tls::{CertFiles, ClientTls};
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub listen: SocketAddr,
+    /// Serve HTTPS with this certificate, rather than plain HTTP.
+    pub tls: Option<CertFiles>,
     pub database_url: String,
     pub clickhouse: ClickHouseConfig,
     pub auth: AuthConfig,
@@ -149,6 +153,8 @@ pub struct ClickHouseConfig {
     pub user: String,
     pub password: String,
     pub database: String,
+    /// For an `https://` URL.
+    pub tls: ClientTls,
 }
 
 #[derive(Clone, Debug)]
@@ -462,12 +468,17 @@ impl Config {
     fn from_settings(s: &Settings) -> Result<Self, ConfigError> {
         Ok(Self {
             listen: s.parse("LOSSCAPE_LISTEN", "0.0.0.0:8080")?,
+            tls: s.cert_files("LOSSCAPE_TLS_CERT", "LOSSCAPE_TLS_KEY")?,
             database_url: s.required("DATABASE_URL")?,
             clickhouse: ClickHouseConfig {
                 url: s.required("CLICKHOUSE_URL")?,
                 user: s.optional("CLICKHOUSE_USER", "default"),
                 password: s.optional("CLICKHOUSE_PASSWORD", ""),
                 database: s.optional("CLICKHOUSE_DATABASE", "losscape"),
+                tls: ClientTls {
+                    ca_cert: s.path("CLICKHOUSE_CA_CERT"),
+                    identity: s.cert_files("CLICKHOUSE_CLIENT_CERT", "CLICKHOUSE_CLIENT_KEY")?,
+                },
             },
             auth: AuthConfig::load(s)?,
             ingest: IngestConfig {
@@ -490,9 +501,14 @@ impl Config {
     }
 }
 
-/// Where the server listens, for `healthcheck`: it needs no more of the settings than this.
-pub fn listen_address(file: Option<&Path>) -> Result<SocketAddr, ConfigError> {
-    Settings::load(file)?.parse("LOSSCAPE_LISTEN", "0.0.0.0:8080")
+/// Where the server listens, and its certificate if it serves HTTPS, for `healthcheck`: it
+/// needs no more of the settings than this.
+pub fn listen_address(file: Option<&Path>) -> Result<(SocketAddr, Option<CertFiles>), ConfigError> {
+    let s = Settings::load(file)?;
+    Ok((
+        s.parse("LOSSCAPE_LISTEN", "0.0.0.0:8080")?,
+        s.cert_files("LOSSCAPE_TLS_CERT", "LOSSCAPE_TLS_KEY")?,
+    ))
 }
 
 /// Settings by their environment variable name.
@@ -534,6 +550,24 @@ impl Settings {
         self.get(name).unwrap_or_else(|| default.to_owned())
     }
 
+    fn path(&self, name: &str) -> Option<PathBuf> {
+        self.get(name).filter(|v| !v.is_empty()).map(PathBuf::from)
+    }
+
+    /// A certificate and its key: both, or neither.
+    fn cert_files(
+        &self,
+        cert: &'static str,
+        key: &'static str,
+    ) -> Result<Option<CertFiles>, ConfigError> {
+        match (self.path(cert), self.path(key)) {
+            (Some(cert), Some(key)) => Ok(Some(CertFiles { cert, key })),
+            (None, None) => Ok(None),
+            (Some(_), None) => Err(invalid(cert, format!("set {key} too"))),
+            (None, Some(_)) => Err(invalid(key, format!("set {cert} too"))),
+        }
+    }
+
     fn parse<T>(&self, name: &'static str, default: &str) -> Result<T, ConfigError>
     where
         T: FromStr,
@@ -548,6 +582,8 @@ impl Settings {
 /// Each key of the file, as the environment variable it stands for.
 const TOML_KEYS: &[(&str, &str)] = &[
     ("listen", "LOSSCAPE_LISTEN"),
+    ("tls.cert", "LOSSCAPE_TLS_CERT"),
+    ("tls.key", "LOSSCAPE_TLS_KEY"),
     ("public_url", "LOSSCAPE_PUBLIC_URL"),
     ("signup", "LOSSCAPE_SIGNUP"),
     ("setup_token", "LOSSCAPE_SETUP_TOKEN"),
@@ -566,6 +602,9 @@ const TOML_KEYS: &[(&str, &str)] = &[
     ("clickhouse.user", "CLICKHOUSE_USER"),
     ("clickhouse.password", "CLICKHOUSE_PASSWORD"),
     ("clickhouse.database", "CLICKHOUSE_DATABASE"),
+    ("clickhouse.ca_cert", "CLICKHOUSE_CA_CERT"),
+    ("clickhouse.client_cert", "CLICKHOUSE_CLIENT_CERT"),
+    ("clickhouse.client_key", "CLICKHOUSE_CLIENT_KEY"),
     ("ingest.flush_interval_ms", "LOSSCAPE_FLUSH_INTERVAL_MS"),
     ("ingest.flush_max_rows", "LOSSCAPE_FLUSH_MAX_ROWS"),
     ("ingest.queue", "LOSSCAPE_INGEST_QUEUE"),
@@ -695,6 +734,30 @@ mod tests {
     }
 
     #[test]
+    fn certificates_come_with_their_key() {
+        let with = |extra: &[(&str, &str)]| {
+            let mut pairs = REQUIRED.to_vec();
+            pairs.extend_from_slice(extra);
+            Config::from_settings(&settings(&pairs))
+        };
+        let config = with(&[]).unwrap();
+        assert!(config.tls.is_none());
+        assert_eq!(config.clickhouse.tls, ClientTls::default());
+        // Empty is unset, as compose passes them.
+        let config = with(&[("LOSSCAPE_TLS_CERT", ""), ("LOSSCAPE_TLS_KEY", "")]).unwrap();
+        assert!(config.tls.is_none());
+        for half in [
+            ("LOSSCAPE_TLS_CERT", "c.pem"),
+            ("LOSSCAPE_TLS_KEY", "k.pem"),
+            ("CLICKHOUSE_CLIENT_CERT", "c.pem"),
+            ("CLICKHOUSE_CLIENT_KEY", "k.pem"),
+        ] {
+            let error = with(&[half]).err().unwrap().to_string();
+            assert!(error.contains("too"), "{error}");
+        }
+    }
+
+    #[test]
     fn admin_and_project_policies() {
         let with = |extra: &[(&str, &str)]| {
             let mut pairs = REQUIRED.to_vec();
@@ -737,11 +800,18 @@ mod tests {
             [database]
             url = "postgres://db"
 
+            [tls]
+            cert = "/certs/server.pem"
+            key = "/certs/server.key"
+
             [clickhouse]
-            url = "http://ch"
+            url = "https://ch:8443"
             user = "u"
             password = "p"
             database = "d"
+            ca_cert = "/certs/ca.pem"
+            client_cert = "/certs/client.pem"
+            client_key = "/certs/client.key"
 
             [ingest]
             flush_interval_ms = 100
@@ -771,6 +841,21 @@ mod tests {
         assert_eq!(config.auth.trusted_proxies.len(), 2);
         assert_eq!(config.max_body_bytes, 8 * 1024 * 1024);
         assert_eq!(config.clickhouse.password, "p");
+        let cert = |cert: &str, key: &str| CertFiles {
+            cert: cert.into(),
+            key: key.into(),
+        };
+        assert_eq!(
+            config.tls,
+            Some(cert("/certs/server.pem", "/certs/server.key"))
+        );
+        assert_eq!(
+            config.clickhouse.tls,
+            ClientTls {
+                ca_cert: Some("/certs/ca.pem".into()),
+                identity: Some(cert("/certs/client.pem", "/certs/client.key")),
+            }
+        );
         assert_eq!(config.ingest.flush_interval, Duration::from_millis(100));
         assert_eq!(config.ingest.queue_capacity, 6);
         let names: Vec<&str> = config.auth.oauth.iter().map(|p| p.name.as_str()).collect();
@@ -791,10 +876,24 @@ mod tests {
             .replace("\n# client_", "\nclient_")
             .replace("\n# name", "\nname");
         let all = all.replace("\n# public_url", "\npublic_url");
-        let all = all.replace("\n# trusted_proxies", "\ntrusted_proxies");
+        let mut all = all.replace("\n# trusted_proxies", "\ntrusted_proxies");
+        for key in [
+            "[tls]",
+            "cert =",
+            "key =",
+            "ca_cert",
+            "client_cert",
+            "client_key",
+        ] {
+            all = all.replace(&format!("\n# {key}"), &format!("\n{key}"));
+        }
         let config = Config::from_settings(&Settings(from_toml(&all).unwrap())).unwrap();
         assert_eq!(config.auth.oauth.len(), 2);
         assert_eq!(config.auth.trusted_proxies.len(), 1);
+        assert!(config.tls.is_some());
+        assert!(
+            config.clickhouse.tls.ca_cert.is_some() && config.clickhouse.tls.identity.is_some()
+        );
     }
 
     #[test]

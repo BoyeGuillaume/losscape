@@ -31,3 +31,4 @@ web/.svelte-kit/
 
 # Your own images for a deployment (see deploy/env.example).
 /branding/
+/certs/

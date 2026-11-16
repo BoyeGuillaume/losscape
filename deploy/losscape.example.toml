@@ -28,7 +28,17 @@ max_body_mb = 32
 storage = "/var/lib/losscape/checkpoints"
 max_checkpoint_gb = 100
 
+# HTTPS rather than plain HTTP, with this certificate (and its chain) and key, PEM files read
+# again when they change. For the hop from a reverse proxy on another machine; see
+# docs/DEPLOYMENT.md, Setting it up by hand.
+# [tls]
+# cert = "/etc/losscape/tls/server.pem"
+# key = "/etc/losscape/tls/server.key"
+
 [database]
+# On another machine, encrypted, checking the server's certificate against your CA:
+# "postgres://losscape@db.internal/losscape?sslmode=verify-full&sslrootcert=/etc/losscape/tls/ca.pem"
+# with sslcert= and sslkey= for a client certificate.
 url = "postgres://losscape:losscape@localhost:5432/losscape"
 
 [clickhouse]
@@ -36,6 +46,11 @@ url = "http://localhost:8123"
 user = "losscape"
 password = "losscape"
 database = "losscape"
+# For an https:// url: the CA its certificate is checked against, instead of the public ones,
+# and a client certificate, if it asks for one.
+# ca_cert = "/etc/losscape/tls/ca.pem"
+# client_cert = "/etc/losscape/tls/client.pem"
+# client_key = "/etc/losscape/tls/client.key"
 
 [ingest]
 flush_interval_ms = 250
